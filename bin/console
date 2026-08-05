@@ -1,0 +1,715 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+/**
+ * L-SIAMS command line console.
+ *
+ *   php bin/console key:generate         Generate APP_KEY / API_KEY_PEPPER / ticket secret
+ *   php bin/console migrate              Apply pending migrations
+ *   php bin/console migrate:status       Show which migrations have run
+ *   php bin/console migrate:fresh        Drop everything and re-migrate (destructive)
+ *   php bin/console seed [--demo]        Seed reference data (and optional demo data)
+ *   php bin/console install              key:generate + migrate + seed, in one step
+ *   php bin/console worker               Maintenance worker (sessions, heartbeats, auto-close)
+ *   php bin/console backup               Create an encrypted backup now
+ *   php bin/console security:audit-keys  Static check that no weak RNG is in the key path
+ *   php bin/console user:create-admin    Create an administrator interactively
+ */
+
+if (PHP_SAPI !== 'cli') {
+    fwrite(STDERR, "This script must be run from the command line.\n");
+    exit(1);
+}
+
+/** @var App\Core\App $app */
+$app = require dirname(__DIR__) . '/bootstrap.php';
+
+use App\Core\Clock;
+use App\Core\Config;
+use App\Core\Crypto;
+use App\Core\Database;
+use App\Core\Hash;
+use App\Services\ApiKeyService;
+use App\Services\AttendanceSessionService;
+use App\Services\BackupService;
+use App\Services\DeviceService;
+use App\Services\IdempotencyService;
+use App\Services\NotificationService;
+use App\Services\RealtimeService;
+use App\Services\SessionService;
+
+$command   = $argv[1] ?? 'help';
+$arguments = array_slice($argv, 2);
+$flags     = array_values(array_filter($arguments, static fn (string $a): bool => str_starts_with($a, '--')));
+
+function out(string $message = '', string $colour = ''): void
+{
+    $colours = [
+        'red' => "\033[31m", 'green' => "\033[32m", 'yellow' => "\033[33m",
+        'blue' => "\033[34m", 'cyan' => "\033[36m", 'grey' => "\033[90m", 'bold' => "\033[1m",
+    ];
+
+    $prefix = $colours[$colour] ?? '';
+    $suffix = $prefix === '' ? '' : "\033[0m";
+
+    fwrite(STDOUT, $prefix . $message . $suffix . PHP_EOL);
+}
+
+function fail(string $message): never
+{
+    out('✗ ' . $message, 'red');
+    exit(1);
+}
+
+function ok(string $message): void
+{
+    out('✓ ' . $message, 'green');
+}
+
+function heading(string $message): void
+{
+    out('');
+    out($message, 'bold');
+    out(str_repeat('─', min(70, strlen($message))), 'grey');
+}
+
+function prompt(string $question, bool $hidden = false): string
+{
+    fwrite(STDOUT, $question . ': ');
+
+    if ($hidden && DIRECTORY_SEPARATOR !== '\\') {
+        @shell_exec('stty -echo 2>/dev/null');
+        $value = trim((string) fgets(STDIN));
+        @shell_exec('stty echo 2>/dev/null');
+        fwrite(STDOUT, PHP_EOL);
+
+        return $value;
+    }
+
+    return trim((string) fgets(STDIN));
+}
+
+// ---------------------------------------------------------------------------
+
+try {
+    match ($command) {
+        'key:generate'        => commandKeyGenerate($flags),
+        'migrate'             => commandMigrate(),
+        'migrate:status'      => commandMigrateStatus(),
+        'migrate:fresh'       => commandMigrateFresh($flags),
+        'seed'                => commandSeed($flags),
+        'install'             => commandInstall($flags),
+        'worker'              => commandWorker($arguments),
+        'backup'              => commandBackup(),
+        'security:audit-keys' => commandAuditKeys(),
+        'user:create-admin'   => commandCreateAdmin(),
+        default               => commandHelp(),
+    };
+} catch (Throwable $e) {
+    out('');
+    fail($e->getMessage() . "\n  at " . $e->getFile() . ':' . $e->getLine());
+}
+
+// ---------------------------------------------------------------------------
+
+function commandHelp(): void
+{
+    out('');
+    out('  L-SIAMS console', 'bold');
+    out('  Local IoT-Based Multi-Layer Secured Attendance Monitoring System', 'grey');
+    out('');
+    out('  Setup', 'cyan');
+    out('    install                 Generate keys, migrate and seed in one step');
+    out('    key:generate            Generate cryptographic keys into .env');
+    out('    migrate                 Apply pending migrations');
+    out('    migrate:status          Show migration state');
+    out('    migrate:fresh --force   Drop all tables and re-migrate (destructive)');
+    out('    seed [--demo]           Seed reference data, optionally with demo records');
+    out('    user:create-admin       Create an administrator account interactively');
+    out('');
+    out('  Operations', 'cyan');
+    out('    worker [--once]         Maintenance loop: sessions, heartbeats, retention');
+    out('    backup                  Create an encrypted database backup');
+    out('    security:audit-keys     Verify no weak RNG exists in the key path');
+    out('');
+}
+
+/**
+ * Generate the three secrets the application needs, writing them into .env.
+ * Existing values are never overwritten without --force: doing so would make
+ * every stored HMAC secret and every live session permanently unreadable.
+ */
+function commandKeyGenerate(array $flags): void
+{
+    heading('Generating cryptographic keys');
+
+    $envFile = BASE_PATH . '/.env';
+
+    if (!is_file($envFile)) {
+        if (!is_file(BASE_PATH . '/.env.example')) {
+            fail('Neither .env nor .env.example exists.');
+        }
+
+        copy(BASE_PATH . '/.env.example', $envFile);
+        @chmod($envFile, 0600);
+        ok('Created .env from .env.example');
+    }
+
+    $contents = (string) file_get_contents($envFile);
+    $force    = in_array('--force', $flags, true);
+    $written  = 0;
+
+    foreach (['APP_KEY', 'API_KEY_PEPPER', 'REALTIME_TICKET_SECRET'] as $name) {
+        $hasValue = preg_match('/^' . $name . '=(.+)$/m', $contents, $matches) === 1
+            && trim($matches[1]) !== '';
+
+        if ($hasValue && !$force) {
+            out('  ' . $name . ' already set — skipping (use --force to replace)', 'grey');
+            continue;
+        }
+
+        if ($hasValue && $force) {
+            out('  ⚠ Replacing ' . $name . ' — encrypted HMAC secrets and live sessions will be invalidated.', 'yellow');
+        }
+
+        $value = base64_encode(Crypto::randomBytes(32));
+
+        $contents = preg_match('/^' . $name . '=.*$/m', $contents) === 1
+            ? (string) preg_replace('/^' . $name . '=.*$/m', $name . '=' . $value, $contents)
+            : $contents . PHP_EOL . $name . '=' . $value;
+
+        ok($name . ' generated (256-bit CSPRNG)');
+        $written++;
+    }
+
+    file_put_contents($envFile, $contents);
+    @chmod($envFile, 0600);
+
+    if ($written > 0) {
+        out('');
+        out('  .env permissions set to 0600. Keep this file out of version control.', 'grey');
+    }
+}
+
+/** @return list<array{name:string,path:string,checksum:string}> */
+function discoverMigrations(): array
+{
+    $directory = (string) Config::get('app.paths.migrations');
+    $files     = glob($directory . '/*.sql') ?: [];
+
+    sort($files, SORT_NATURAL);
+
+    return array_map(static fn (string $path): array => [
+        'name'     => basename($path),
+        'path'     => $path,
+        'checksum' => hash_file('sha256', $path),
+    ], $files);
+}
+
+function ensureMigrationsTable(Database $db): void
+{
+    $db->pdo()->exec(
+        'CREATE TABLE IF NOT EXISTS schema_migrations (
+            migration  VARCHAR(190) NOT NULL PRIMARY KEY,
+            batch      INT UNSIGNED NOT NULL,
+            checksum   CHAR(64)     NOT NULL,
+            applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+}
+
+function commandMigrate(): void
+{
+    heading('Running migrations');
+
+    $db = Database::instance();
+    ensureMigrationsTable($db);
+
+    $applied = [];
+
+    foreach ($db->select('SELECT migration, checksum FROM schema_migrations') as $row) {
+        $applied[(string) $row['migration']] = (string) $row['checksum'];
+    }
+
+    $batch   = (int) $db->scalar('SELECT COALESCE(MAX(batch), 0) + 1 FROM schema_migrations');
+    $pending = 0;
+
+    foreach (discoverMigrations() as $migration) {
+        if (isset($applied[$migration['name']])) {
+            // A changed checksum means someone edited an applied migration —
+            // dangerous, because the database no longer matches the file.
+            if ($applied[$migration['name']] !== $migration['checksum']) {
+                out('  ⚠ ' . $migration['name'] . ' has changed since it was applied.', 'yellow');
+            }
+            continue;
+        }
+
+        out('  → ' . $migration['name'], 'cyan');
+
+        $sql = (string) file_get_contents($migration['path']);
+
+        try {
+            runSqlScript($db, $sql);
+        } catch (Throwable $e) {
+            fail($migration['name'] . ' failed: ' . $e->getMessage());
+        }
+
+        $db->insert('schema_migrations', [
+            'migration' => $migration['name'],
+            'batch'     => $batch,
+            'checksum'  => $migration['checksum'],
+        ]);
+
+        ok('  ' . $migration['name']);
+        $pending++;
+    }
+
+    out('');
+    $pending === 0 ? ok('Database is already up to date.') : ok($pending . ' migration(s) applied.');
+}
+
+/**
+ * Execute a .sql file, honouring DELIMITER blocks so triggers and procedures
+ * containing internal semicolons are not split apart.
+ */
+function runSqlScript(Database $db, string $sql): void
+{
+    $delimiter  = ';';
+    $buffer     = '';
+    $statements = [];
+
+    foreach (preg_split('/\r\n|\n|\r/', $sql) ?: [] as $line) {
+        $trimmed = trim($line);
+
+        if ($trimmed === '' || str_starts_with($trimmed, '--')) {
+            continue;
+        }
+
+        if (stripos($trimmed, 'DELIMITER ') === 0) {
+            if (trim($buffer) !== '') {
+                $statements[] = $buffer;
+                $buffer       = '';
+            }
+
+            $delimiter = trim(substr($trimmed, 10));
+            continue;
+        }
+
+        $buffer .= $line . "\n";
+
+        if (str_ends_with($trimmed, $delimiter)) {
+            $statement = substr(rtrim($buffer), 0, -strlen($delimiter));
+
+            if (trim($statement) !== '') {
+                $statements[] = $statement;
+            }
+
+            $buffer = '';
+        }
+    }
+
+    if (trim($buffer) !== '') {
+        $statements[] = $buffer;
+    }
+
+    foreach ($statements as $statement) {
+        if (trim($statement) === '') {
+            continue;
+        }
+
+        $db->pdo()->exec($statement);
+    }
+}
+
+function commandMigrateStatus(): void
+{
+    heading('Migration status');
+
+    $db = Database::instance();
+    ensureMigrationsTable($db);
+
+    $applied = [];
+
+    foreach ($db->select('SELECT migration, batch, applied_at FROM schema_migrations') as $row) {
+        $applied[(string) $row['migration']] = $row;
+    }
+
+    foreach (discoverMigrations() as $migration) {
+        if (isset($applied[$migration['name']])) {
+            out(sprintf('  %-52s applied  %s', $migration['name'], $applied[$migration['name']]['applied_at']), 'green');
+        } else {
+            out(sprintf('  %-52s pending', $migration['name']), 'yellow');
+        }
+    }
+}
+
+function commandMigrateFresh(array $flags): void
+{
+    if (!in_array('--force', $flags, true)) {
+        fail('migrate:fresh destroys all data. Re-run with --force to confirm.');
+    }
+
+    heading('Dropping all tables');
+
+    $db = Database::instance();
+    $db->pdo()->exec('SET FOREIGN_KEY_CHECKS = 0');
+
+    foreach ($db->select('SHOW FULL TABLES WHERE Table_type = "VIEW"') as $row) {
+        $name = (string) array_values($row)[0];
+        $db->pdo()->exec(sprintf('DROP VIEW IF EXISTS `%s`', $name));
+    }
+
+    foreach ($db->select('SHOW FULL TABLES WHERE Table_type = "BASE TABLE"') as $row) {
+        $name = (string) array_values($row)[0];
+        $db->pdo()->exec(sprintf('DROP TABLE IF EXISTS `%s`', $name));
+        out('  dropped ' . $name, 'grey');
+    }
+
+    $db->pdo()->exec('SET FOREIGN_KEY_CHECKS = 1');
+    ok('Schema dropped.');
+
+    commandMigrate();
+}
+
+function commandSeed(array $flags): void
+{
+    heading('Seeding');
+
+    $seeders = [
+        BASE_PATH . '/database/seeders/ReferenceSeeder.php',
+    ];
+
+    if (in_array('--demo', $flags, true)) {
+        $seeders[] = BASE_PATH . '/database/seeders/DemoSeeder.php';
+    }
+
+    foreach ($seeders as $file) {
+        if (!is_file($file)) {
+            out('  skipped (missing) ' . basename($file), 'grey');
+            continue;
+        }
+
+        out('  → ' . basename($file), 'cyan');
+        $result = require $file;
+
+        if (is_callable($result)) {
+            $result(Database::instance());
+        }
+    }
+
+    ok('Seeding complete.');
+}
+
+function commandInstall(array $flags): void
+{
+    out('');
+    out('  L-SIAMS installation', 'bold');
+    out('');
+
+    commandKeyGenerate($flags);
+
+    // Config is read once at boot, so the freshly written keys need re-reading
+    // before anything tries to encrypt with them.
+    App\Core\Env::load(BASE_PATH . '/.env');
+
+    commandMigrate();
+    commandSeed($flags);
+
+    heading('Next steps');
+    out('  1. Create an administrator:   php bin/console user:create-admin');
+    out('  2. Start the realtime server: php realtime/server.php');
+    out('  3. Schedule the worker:       php bin/console worker');
+    out('  4. Sign in and register your classrooms, sections and terminals.');
+    out('');
+}
+
+/**
+ * Maintenance worker.
+ *
+ * Everything time-driven in the system lives here: sessions that must close,
+ * devices that stopped talking, and the retention sweeps. Run it from cron
+ * (every minute) or as a long-lived service.
+ */
+function commandWorker(array $arguments): void
+{
+    $once     = in_array('--once', $arguments, true);
+    $interval = 60;
+
+    foreach ($arguments as $argument) {
+        if (str_starts_with($argument, '--interval=')) {
+            $interval = max(10, (int) substr($argument, 11));
+        }
+    }
+
+    out('');
+    out('  L-SIAMS maintenance worker' . ($once ? ' (single pass)' : ' (every ' . $interval . 's)'), 'bold');
+    out('  Press Ctrl+C to stop.', 'grey');
+    out('');
+
+    $tick = 0;
+
+    do {
+        $tick++;
+        $started = microtime(true);
+
+        try {
+            $closed = AttendanceSessionService::autoCloseExpired();
+            if ($closed > 0) {
+                out(sprintf('[%s] closed %d expired session(s)', date('H:i:s'), $closed), 'cyan');
+            }
+
+            $expiring = AttendanceSessionService::notifyExpiringSessions(5);
+            if ($expiring > 0) {
+                out(sprintf('[%s] warned %d session(s) about closing soon', date('H:i:s'), $expiring), 'grey');
+            }
+
+            $offline = DeviceService::markStaleDevicesOffline();
+            if ($offline > 0) {
+                out(sprintf('[%s] marked %d device(s) offline', date('H:i:s'), $offline), 'yellow');
+            }
+
+            $sessions = SessionService::expireStaleSessions();
+            if ($sessions > 0) {
+                out(sprintf('[%s] expired %d web session(s)', date('H:i:s'), $sessions), 'grey');
+            }
+
+            $graced = ApiKeyService::expireGracePeriods();
+            if ($graced > 0) {
+                out(sprintf('[%s] auto-revoked %d rotated key(s)', date('H:i:s'), $graced), 'yellow');
+            }
+
+            // Retention sweeps run hourly rather than every tick.
+            if ($tick % 60 === 1) {
+                $retention = (array) Config::get('attendance.retention', []);
+
+                $purged = [
+                    'heartbeats'   => DeviceService::purgeOldHeartbeats((int) ($retention['heartbeats_days'] ?? 90)),
+                    'notifications' => NotificationService::purgeOld((int) ($retention['notifications_days'] ?? 180)),
+                    'events'       => RealtimeService::purgeOldEvents((int) ($retention['realtime_events_hours'] ?? 48)),
+                    'requests'     => IdempotencyService::purgeOld((int) ($retention['processed_requests_hours'] ?? 24)),
+                    'tickets'      => RealtimeService::purgeExpiredTickets(),
+                    'nonces'       => Database::instance()->execute(
+                        'DELETE FROM device_nonces WHERE used_at < DATE_SUB(NOW(), INTERVAL :hours HOUR)',
+                        ['hours' => (int) ($retention['nonces_hours'] ?? 24)]
+                    ),
+                ];
+
+                $total = array_sum($purged);
+
+                if ($total > 0) {
+                    out(sprintf('[%s] retention sweep removed %d row(s): %s',
+                        date('H:i:s'), $total,
+                        implode(', ', array_map(
+                            static fn (string $k, int $v): string => $k . '=' . $v,
+                            array_keys($purged), array_values($purged)
+                        ))
+                    ), 'grey');
+                }
+            }
+        } catch (Throwable $e) {
+            out(sprintf('[%s] worker error: %s', date('H:i:s'), $e->getMessage()), 'red');
+            App\Core\Logger::exception($e);
+        }
+
+        if ($once) {
+            break;
+        }
+
+        $elapsed = microtime(true) - $started;
+        $sleep   = max(1, $interval - (int) $elapsed);
+        sleep($sleep);
+    } while (true);
+
+    ok('Worker finished.');
+}
+
+function commandBackup(): void
+{
+    heading('Creating backup');
+
+    $result = BackupService::create('manual', null);
+
+    ok(sprintf('%s — %d tables, %s',
+        $result['filename'], $result['tables'], BackupService::humanSize($result['size'])));
+    out('  SHA-256: ' . $result['checksum'], 'grey');
+    out('  Duration: ' . $result['duration'] . 's', 'grey');
+}
+
+/**
+ * Static assurance for the Part 20.4 acceptance criterion:
+ * "rand(), mt_rand(), and uniqid() appear nowhere in the key path".
+ */
+function commandAuditKeys(): void
+{
+    heading('Auditing the key generation path');
+
+    $keyPathFiles = [
+        'app/Core/Crypto.php',
+        'app/Services/ApiKeyService.php',
+        'app/Services/SessionService.php',
+        'app/Services/PasswordPolicyService.php',
+        'app/Services/DeviceService.php',
+        'app/Services/RealtimeService.php',
+        'app/Services/CsrfService.php',
+    ];
+
+    $forbidden = ['mt_rand', 'rand(', 'uniqid', 'shuffle(', 'str_shuffle', 'array_rand'];
+    $problems  = 0;
+
+    foreach ($keyPathFiles as $relative) {
+        $path = BASE_PATH . '/' . $relative;
+
+        if (!is_file($path)) {
+            out('  ⚠ missing: ' . $relative, 'yellow');
+            continue;
+        }
+
+        $contents = (string) file_get_contents($path);
+        $found    = [];
+
+        foreach ($forbidden as $needle) {
+            // random_int is fine; the check must not trip on it.
+            $pattern = '/(?<![a-z_])' . preg_quote(rtrim($needle, '('), '/') . '\s*\(/i';
+
+            if (preg_match($pattern, $contents) === 1
+                && !str_contains($needle, 'random_int')
+            ) {
+                $found[] = rtrim($needle, '(');
+            }
+        }
+
+        if ($found === []) {
+            ok(sprintf('%-46s clean', $relative));
+        } else {
+            out(sprintf('  ✗ %-44s uses %s', $relative, implode(', ', $found)), 'red');
+            $problems++;
+        }
+    }
+
+    out('');
+
+    $usesCsprng = str_contains((string) file_get_contents(BASE_PATH . '/app/Core/Crypto.php'), 'random_bytes(');
+
+    $usesCsprng
+        ? ok('Crypto::randomBytes() is backed by random_bytes().')
+        : out('  ✗ Crypto does not call random_bytes().', 'red');
+
+    // Sample the generator to confirm it produces distinct, well-formed keys.
+    heading('Sampling 1,000 generated key identifiers');
+
+    $seen = [];
+
+    for ($i = 0; $i < 1000; $i++) {
+        $seen[] = 'lsk_' . Crypto::randomBase62(8) . '.' . Crypto::randomBase62(32);
+    }
+
+    $unique = count(array_unique($seen));
+
+    $unique === 1000
+        ? ok('1,000 / 1,000 keys unique.')
+        : out(sprintf('  ✗ only %d / 1000 unique.', $unique), 'red');
+
+    $lengths = array_unique(array_map('strlen', $seen));
+    ok('Key length: ' . implode(', ', $lengths) . ' characters.');
+
+    out('');
+    $problems === 0 ? ok('Key path audit passed.') : fail($problems . ' file(s) failed the audit.');
+}
+
+function commandCreateAdmin(): void
+{
+    heading('Create an administrator account');
+
+    $db = Database::instance();
+
+    $role = $db->selectOne("SELECT role_id FROM roles WHERE role_slug = 'administrator'");
+
+    if ($role === null) {
+        fail('The administrator role does not exist. Run "php bin/console seed" first.');
+    }
+
+    $fullName = prompt('Full name');
+    $username = strtolower(prompt('Username'));
+    $email    = strtolower(prompt('Email'));
+
+    if ($fullName === '' || $username === '' || $email === '') {
+        fail('All fields are required.');
+    }
+
+    if (preg_match('/^[a-z0-9._-]{4,32}$/', $username) !== 1) {
+        fail('Username must be 4–32 characters: letters, numbers, dot, underscore or hyphen.');
+    }
+
+    if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+        fail('That email address is not valid.');
+    }
+
+    if ($db->scalar('SELECT 1 FROM users WHERE username = :u OR email = :e LIMIT 1',
+        ['u' => $username, 'e' => $email]) !== null) {
+        fail('That username or email address is already registered.');
+    }
+
+    $password = prompt('Password (blank to generate one)', true);
+    $generated = false;
+
+    if ($password === '') {
+        $password  = App\Services\PasswordPolicyService::generate();
+        $generated = true;
+    } else {
+        $issues = App\Services\PasswordPolicyService::check($password, [$username, $email, $fullName]);
+
+        if ($issues !== []) {
+            out('');
+            foreach ($issues as $issue) {
+                out('  ✗ ' . $issue, 'red');
+            }
+            exit(1);
+        }
+
+        if (prompt('Confirm password', true) !== $password) {
+            fail('Passwords do not match.');
+        }
+    }
+
+    $hash = Hash::make($password);
+
+    $userId = (int) $db->transaction(static function (Database $db) use ($role, $username, $email, $hash, $fullName): string {
+        $id = $db->insert('users', [
+            'role_id'              => (int) $role['role_id'],
+            'username'             => $username,
+            'email'                => $email,
+            'password_hash'        => $hash,
+            'full_name'            => $fullName,
+            'status'               => 'active',
+            'must_change_password' => 1,
+            'password_changed_at'  => Clock::nowString(),
+            'created_at'           => Clock::nowString(),
+            'updated_at'           => Clock::nowString(),
+        ]);
+
+        $db->insert('password_history', [
+            'user_id'       => (int) $id,
+            'password_hash' => $hash,
+            'created_at'    => Clock::nowString(),
+        ]);
+
+        return $id;
+    });
+
+    out('');
+    ok('Administrator #' . $userId . ' created.');
+    out('');
+    out('  Username: ' . $username, 'cyan');
+
+    if ($generated) {
+        out('  Password: ' . $password, 'cyan');
+        out('');
+        out('  This is the only time the password is shown. You will be asked', 'yellow');
+        out('  to change it the first time you sign in.', 'yellow');
+    } else {
+        out('  Password: (as entered)', 'grey');
+    }
+
+    out('');
+}

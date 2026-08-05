@@ -1,0 +1,29 @@
+{
+    "name": "lsiams/attendance",
+    "description": "L-SIAMS — Local IoT-Based Multi-Layer Secured Attendance Monitoring System",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.1",
+        "ext-pdo": "*",
+        "ext-pdo_mysql": "*",
+        "ext-json": "*",
+        "ext-openssl": "*",
+        "ext-mbstring": "*",
+        "ext-zip": "*",
+        "ext-gd": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/"
+        }
+    },
+    "scripts": {
+        "migrate": "php bin/console migrate",
+        "seed": "php bin/console seed",
+        "serve": "php -S 0.0.0.0:8000 -t public public/index.php"
+    },
+    "config": {
+        "optimize-autoloader": true
+    }
+}

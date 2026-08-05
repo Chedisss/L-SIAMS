@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Apache configuration for the L-SIAMS document root.
+# Nginx equivalents live in docs/DEPLOYMENT.md.
+# ---------------------------------------------------------------------------
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Force HTTPS. Attendance APIs must never be reachable over plaintext.
+    RewriteCond %{HTTPS} off
+    RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+    # Serve existing files (assets, uploads) directly.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always unset X-Powered-By
+    Header always unset Server
+</IfModule>
+
+# Uploaded files are data, never code. Even if a PHP file were somehow written
+# into uploads/, this stops the server from executing it.
+<Directory "uploads">
+    php_flag engine off
+    <FilesMatch "\.(php|phtml|phar|cgi|pl|py|sh)$">
+        Require all denied
+    </FilesMatch>
+</Directory>
+
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+Options -Indexes -ExecCGI

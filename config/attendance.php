@@ -1,0 +1,49 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * Attendance defaults. Every value here is overridable per-schedule (Part 16.3)
+ * and editable at runtime through Settings, which writes to the `settings`
+ * table. Nothing in the attendance engine may hard-code these numbers.
+ */
+return [
+    'windows' => [
+        'time_in_window_open'    => 10, // minutes before start that tap-in opens
+        'late_threshold_minutes' => 15, // after start -> LATE
+        'time_in_window_close'   => 30, // after start -> tap-in refused
+        'time_out_window_open'   => 10, // before end that tap-out opens
+        'time_out_window_close'  => 15, // after end -> tap-out refused, session auto-closes
+        'minimum_dwell_minutes'  => 20, // shortest credited classroom stay
+    ],
+
+    'auto_timeout_on_close' => true,   // stamp a time-out at session end instead of Incomplete
+    'auto_close_sessions'   => true,   // background worker closes expired sessions
+    'generate_absent_on_close' => true,
+
+    'section_mismatch_alert_threshold' => 3, // taps/day/student before admin notification
+
+    'fingerprint' => [
+        'max_failures_before_lock' => 5,
+        'device_lock_minutes'      => 5,
+        'alert_after_failures'     => 3,
+    ],
+
+    'device' => [
+        'heartbeat_interval_sec' => 30,
+        'heartbeat_jitter_sec'   => 5,
+        'offline_after_sec'      => 90,
+        'sync_interval_sec'      => 60,
+        'offline_queue_limit'    => 500,
+        'queue_warning_depth'    => 100,
+    ],
+
+    'retention' => [
+        'heartbeats_days'    => 90,
+        'notifications_days' => 180,
+        'realtime_events_hours' => 48,
+        'processed_requests_hours' => 24,
+        'nonces_hours'       => 24,
+    ],
+
+    'chronic_absence_threshold_percent' => 80.0,
+];
