@@ -15,6 +15,7 @@ declare(strict_types=1);
  *   php bin/console backup               Create an encrypted backup now
  *   php bin/console security:audit-keys  Static check that no weak RNG is in the key path
  *   php bin/console user:create-admin    Create an administrator interactively
+ *   php bin/console lan                  Show the address other devices should open
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -35,6 +36,7 @@ use App\Services\AttendanceSessionService;
 use App\Services\BackupService;
 use App\Services\DeviceService;
 use App\Services\IdempotencyService;
+use App\Services\NetworkService;
 use App\Services\NotificationService;
 use App\Services\RealtimeService;
 use App\Services\SessionService;
@@ -104,6 +106,7 @@ try {
         'backup'              => commandBackup(),
         'security:audit-keys' => commandAuditKeys(),
         'schema:dump'         => commandSchemaDump(),
+        'lan'                 => commandLan($flags),
         'user:create-admin'   => commandCreateAdmin(),
         default               => commandHelp(),
     };
@@ -134,6 +137,7 @@ function commandHelp(): void
     out('    backup                  Create an encrypted database backup');
     out('    security:audit-keys     Verify no weak RNG exists in the key path');
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
+    out('    lan [--bare]            Show the address to open on another device');
     out('');
 }
 
@@ -536,6 +540,206 @@ function commandBackup(): void
         $result['filename'], $result['tables'], BackupService::humanSize($result['size'])));
     out('  SHA-256: ' . $result['checksum'], 'grey');
     out('  Duration: ' . $result['duration'] . 's', 'grey');
+}
+
+/**
+ * Show the address another device on the same network should open.
+ *
+ * `start.bat` binds the web server to 0.0.0.0, so a phone, a tablet or a second
+ * laptop on the same Wi-Fi can already reach the system — the part nobody can
+ * guess is *which* address, because `localhost` means "this machine" on every
+ * device that types it. This prints the real one, and checks the three things
+ * that otherwise make it fail silently: the allowlist, the firewall and the
+ * realtime server's bind address.
+ *
+ * `--bare` prints only the URLs, one per line, for scripts.
+ */
+function commandLan(array $flags): void
+{
+    $bare      = in_array('--bare', $flags, true);
+    $addresses = lanAddresses();
+    $origin    = static fn (string $ip): string => sprintf('%s://%s:%d', lanScheme(), $ip, lanWebPort());
+
+    if ($bare) {
+        foreach ($addresses as $address) {
+            out($origin($address['ip']));
+        }
+
+        return;
+    }
+
+    heading('Opening L-SIAMS on another device');
+
+    if ($addresses === []) {
+        out('  No private network address found on this machine.', 'yellow');
+        out('');
+        out('  This PC is not on a LAN the system can be reached over — it has only', 'grey');
+        out('  a loopback address, or its network adapters are disabled. Connect it', 'grey');
+        out('  to the same Wi-Fi or switch as the other device and run this again.', 'grey');
+        out('');
+
+        return;
+    }
+
+    out('  On the other device — same Wi-Fi or switch — open:');
+    out('');
+
+    /** @var list<string> $allowlist */
+    $allowlist = Config::get('security.network.trusted_web_cidrs', []);
+    $blocked   = [];
+
+    foreach ($addresses as $address) {
+        out('    ' . $origin($address['ip']), 'cyan');
+
+        if ($address['interface'] !== '') {
+            out('      ' . $address['interface'], 'grey');
+        }
+
+        if ($allowlist !== [] && !NetworkService::ipInAnyCidr($address['ip'], $allowlist)) {
+            $blocked[] = $address['ip'];
+        }
+    }
+
+    out('');
+    out('  Checks', 'cyan');
+
+    // The allowlist refuses anything outside TRUSTED_WEB_CIDRS with a 403 that
+    // reads like a network fault rather than a configuration one, so name it.
+    if ($blocked === []) {
+        ok('  These addresses are inside TRUSTED_WEB_CIDRS.');
+    } else {
+        out('  ! ' . implode(', ', $blocked) . ' is outside TRUSTED_WEB_CIDRS in .env,', 'yellow');
+        out('    so the server will answer "only reachable from the school network".', 'yellow');
+        out('    Add the range and restart:', 'grey');
+        out('      TRUSTED_WEB_CIDRS=' . implode(',', array_merge($allowlist, lanSuggestedCidrs($blocked))), 'grey');
+    }
+
+    // Windows blocks inbound connections to php.exe by default, which looks
+    // exactly like the server being down: the page simply never loads.
+    if (stripos(PHP_OS_FAMILY, 'Windows') !== false) {
+        out('  · Windows Firewall must allow the ports. Once, in an Administrator', 'grey');
+        out('    Command Prompt:', 'grey');
+        out(sprintf(
+            '      netsh advfirewall firewall add rule name="L-SIAMS" dir=in ' .
+            'action=allow protocol=TCP localport=%d,%d',
+            lanWebPort(),
+            (int) Config::get('realtime.ws_port', 8443)
+        ), 'grey');
+    }
+
+    $wsHost = (string) Config::get('realtime.ws_host', '0.0.0.0');
+
+    if (in_array($wsHost, ['127.0.0.1', 'localhost', '::1'], true)) {
+        out('  ! REALTIME_WS_HOST=' . $wsHost . ' binds the realtime server to this', 'yellow');
+        out('    machine only. Other devices still work, but fall back to polling', 'yellow');
+        out('    instead of live updates. Set REALTIME_WS_HOST=0.0.0.0 in .env and', 'yellow');
+        out('    restart to give them the WebSocket.', 'yellow');
+    } else {
+        ok('  Realtime server accepts connections from the network.');
+    }
+
+    out('');
+    out('  The address changes when this PC rejoins the network — run this again', 'grey');
+    out('  rather than writing it down, or give the PC a fixed address on the router.', 'grey');
+    out('');
+}
+
+/**
+ * This machine's private IPv4 addresses, most likely first.
+ *
+ * Only RFC 1918 ranges are reported. A public address on the host would be the
+ * wrong thing to hand somebody for a system whose entire security model is
+ * "LAN only", and loopback is what we are here to replace.
+ *
+ * @return list<array{ip:string,interface:string}>
+ */
+function lanAddresses(): array
+{
+    $private = ['192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12'];
+    $found   = [];
+
+    if (function_exists('net_get_interfaces')) {
+        $interfaces = net_get_interfaces();
+
+        foreach (is_array($interfaces) ? $interfaces : [] as $name => $interface) {
+            foreach ($interface['unicast'] ?? [] as $unicast) {
+                $ip = (string) ($unicast['address'] ?? '');
+
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+                    continue;
+                }
+
+                $found[$ip] = ['ip' => $ip, 'interface' => (string) $name];
+            }
+        }
+    }
+
+    // net_get_interfaces() is unavailable on some builds; the hostname lookup
+    // finds fewer addresses but finds the main one.
+    if ($found === []) {
+        foreach (gethostbynamel(gethostname() ?: 'localhost') ?: [] as $ip) {
+            $found[$ip] = ['ip' => $ip, 'interface' => ''];
+        }
+    }
+
+    $addresses = array_values(array_filter(
+        $found,
+        static fn (array $a): bool => NetworkService::ipInAnyCidr($a['ip'], $private)
+    ));
+
+    // 192.168/16 is what a school or home router hands out; 10/8 is the next
+    // most likely; 172.16/12 is usually a hotspot or a virtual adapter.
+    $rank = static function (string $ip): int {
+        if (NetworkService::ipInCidr($ip, '192.168.0.0/16')) {
+            return 0;
+        }
+
+        return NetworkService::ipInCidr($ip, '10.0.0.0/8') ? 1 : 2;
+    };
+
+    usort($addresses, static fn (array $a, array $b): int => $rank($a['ip']) <=> $rank($b['ip']));
+
+    return $addresses;
+}
+
+/** The port the web server listens on, taken from APP_URL. */
+function lanWebPort(): int
+{
+    $port = parse_url((string) Config::get('app.url', ''), PHP_URL_PORT);
+
+    if (is_int($port) && $port > 0) {
+        return $port;
+    }
+
+    return lanScheme() === 'https' ? 443 : 80;
+}
+
+/** The scheme APP_URL is served over — only the host part changes on the LAN. */
+function lanScheme(): string
+{
+    return parse_url((string) Config::get('app.url', ''), PHP_URL_SCHEME) === 'https' ? 'https' : 'http';
+}
+
+/**
+ * The RFC 1918 ranges covering the given addresses, so the warning can print a
+ * line that can be pasted into .env rather than a rule to work out.
+ *
+ * @param  list<string> $ips
+ * @return list<string>
+ */
+function lanSuggestedCidrs(array $ips): array
+{
+    $ranges = [];
+
+    foreach ($ips as $ip) {
+        foreach (['192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12'] as $cidr) {
+            if (NetworkService::ipInCidr($ip, $cidr)) {
+                $ranges[$cidr] = $cidr;
+            }
+        }
+    }
+
+    return array_values($ranges);
 }
 
 /**

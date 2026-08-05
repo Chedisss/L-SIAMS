@@ -190,6 +190,9 @@ final class Response
                     if ($name === 'Strict-Transport-Security' && !self::isHttps()) {
                         continue;
                     }
+                    if ($name === 'Content-Security-Policy') {
+                        $value = self::allowRealtimeOrigin($value);
+                    }
                     header($name . ': ' . $value);
                 }
                 header_remove('X-Powered-By');
@@ -205,6 +208,45 @@ final class Response
         }
 
         echo $this->content;
+    }
+
+    /**
+     * Add the realtime WebSocket to `connect-src`.
+     *
+     * The realtime server listens on its own port, and a different port is a
+     * different origin, so `connect-src 'self'` never covers it — nor does the
+     * blanket `wss:`, which says nothing about the plaintext `ws://` a local
+     * install runs on. Without this the browser refuses the handshake and every
+     * dashboard quietly drops to polling, on this machine and on any other
+     * device that opens the system by its LAN address.
+     *
+     * Only the host the page was actually served from is added, at the one
+     * configured realtime port. Serving the system as `localhost` and as
+     * `192.168.1.14` therefore both work, without either widening the policy
+     * for the other.
+     */
+    private static function allowRealtimeOrigin(string $policy): string
+    {
+        if (!Config::get('realtime.enabled', true) || !str_contains($policy, 'connect-src')) {
+            return $policy;
+        }
+
+        $port = (int) Config::get('realtime.ws_port', 0);
+        $host = (string) ($_SERVER['HTTP_HOST'] ?? '');
+        $host = preg_replace('/:\d+$/', '', $host) ?? '';
+
+        // Host is client-supplied. Anything outside the characters a host name
+        // or a bracketed IPv6 literal can contain is dropped rather than
+        // escaped — there is nothing to gain by repairing a forged Host header.
+        if ($port <= 0 || $host === '' || preg_match('/^[A-Za-z0-9._\-\[\]:]+$/', $host) !== 1) {
+            return $policy;
+        }
+
+        $scheme  = Config::get('realtime.tls.enabled', true) ? 'wss' : 'ws';
+        $source  = $scheme . '://' . $host . ':' . $port;
+        $updated = preg_replace('/\bconnect-src\b([^;]*)/', 'connect-src$1 ' . $source, $policy, 1);
+
+        return $updated ?? $policy;
     }
 
     private static function isHttps(): bool

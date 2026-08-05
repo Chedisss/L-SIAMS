@@ -205,7 +205,11 @@ echo.
 echo    Close this window or press Ctrl+C to stop.
 echo    Then run stop.bat to close the other two.
 echo   ================================================
-echo.
+
+REM The server binds 0.0.0.0, so anything on the same Wi-Fi can already reach
+REM it — but `localhost` means "this machine" on whichever device types it, so
+REM print the address that actually works from a phone or a second laptop.
+"%PHP%" bin\console lan
 
 REM Retitle so stop.bat can find this window the same way it finds the others.
 title L-SIAMS web

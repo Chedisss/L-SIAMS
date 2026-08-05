@@ -82,9 +82,33 @@
                     return;
                 }
 
-                this.openSocket(url + '/?ticket=' + encodeURIComponent(ticket));
+                this.openSocket(this.resolveUrl(url) + '/?ticket=' + encodeURIComponent(ticket));
             } catch (error) {
                 this.startSse();
+            }
+        },
+
+        /**
+         * `localhost` in the configured WebSocket URL means "this machine" on
+         * whichever machine reads it — so a phone opening the system by the
+         * server's LAN address would dial its own port 8443 and find nothing.
+         * Point a loopback host at whatever address the page itself came from,
+         * which is by definition the machine running the server. Any other
+         * configured host is a deliberate deployment choice and is left alone.
+         */
+        resolveUrl(url) {
+            const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'];
+
+            try {
+                const parsed = new URL(url);
+
+                if (loopback.indexOf(parsed.hostname) !== -1 && window.location.hostname) {
+                    parsed.hostname = window.location.hostname;
+                }
+
+                return parsed.toString().replace(/\/+$/, '');
+            } catch (error) {
+                return url;
             }
         },
 

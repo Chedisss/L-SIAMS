@@ -158,6 +158,76 @@ keeps running until you stop it in the Control Panel.
 
 ---
 
+## Opening it on a phone or another laptop
+
+The system already listens for the whole network, not just this PC — so a phone,
+a tablet, a second laptop or a classroom terminal on the **same Wi-Fi or the
+same switch** can use it while `start.bat` is running. Nothing needs to be
+installed on the other device; it just opens a browser.
+
+What it cannot do is use `http://localhost:8080`, because `localhost` means
+"the machine I am typing on" — on the phone that is the phone. It needs this
+PC's address on the network:
+
+```
+console.bat lan
+```
+
+```
+  On the other device — same Wi-Fi or switch — open:
+
+    http://192.168.1.14:8080
+      Wi-Fi
+```
+
+`start.bat` prints the same block every time it starts, so it is usually already
+on screen. Type that address into the browser on the other device and log in as
+normal.
+
+### If the page will not load
+
+**Windows Firewall.** This is nearly always the cause: Windows blocks incoming
+connections to `php.exe` by default, and the browser simply spins. Open a
+Command Prompt **as Administrator** — right-click Start → "Terminal
+(Administrator)" — and run this once:
+
+```
+netsh advfirewall firewall add rule name="L-SIAMS" dir=in action=allow protocol=TCP localport=8080,8443
+```
+
+To undo it later: `netsh advfirewall firewall delete rule name="L-SIAMS"`.
+
+**Different networks.** A laptop on the wired network and a phone on the guest
+Wi-Fi are not on the same network, whatever the room they are in. Guest Wi-Fi in
+particular usually has *client isolation* on, which blocks devices from seeing
+each other by design; use the ordinary Wi-Fi, or a phone hotspot with both
+devices joined to it.
+
+**"This system is only reachable from the school network."** The page loaded,
+so the network is fine — the address is simply outside `TRUSTED_WEB_CIDRS` in
+`.env`. `console.bat lan` prints the line to replace it with. Restart
+`start.bat` afterwards.
+
+**The address stopped working tomorrow.** The router usually hands out a
+different address each time the PC rejoins the network. Run `console.bat lan`
+again, or ask whoever runs the router to reserve a fixed address for this PC.
+
+### Live updates on the other device
+
+Dashboards update by themselves there too. If `.env` still has
+`REALTIME_WS_HOST=127.0.0.1` from an older install, the realtime server only
+accepts connections from this PC, and the other device falls back to refreshing
+every few seconds instead — everything works, just less immediately. Set
+`REALTIME_WS_HOST=0.0.0.0` and restart. `console.bat lan` warns when this
+applies.
+
+> This is still the development setup: one small web server handling one request
+> at a time, over plain `http://`. It is right for a demonstration or a defence,
+> and for two or three people looking at once. A classroom of terminals needs
+> [DEPLOYMENT.md](DEPLOYMENT.md).
+
+---
+
 ## `console.bat` — the useful commands
 
 Open a Command Prompt in the project folder (Shift + right-click the folder →
@@ -165,6 +235,7 @@ Open a Command Prompt in the project folder (Shift + right-click the folder →
 
 | Command | What it does |
 |---|---|
+| `console.bat lan` | show the address to open on a phone or another laptop |
 | `console.bat seed --demo` | fill the system with sample data |
 | `console.bat user:create-admin` | add another administrator |
 | `console.bat backup` | take an encrypted backup right now |
@@ -187,6 +258,10 @@ XAMPP's default is user `root` with an empty password.
 
 **The browser says "can't reach this page"**
 The web window closed. Look for an error in it, then run `start.bat` again.
+
+**It works on this PC but not on a phone**
+See [Opening it on a phone or another laptop](#opening-it-on-a-phone-or-another-laptop)
+— usually Windows Firewall, or the two devices being on different networks.
 
 **Port 8080 is already in use**
 Something else is using it. Open `start.bat` in Notepad and change

@@ -76,7 +76,15 @@ worker and the realtime server. **`stop.bat`** closes all three.
 console.bat seed --demo        fill the system with sample data
 console.bat user:create-admin  add another administrator
 console.bat backup             take an encrypted backup
+console.bat lan                the address to open on another device
 ```
+
+**From a phone or a second laptop on the same Wi-Fi**, open the address
+`console.bat lan` prints — `http://192.168.1.14:8080` or similar — not
+`localhost`, which on the phone means the phone. `start.bat` prints it on
+startup as well. Windows Firewall blocks the port until it is allowed once;
+the command prints the `netsh` line to run, and
+[`docs/RUNNING-ON-WINDOWS.md`](docs/RUNNING-ON-WINDOWS.md) covers the rest.
 
 You still start **MySQL** yourself from the XAMPP Control Panel; `start.bat`
 checks for it and tells you if it is not running.
@@ -155,6 +163,7 @@ php bin/console backup                  Take an encrypted backup now
 php bin/console security:audit-keys     Audit the API-key path for weak randomness
 php bin/console schema:dump             Regenerate database/lsiams_schema.sql
 php bin/console user:create-admin       Create an additional administrator
+php bin/console lan                     Show the address other devices should open
 ```
 
 The **worker** is not optional. It auto-closes sessions whose window has passed,

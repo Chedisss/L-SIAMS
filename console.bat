@@ -2,6 +2,7 @@
 REM ===========================================================================
 REM  L-SIAMS — run a console command without hunting for php.exe
 REM
+REM    console.bat lan                  the address to open on another device
 REM    console.bat seed --demo          fill the system with sample data
 REM    console.bat user:create-admin    add another administrator
 REM    console.bat backup               take an encrypted backup now
