@@ -10,7 +10,12 @@ return [
     'public_url' => Env::get('REALTIME_WS_PUBLIC_URL', 'wss://192.168.1.10:8443'),
 
     'tls' => [
-        'enabled'   => true,
+        // Defaults to on, and should stay on anywhere a real session cookie
+        // travels. It is switchable only so a local development machine can run
+        // the realtime server without first minting a certificate — never turn
+        // it off on a deployment, where an unencrypted WebSocket would carry
+        // attendance events across the school network in the clear.
+        'enabled'   => Env::bool('REALTIME_TLS_ENABLED', true),
         'cert_file' => Env::get('REALTIME_TLS_CERT', '/etc/ssl/lsiams/server.crt'),
         'key_file'  => Env::get('REALTIME_TLS_KEY', '/etc/ssl/lsiams/server.key'),
     ],
@@ -31,7 +36,13 @@ return [
     'dispatch_poll_ms' => 250,
 
     'fallback' => [
-        'sse_enabled'          => true,
+        // An SSE response holds its connection open until the deadline. Against
+        // a multi-process server (Apache, PHP-FPM) that is fine and is the
+        // point. Against PHP's built-in development server — which is single
+        // threaded on Windows, with no worker support — one open stream blocks
+        // every other request and the whole application appears to freeze.
+        // start.bat therefore turns this off, leaving WebSocket then polling.
+        'sse_enabled'          => Env::bool('REALTIME_SSE_ENABLED', true),
         'poll_interval_ms'     => 3000,
         'replay_max_events'    => 500,
     ],

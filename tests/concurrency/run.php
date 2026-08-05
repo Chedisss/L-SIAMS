@@ -1007,10 +1007,19 @@ try {
 
         $runner->assertEquals('still exactly 25 rows after the replay', 25, $rows);
 
+        // Compare against the suite's own clock, not the server's NOW().
+        //
+        // The queued timestamps were built from the frozen clock, so measuring
+        // them against SQL NOW() compares two different notions of "now" — and
+        // the assertion then passes or fails purely on what time of day the
+        // suite happens to run, which is exactly what freezing the clock was
+        // meant to eliminate.
+        $cutoff = Clock::now()->modify('-5 minutes')->format('Y-m-d H:i:s');
+
         $preserved = (int) $db->scalar(
             'SELECT COUNT(*) FROM attendance_records
-              WHERE session_id = :s AND time_in < DATE_SUB(NOW(), INTERVAL 5 MINUTE)',
-            ['s' => $session['session_id']]
+              WHERE session_id = :s AND time_in < :cutoff',
+            ['s' => $session['session_id'], 'cutoff' => $cutoff]
         );
 
         $runner->assert('original timestamps were preserved, not rewritten to now',
