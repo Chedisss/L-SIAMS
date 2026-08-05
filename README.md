@@ -30,9 +30,8 @@ no cloud service, no external API, and no internet dependency at runtime.
 ## Requirements
 
 - **PHP 8.1 or newer** with `pdo_mysql`, `openssl`, `mbstring`, `zip`, `gd`,
-  `json`, `zlib`, and `sockets` (the last one only for the realtime server).
-  Developed and tested on 8.4; nothing in the codebase uses a construct newer
-  than 8.1, so the PHP shipped with current XAMPP builds works.
+  `json` and `zlib` — all of which XAMPP enables by default. Developed and
+  tested on 8.4; nothing in the codebase uses a construct newer than 8.1.
 - **MariaDB 10.6+** or **MySQL 8.0**. Verified against MariaDB 10.11 — which is
   also what runs underneath phpMyAdmin in a XAMPP install. MySQL 8 is supported
   but has not been exercised here.
@@ -61,6 +60,40 @@ php bin/console key:generate      # writes APP_KEY, API_KEY_PEPPER, REALTIME_TIC
 
 php bin/console install           # migrate + seed + create the first administrator
 ```
+
+### Windows and XAMPP — just run `start.bat`
+
+Double-click **`start.bat`**. On its first run it copies the local
+configuration, generates the cryptographic keys, creates the database, applies
+the schema and asks you to make an administrator account; after that it simply
+starts everything and opens the browser at <http://localhost:8080>.
+
+Three windows stay open while the system runs — the site, the maintenance
+worker and the realtime server. **`stop.bat`** closes all three.
+**`console.bat`** runs any console command without hunting for `php.exe`:
+
+```
+console.bat seed --demo        fill the system with sample data
+console.bat user:create-admin  add another administrator
+console.bat backup             take an encrypted backup
+```
+
+You still start **MySQL** yourself from the XAMPP Control Panel; `start.bat`
+checks for it and tells you if it is not running.
+
+> `start.bat` uses PHP's built-in web server rather than Apache, so it needs no
+> XAMPP configuration at all. That server is single threaded, which is fine for
+> one person developing or demonstrating, but is not what a classroom full of
+> terminals should run against — deploy behind Apache or nginx using
+> [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for that.
+>
+> The local configuration it installs (`.env.local.example`) relaxes three
+> settings that only make sense to relax on localhost, each labelled in the
+> file: the session cookie is not marked Secure (a Secure cookie is never sent
+> over `http://`, so login would fail), the realtime server runs without TLS
+> (no certificate exists on a fresh machine), and Server-Sent Events are off
+> (one open stream blocks a single-threaded server completely — measured, not
+> assumed). **Do not deploy that file.**
 
 ### Installing through phpMyAdmin instead
 
@@ -240,6 +273,7 @@ a test database**, never at a school's live data.
 
 | | |
 |---|---|
+| [`docs/RUNNING-ON-WINDOWS.md`](docs/RUNNING-ON-WINDOWS.md) | Step-by-step first run on Windows with XAMPP, and what to do when it breaks |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Web server, TLS, systemd, MySQL tuning, database privileges, backups |
 | [`docs/API.md`](docs/API.md) | Device API, request signing, error codes, browser API |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The security model, threat by threat |
