@@ -1,0 +1,37 @@
+# L-SIAMS maintenance worker.
+#
+# Not optional. Without it, sessions left open by a terminal that lost power
+# stay open indefinitely, stale devices are never marked offline, rotated API
+# keys never reach the end of their grace window, and the retention sweeps
+# never run.
+#
+# Install:  sudo cp docs/deploy/lsiams-worker.service /etc/systemd/system/
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now lsiams-worker
+
+[Unit]
+Description=L-SIAMS maintenance worker
+After=network.target mysql.service
+Requires=mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/lsiams
+ExecStart=/usr/bin/php /var/www/lsiams/bin/console worker --interval=60
+Restart=always
+RestartSec=10
+
+# The worker touches the database and the storage directory, nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/www/lsiams/storage /var/www/lsiams/database/backups
+
+StandardOutput=append:/var/log/lsiams/worker.log
+StandardError=append:/var/log/lsiams/worker.log
+
+[Install]
+WantedBy=multi-user.target

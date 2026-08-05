@@ -1,0 +1,7 @@
+# Uploaded content is served as inert data only.
+php_flag engine off
+Options -Indexes -ExecCGI
+
+<FilesMatch "\.(php|phtml|phar|php3|php4|php5|php7|php8|cgi|pl|py|sh|htaccess)$">
+    Require all denied
+</FilesMatch>

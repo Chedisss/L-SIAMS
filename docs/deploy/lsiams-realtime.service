@@ -1,0 +1,38 @@
+# L-SIAMS realtime WebSocket server.
+#
+# If this is down the web application still works: the front-end degrades to
+# Server-Sent Events and then to long polling on its own. Latency rises by a
+# few seconds; nothing breaks.
+#
+# Install:  sudo cp docs/deploy/lsiams-realtime.service /etc/systemd/system/
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now lsiams-realtime
+
+[Unit]
+Description=L-SIAMS realtime WebSocket server
+After=network.target mysql.service
+Requires=mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/lsiams
+ExecStart=/usr/bin/php /var/www/lsiams/realtime/server.php
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/www/lsiams/storage
+
+# Binding 8443 needs no privilege; reading the TLS private key does.
+SupplementaryGroups=ssl-cert
+
+StandardOutput=append:/var/log/lsiams/realtime.log
+StandardError=append:/var/log/lsiams/realtime.log
+
+[Install]
+WantedBy=multi-user.target

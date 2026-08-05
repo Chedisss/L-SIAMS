@@ -1,0 +1,667 @@
+<?php
+/** @var App\Core\View $__view */
+$__view->extend('layouts.app');
+$__view->start('content');
+
+$health = (string) $device['health'];
+
+$healthBadge = match ($health) {
+    'online'   => 'badge-success',
+    'warning'  => 'badge-warning',
+    'pending'  => 'badge-info',
+    'disabled' => 'badge-neutral',
+    default    => 'badge-danger',
+};
+
+$keyAge     = $device['key_age_days'] === null ? null : (int) $device['key_age_days'];
+$rotateDays = (int) config('security.api_key.rotation_days', 90);
+?>
+
+<?php $__view->include('partials.page-header', [
+    'title'       => (string) $device['device_id'],
+    'subtitle'    => $device['device_name'] . ($device['room_number'] ? ' · Room ' . $device['room_number'] : ' · unassigned'),
+    'breadcrumbs' => [['Dashboard', '/admin'], ['IoT Devices', '/admin/devices'], [(string) $device['device_id'], null]],
+    'actions'     => '<button class="btn btn-secondary" id="test-connection"><i class="fa-solid fa-satellite-dish"></i> Test connection</button>'
+        . '<button class="btn btn-primary" data-modal-open="device-edit-modal"><i class="fa-solid fa-pen"></i> Edit</button>',
+]); ?>
+
+<div class="grid grid--4 mb-3">
+    <div class="stat">
+        <span class="stat__icon stat__icon--<?= $health === 'online' ? 'success' : ($health === 'warning' ? 'warning' : 'danger') ?>">
+            <i class="fa-solid fa-heart-pulse"></i>
+        </span>
+        <div>
+            <div class="stat__label">Health</div>
+            <div class="stat__value" style="font-size:19px">
+                <span class="badge <?= e($healthBadge) ?>" id="health-badge"><?= e(ucfirst($health)) ?></span>
+            </div>
+            <div class="stat__meta" id="health-meta">
+                <?= $device['last_heartbeat_at']
+                    ? e(time_ago($device['last_heartbeat_at']))
+                    : 'never sent a heartbeat' ?>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat">
+        <span class="stat__icon stat__icon--info"><i class="fa-solid fa-wifi"></i></span>
+        <div>
+            <div class="stat__label">Wi-Fi signal</div>
+            <div class="stat__value"><?= e($device['wifi_signal'] === null ? '—' : $device['wifi_signal'] . ' dBm') ?></div>
+            <div class="stat__meta">
+                <?php if ($device['wifi_signal'] !== null): ?>
+                    <?= (int) $device['wifi_signal'] >= -60 ? 'Good' : ((int) $device['wifi_signal'] >= -75 ? 'Usable' : 'Weak — expect queueing') ?>
+                <?php else: ?>unknown<?php endif; ?>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat">
+        <span class="stat__icon <?= (int) $device['queue_depth'] > 0 ? 'stat__icon--warning' : '' ?>">
+            <i class="fa-solid fa-layer-group"></i>
+        </span>
+        <div>
+            <div class="stat__label">Offline queue</div>
+            <div class="stat__value"><?= e((int) $device['queue_depth']) ?></div>
+            <div class="stat__meta">taps waiting to sync</div>
+        </div>
+    </div>
+
+    <div class="stat">
+        <span class="stat__icon <?= $keyAge !== null && $keyAge >= $rotateDays ? 'stat__icon--danger' : '' ?>">
+            <i class="fa-solid fa-key"></i>
+        </span>
+        <div>
+            <div class="stat__label">API key age</div>
+            <div class="stat__value"><?= e($keyAge === null ? '—' : $keyAge . 'd') ?></div>
+            <div class="stat__meta">
+                <?= $keyAge === null
+                    ? 'no active key'
+                    : ($keyAge >= $rotateDays ? 'past the ' . $rotateDays . '-day rotation point' : 'rotate at ' . $rotateDays . ' days') ?>
+            </div>
+        </div>
+    </div>
+</div>
+
+<?php if ($device['claim_status'] !== 'claimed'): ?>
+    <div class="alert alert-warning">
+        <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+        <div class="alert__body">
+            <strong>This terminal has not completed first-boot activation.</strong>
+            Its credentials exist but are inert until it presents its single-use claim token.
+            Flash the provisioning file, power the terminal on, and it will claim itself.
+        </div>
+    </div>
+<?php endif; ?>
+
+<?php if ($device['active_session_code']): ?>
+    <div class="alert alert-info">
+        <span class="alert__icon"><i class="fa-solid fa-circle-play"></i></span>
+        <div class="alert__body">
+            A session is open on this terminal:
+            <a href="/admin/attendance/sessions/<?= e($device['active_session_id']) ?>" class="mono"><?= e($device['active_session_code']) ?></a>.
+            Disabling the device or revoking its key will stop taps immediately; the session itself
+            stays open until it is closed or auto-closes.
+        </div>
+    </div>
+<?php endif; ?>
+
+<div class="grid" style="grid-template-columns:1fr 340px;align-items:start">
+    <div>
+        <div class="card">
+            <div class="card__header">
+                <h2 class="card__title">Heartbeat history</h2>
+                <span class="text-xs text-muted">Last 24 hours</span>
+            </div>
+            <div class="card__body">
+                <div id="chart-signal" style="min-height:220px"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card__header">
+                <h2 class="card__title">Device log</h2>
+                <select id="log-severity" style="max-width:150px">
+                    <option value="">All severities</option>
+                    <option value="info">Info</option>
+                    <option value="warning">Warning</option>
+                    <option value="error">Error</option>
+                    <option value="critical">Critical</option>
+                </select>
+            </div>
+            <div class="card__body--flush">
+                <?php if ($logs === []): ?>
+                    <?php $__view->include('partials.empty-state', [
+                        'icon'  => 'fa-list',
+                        'title' => 'Nothing logged yet',
+                        'text'  => 'The terminal writes here on boot, network changes, sync and authentication failures.',
+                    ]); ?>
+                <?php else: ?>
+                    <div class="table-wrap" style="max-height:460px;overflow-y:auto">
+                        <table class="data" id="log-table">
+                            <thead><tr><th>When</th><th>Event</th><th>Severity</th><th>Message</th><th>IP</th></tr></thead>
+                            <tbody>
+                            <?php foreach ($logs as $log): ?>
+                                <tr data-severity="<?= e($log['severity']) ?>">
+                                    <td class="nowrap text-xs"><?= e(format_datetime($log['created_at'], 'M j, H:i:s')) ?></td>
+                                    <td><span class="badge badge-neutral"><?= e(str_replace('_', ' ', (string) $log['event'])) ?></span></td>
+                                    <td>
+                                        <span class="badge <?= e(match ((string) $log['severity']) {
+                                            'critical', 'error' => 'badge-danger',
+                                            'warning'           => 'badge-warning',
+                                            default             => 'badge-neutral',
+                                        }) ?>"><?= e($log['severity']) ?></span>
+                                    </td>
+                                    <td class="text-sm"><?= e($log['message'] ?? '—') ?></td>
+                                    <td class="mono text-xs text-muted"><?= e($log['ip_address'] ?? '—') ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card__header">
+                <h2 class="card__title">API key lifecycle</h2>
+                <span class="text-xs text-muted">Key values themselves are never recorded — only what happened to them</span>
+            </div>
+            <div class="card__body--flush">
+                <?php if ($keyHistory === []): ?>
+                    <?php $__view->include('partials.empty-state', ['icon' => 'fa-key', 'title' => 'No key events recorded']); ?>
+                <?php else: ?>
+                    <div class="table-wrap">
+                        <table class="data">
+                            <thead><tr><th>When</th><th>Event</th><th>Key</th><th>Reason</th><th>By</th><th>From</th></tr></thead>
+                            <tbody>
+                            <?php foreach ($keyHistory as $entry): ?>
+                                <tr>
+                                    <td class="nowrap text-xs"><?= e(format_datetime($entry['created_at'])) ?></td>
+                                    <td>
+                                        <span class="badge <?= e(match ((string) $entry['event']) {
+                                            'generated'                => 'badge-success',
+                                            'rotated'                  => 'badge-info',
+                                            'revoked', 'auto_revoked'  => 'badge-danger',
+                                            'expired', 'suspended'     => 'badge-warning',
+                                            default                    => 'badge-neutral',
+                                        }) ?>"><?= e(str_replace('_', ' ', (string) $entry['event'])) ?></span>
+                                    </td>
+                                    <td class="mono text-xs">
+                                        <?= e($entry['key_id']) ?><span class="text-muted">…<?= e($entry['secret_last_four']) ?></span>
+                                    </td>
+                                    <td class="text-sm"><?= e($entry['reason'] ?? '—') ?></td>
+                                    <td class="text-xs"><?= e($entry['performed_by_username'] ?? 'system') ?></td>
+                                    <td class="mono text-xs text-muted"><?= e($entry['ip_address'] ?? '—') ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+
+    <div>
+        <div class="card">
+            <div class="card__header"><h2 class="card__title">Identity</h2></div>
+            <div class="card__body">
+                <?php foreach ([
+                    'Device ID'   => (string) $device['device_id'],
+                    'Name'        => (string) $device['device_name'],
+                    'MAC address' => (string) $device['mac_address'],
+                    'IP address'  => (string) ($device['ip_address'] ?? '—'),
+                    'Firmware'    => (string) ($device['firmware_version'] ?? '—'),
+                    'Role'        => ucfirst((string) $device['device_role']),
+                    'Classroom'   => $device['room_number'] ? $device['room_number'] . ' (' . $device['building'] . ')' : 'unassigned',
+                    'Status'      => ucfirst((string) $device['configured_status']),
+                    'Claim'       => ucfirst((string) $device['claim_status']),
+                    'Uptime'      => $device['uptime_seconds'] === null ? '—' : human_duration((int) round((int) $device['uptime_seconds'] / 60)),
+                ] as $label => $value): ?>
+                    <div style="display:flex;justify-content:space-between;gap:.5rem;padding:.35rem 0;border-bottom:1px solid var(--border)">
+                        <span class="text-xs text-muted"><?= e($label) ?></span>
+                        <span class="text-sm text-right mono"><?= e($value) ?></span>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card__header"><h2 class="card__title">Credentials</h2></div>
+            <div class="card__body">
+                <?php if ($device['key_id']): ?>
+                    <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid var(--border)">
+                        <span class="text-xs text-muted">Key ID</span>
+                        <span class="text-sm mono"><?= e($device['key_id']) ?></span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid var(--border)">
+                        <span class="text-xs text-muted">Secret</span>
+                        <span class="text-sm mono">••••••••<?= e($device['secret_last_four']) ?></span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid var(--border)">
+                        <span class="text-xs text-muted">Status</span>
+                        <span class="badge <?= e(status_badge((string) $device['key_status'])) ?>"><?= e($device['key_status']) ?></span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid var(--border)">
+                        <span class="text-xs text-muted">Last used</span>
+                        <span class="text-sm"><?= e($device['key_last_used_at'] ? time_ago($device['key_last_used_at']) : 'never') ?></span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:.35rem 0">
+                        <span class="text-xs text-muted">Requests signed</span>
+                        <span class="text-sm"><?= e(number_format((int) $device['key_use_count'])) ?></span>
+                    </div>
+                <?php else: ?>
+                    <p class="text-sm text-muted">This device has no active key. It cannot authenticate until one is issued.</p>
+                <?php endif; ?>
+
+                <p class="text-xs text-muted mt-2">
+                    The secret itself is not stored — only a hash of it — so it cannot be shown again,
+                    to anyone. Losing it means issuing a new one.
+                </p>
+
+                <div class="flex flex-col gap-1 mt-2">
+                    <button class="btn btn-secondary btn-sm" id="rotate-key">
+                        <i class="fa-solid fa-rotate"></i> Rotate key
+                    </button>
+                    <button class="btn btn-secondary btn-sm" id="provisioning-file">
+                        <i class="fa-solid fa-download"></i> Download provisioning file
+                    </button>
+                    <button class="btn btn-danger btn-sm" id="revoke-key">
+                        <i class="fa-solid fa-ban"></i> Revoke key
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card__header"><h2 class="card__title">Lifecycle</h2></div>
+            <div class="card__body">
+                <p class="text-xs text-muted mb-2">
+                    A disabled terminal is rejected at authentication — before any attendance logic runs.
+                    Devices are never deleted; their logs and the attendance they carried remain.
+                </p>
+
+                <div class="flex flex-col gap-1">
+                    <?php foreach ([
+                        'active'         => ['Set active', 'btn-secondary'],
+                        'suspended'      => ['Suspend', 'btn-secondary'],
+                        'disabled'       => ['Disable', 'btn-danger'],
+                        'decommissioned' => ['Decommission', 'btn-danger'],
+                    ] as $status => [$label, $class]): ?>
+                        <?php if ($status !== $device['configured_status']): ?>
+                            <button class="btn <?= e($class) ?> btn-sm" data-status="<?= e($status) ?>"><?= e($label) ?></button>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit modal -------------------------------------------------------------->
+<div class="modal-backdrop" id="device-edit-modal">
+    <div class="modal modal--sm" role="dialog" aria-modal="true">
+        <div class="modal__header">
+            <h3 class="modal__title">Edit terminal</h3>
+            <button class="modal__close" type="button" data-modal-close>&times;</button>
+        </div>
+
+        <form id="device-edit-form">
+            <div class="modal__body">
+                <div class="form-group">
+                    <label for="de-name" class="required">Device name</label>
+                    <input type="text" id="de-name" name="device_name" required maxlength="120"
+                           value="<?= e($device['device_name']) ?>">
+                </div>
+
+                <div class="form-group">
+                    <label for="de-role">Role</label>
+                    <select id="de-role" name="device_role">
+                        <?php foreach (['both' => 'Entry and exit', 'entry' => 'Entry only', 'exit' => 'Exit only'] as $value => $label): ?>
+                            <option value="<?= e($value) ?>" <?= $device['device_role'] === $value ? 'selected' : '' ?>>
+                                <?= e($label) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <span class="field-help">
+                        An entry-only or exit-only terminal overrides the automatic in/out decision:
+                        the server records what the role says, not what the student's state implies.
+                    </span>
+                </div>
+
+                <div class="form-group">
+                    <label for="de-allowlist">IP allowlist</label>
+                    <input type="text" id="de-allowlist" name="ip_allowlist" maxlength="255"
+                           value="<?= e($device['ip_allowlist'] ?? '') ?>" style="font-family:var(--mono)"
+                           placeholder="192.168.10.0/24">
+                    <span class="field-help">
+                        Comma-separated addresses or CIDR ranges. A signed request from outside the list
+                        is refused and logged as an anomaly. Leave blank to accept from anywhere on the LAN.
+                    </span>
+                </div>
+
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="de-heartbeat">Heartbeat (s)</label>
+                        <input type="number" id="de-heartbeat" name="heartbeat_interval_sec" min="10" max="600"
+                               value="<?= e($device['heartbeat_interval_sec'] ?? 30) ?>">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="de-sync">Sync interval (s)</label>
+                        <input type="number" id="de-sync" name="sync_interval_sec" min="10" max="3600"
+                               value="<?= e($device['sync_interval_sec'] ?? 60) ?>">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="de-queue">Offline queue limit</label>
+                        <input type="number" id="de-queue" name="offline_queue_limit" min="10" max="5000"
+                               value="<?= e($device['offline_queue_limit'] ?? 500) ?>">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="de-note">Location note</label>
+                        <input type="text" id="de-note" name="location_note" maxlength="255"
+                               value="<?= e($device['location_note'] ?? '') ?>">
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal__footer">
+                <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+                <button type="submit" class="btn btn-primary">Save changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Credentials, shown once ------------------------------------------------->
+<div class="modal-backdrop" id="credentials-modal">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal__header"><h3 class="modal__title">New credentials — shown once</h3></div>
+        <div class="modal__body">
+            <div class="alert alert-danger">
+                <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+                <div class="alert__body">
+                    These values are displayed now and never again — not in this page, not in a log,
+                    not to another administrator. Flash them to the terminal before closing this dialog.
+                </div>
+            </div>
+            <pre class="credential-slip" id="credentials-body"></pre>
+        </div>
+        <div class="modal__footer">
+            <button class="btn btn-secondary" type="button" id="credentials-copy"><i class="fa-solid fa-copy"></i> Copy</button>
+            <button class="btn btn-secondary" type="button" id="credentials-save"><i class="fa-solid fa-download"></i> Save as file</button>
+            <button class="btn btn-primary" type="button" id="credentials-done">I have flashed the terminal</button>
+        </div>
+    </div>
+</div>
+
+<?php
+$__view->stop();
+$__view->start('scripts');
+?>
+<script>
+(function () {
+    const LS = window.LSIAMS;
+    const ID = <?= (int) $device['device_row_id'] ?>;
+    const DEVICE_ID = <?= json_attr((string) $device['device_id']) ?>;
+
+    /* ---- heartbeat chart -------------------------------------------------- */
+    const heartbeats = <?= json_attr(array_reverse(array_map(static fn (array $h): array => [
+        'at'     => (string) $h['created_at'],
+        'signal' => $h['wifi_signal'] === null ? null : (int) $h['wifi_signal'],
+        'queue'  => (int) $h['queue_depth'],
+    ], $heartbeats))) ?>;
+
+    LS.charts.line('chart-signal', heartbeats.map((row) => ({
+        date:   row.at.slice(11, 16),
+        // dBm is negative; plotting the magnitude keeps the axis readable and
+        // the legend says which way is better.
+        signal: row.signal === null ? 0 : Math.abs(row.signal),
+        queue:  row.queue,
+    })), {
+        xKey: 'date',
+        series: [
+            { key: 'signal', label: 'Signal strength (|dBm|, lower is better)', color: '#2563EB' },
+            { key: 'queue',  label: 'Queue depth', color: '#F59E0B' },
+        ],
+        title: 'Heartbeat history',
+        emptyMessage: 'No heartbeats in the last 24 hours.',
+    });
+
+    /* ---- log filter ------------------------------------------------------- */
+    const severity = document.getElementById('log-severity');
+
+    if (severity) {
+        severity.addEventListener('change', function () {
+            document.querySelectorAll('#log-table tbody tr').forEach((row) => {
+                row.hidden = this.value !== '' && row.dataset.severity !== this.value;
+            });
+        });
+    }
+
+    /* ---- connection test --------------------------------------------------- */
+    document.getElementById('test-connection').addEventListener('click', async function () {
+        LS.util.setBusy(this, true, 'Checking…');
+
+        try {
+            const response = await LS.http.post('/admin/devices/' + ID + '/test', {});
+            const data = response.data;
+
+            const badge = document.getElementById('health-badge');
+            badge.textContent = data.health.charAt(0).toUpperCase() + data.health.slice(1);
+            badge.className = 'badge ' + ({
+                online: 'badge-success', warning: 'badge-warning',
+                pending: 'badge-info', disabled: 'badge-neutral',
+            }[data.health] || 'badge-danger');
+
+            document.getElementById('health-meta').textContent =
+                data.seconds_ago === null ? 'never sent a heartbeat' : data.seconds_ago + 's ago';
+
+            (data.health === 'online' ? LS.toast.success : LS.toast.warning)(response.message);
+        } catch (error) {
+            LS.toast.fromError(error);
+        } finally {
+            LS.util.setBusy(this, false);
+        }
+    });
+
+    /* ---- edit --------------------------------------------------------------- */
+    const editForm = document.getElementById('device-edit-form');
+
+    editForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+
+        const button = editForm.querySelector('[type=submit]');
+        LS.util.setBusy(button, true, 'Saving…');
+
+        try {
+            const response = await LS.http.put('/admin/devices/' + ID, LS.util.formData(editForm));
+            LS.toast.success(response.message);
+            setTimeout(() => window.location.reload(), 800);
+        } catch (error) {
+            if (error.errors) LS.util.showFieldErrors(editForm, error.errors);
+            LS.toast.fromError(error);
+        } finally {
+            LS.util.setBusy(button, false);
+        }
+    });
+
+    /* ---- key lifecycle ------------------------------------------------------ */
+    document.getElementById('rotate-key').addEventListener('click', async function () {
+        const confirmed = await LS.modal.confirm({
+            title:   'Rotate the API key?',
+            message: 'A new key and HMAC secret are issued immediately and shown once. The current key '
+                     + 'keeps working for the grace window so you can reflash without downtime, then '
+                     + 'auto-revokes. A new single-use claim token is issued at the same time.',
+            confirmLabel: 'Rotate key',
+            requirePassword: true,
+        });
+
+        if (!confirmed) return;
+
+        LS.util.setBusy(this, true, 'Rotating…');
+
+        try {
+            const response = await LS.http.post('/admin/devices/' + ID + '/rotate-key', {
+                confirm_password: confirmed.password,
+            });
+            LS.toast.success(response.message);
+            showCredentials(response.data);
+        } catch (error) {
+            LS.toast.fromError(error);
+        } finally {
+            LS.util.setBusy(this, false);
+        }
+    });
+
+    document.getElementById('revoke-key').addEventListener('click', async function () {
+        const confirmed = await LS.modal.confirm({
+            title:   'Revoke this terminal’s key?',
+            message: 'The terminal stops being able to authenticate the moment this is applied. Any '
+                     + 'taps still queued on it will fail to sync until a new key is flashed. Use this '
+                     + 'if the device is lost, stolen, or you believe the secret has leaked.',
+            confirmLabel:    'Revoke key',
+            danger:          true,
+            requirePassword: true,
+            requirePhrase:   'REVOKE',
+        });
+
+        if (!confirmed) return;
+
+        const reason = window.prompt('Reason for revocation (recorded in the key history):', '');
+
+        if (!reason || reason.trim().length < 5) {
+            LS.toast.warning('A reason of at least 5 characters is required.');
+            return;
+        }
+
+        LS.util.setBusy(this, true, 'Revoking…');
+
+        try {
+            const response = await LS.http.post('/admin/devices/' + ID + '/revoke-key', {
+                confirm_password: confirmed.password,
+                reason: reason.trim(),
+            });
+            LS.toast.success(response.message);
+            setTimeout(() => window.location.reload(), 900);
+        } catch (error) {
+            LS.toast.fromError(error);
+            LS.util.setBusy(this, false);
+        }
+    });
+
+    document.getElementById('provisioning-file').addEventListener('click', async function () {
+        const confirmed = await LS.modal.confirm({
+            title:   'Download a provisioning file?',
+            message: 'This issues a fresh key pair and claim token — the previous key enters its grace '
+                     + 'window and then auto-revokes. Download it only when you are about to flash the '
+                     + 'terminal. The download is recorded in the audit log.',
+            confirmLabel:    'Generate and download',
+            requirePassword: true,
+        });
+
+        if (!confirmed) return;
+
+        // Posted as a real form so the browser handles the file download; the
+        // JSON never passes through the page and cannot end up in a console log.
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/admin/devices/' + ID + '/provisioning-file';
+        form.style.display = 'none';
+
+        [['_csrf', LS.config.csrfToken], ['confirm_password', confirmed.password]].forEach(([name, value]) => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = name;
+            input.value = value;
+            form.appendChild(input);
+        });
+
+        document.body.appendChild(form);
+        form.submit();
+        setTimeout(() => { form.remove(); window.location.reload(); }, 2500);
+    });
+
+    /* ---- status ------------------------------------------------------------- */
+    document.querySelectorAll('[data-status]').forEach((button) => {
+        button.addEventListener('click', async function () {
+            const status = this.dataset.status;
+            const severe = status === 'disabled' || status === 'decommissioned';
+
+            const confirmed = await LS.modal.confirm({
+                title:   'Set this terminal to ' + status + '?',
+                message: severe
+                    ? 'Authentication is refused before any attendance logic runs, so every tap on this '
+                      + 'terminal stops immediately. Existing records are untouched.'
+                    : 'The terminal keeps its credentials and history; only its operational status changes.',
+                confirmLabel:    'Set ' + status,
+                danger:          severe,
+                requirePassword: severe,
+            });
+
+            if (!confirmed) return;
+
+            LS.util.setBusy(this, true, 'Applying…');
+
+            try {
+                const response = await LS.http.post('/admin/devices/' + ID + '/status', {
+                    status: status,
+                    reason: 'Changed from the device detail page.',
+                    confirm_password: confirmed.password || undefined,
+                });
+                LS.toast.success(response.message);
+                setTimeout(() => window.location.reload(), 800);
+            } catch (error) {
+                LS.toast.fromError(error);
+                LS.util.setBusy(this, false);
+            }
+        });
+    });
+
+    /* ---- credential display -------------------------------------------------- */
+    function showCredentials(data) {
+        const text = [
+            'L-SIAMS TERMINAL CREDENTIALS',
+            '============================',
+            '',
+            'Device ID   : ' + DEVICE_ID,
+            'Key ID      : ' + data.key_id,
+            'API key     : ' + data.api_key,
+            'HMAC secret : ' + data.hmac_secret,
+            'Claim token : ' + data.claim_token,
+            '',
+            'Flash these into the terminal, then power it on to claim itself.',
+            'The claim token is single-use. None of these values can be retrieved again.',
+        ].join('\n');
+
+        document.getElementById('credentials-body').textContent = text;
+        LS.modal.open('credentials-modal');
+
+        document.getElementById('credentials-save').onclick = function () {
+            const blob = new Blob([JSON.stringify(data.provisioning, null, 2)], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'lsiams-provisioning-' + DEVICE_ID + '.json';
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+        };
+    }
+
+    document.getElementById('credentials-copy').addEventListener('click', function () {
+        LS.util.copy(document.getElementById('credentials-body').textContent,
+            'Credentials copied. Clear your clipboard when you are done.');
+    });
+
+    document.getElementById('credentials-done').addEventListener('click', function () {
+        // Wiping the node before reloading keeps the secret out of the DOM for
+        // the moments between the click and the navigation.
+        document.getElementById('credentials-body').textContent = '';
+        window.location.reload();
+    });
+})();
+</script>
+<?php $__view->stop(); ?>

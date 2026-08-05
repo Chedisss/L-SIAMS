@@ -1,0 +1,16 @@
+/vendor/
+/.env
+/storage/logs/*.log
+/storage/cache/*
+/storage/reports/*
+/storage/tmp/*
+/storage/framework/sessions/*
+/database/backups/*.sql
+/database/backups/*.gz
+/database/backups/*.enc
+/public/uploads/students/*
+/public/uploads/teachers/*
+!.gitkeep
+.DS_Store
+*.swp
+node_modules/

@@ -1,0 +1,332 @@
+<?php
+declare(strict_types=1);
+
+namespace App\Controllers\Web;
+
+use App\Controllers\Controller;
+use App\Core\Exceptions\HttpException;
+use App\Core\Request;
+use App\Core\Response;
+use App\Services\AcademicStructureService;
+use App\Services\ScheduleService;
+use App\Services\SchoolYearService;
+use App\Services\TeacherService;
+
+/**
+ * Academic Setup: departments, grade levels, sections, subjects and classrooms
+ * (Part 13).
+ */
+final class AcademicController extends Controller
+{
+    // ------------------------------------------------------ departments --
+
+    public function departments(Request $request): Response
+    {
+        $departments = AcademicStructureService::departments();
+
+        if ($request->wantsJson()) {
+            return $this->json(['rows' => $departments]);
+        }
+
+        return $this->view('admin.academic.departments', [
+            'pageTitle'   => 'Departments',
+            'departments' => $departments,
+            'teachers'    => TeacherService::paginate([], 1, 500)['rows'],
+        ]);
+    }
+
+    public function storeDepartment(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'department_code' => 'required|string|max:20|code',
+            'department_name' => 'required|string|max:120|no_html',
+            'description'     => 'nullable|string|max:500|no_html',
+            'head_teacher_id' => 'nullable|int',
+            'status'          => 'nullable|in:active,inactive',
+        ], [
+            'department_code' => 'Department code',
+            'department_name' => 'Department name',
+        ]);
+
+        $id = AcademicStructureService::createDepartment($data);
+
+        return $this->json(['department_id' => $id], 'Department created successfully.', 201);
+    }
+
+    public function updateDepartment(Request $request): Response
+    {
+        $id = $request->routeInt('id');
+
+        $data = $this->validate($request, [
+            'department_name' => 'required|string|max:120|no_html',
+            'description'     => 'nullable|string|max:500|no_html',
+            'head_teacher_id' => 'nullable|int',
+            'status'          => 'nullable|in:active,inactive',
+        ]);
+
+        AcademicStructureService::updateDepartment($id, $data);
+
+        return $this->json(['department_id' => $id], 'Department updated successfully.');
+    }
+
+    public function departmentDetail(Request $request): Response
+    {
+        $id = $request->routeInt('id');
+
+        return $this->json([
+            'impact'   => AcademicStructureService::departmentArchiveImpact($id),
+            'summary'  => AcademicStructureService::departmentSummary($id),
+            'subjects' => AcademicStructureService::subjects(['department_id' => $id]),
+        ]);
+    }
+
+    public function archiveDepartment(Request $request): Response
+    {
+        AcademicStructureService::archiveDepartment(
+            $request->routeInt('id'),
+            $request->bool('confirmed', false)
+        );
+
+        return $this->json([], 'Department archived.');
+    }
+
+    // ----------------------------------------------------- grade levels --
+
+    public function gradeLevels(Request $request): Response
+    {
+        $gradeLevels = AcademicStructureService::gradeLevels(false);
+
+        if ($request->wantsJson()) {
+            return $this->json(['rows' => $gradeLevels]);
+        }
+
+        return $this->view('admin.academic.grade-levels', [
+            'pageTitle'   => 'Grade Levels',
+            'gradeLevels' => $gradeLevels,
+        ]);
+    }
+
+    public function storeGradeLevel(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'grade_level_code' => 'required|string|max:10|code',
+            'grade_level_name' => 'required|string|max:50|no_html',
+            'numeric_level'    => 'required|int|between:1,20',
+            'track'            => 'nullable|in:Academic,TVL,Sports,Arts and Design',
+            'status'           => 'nullable|in:active,inactive',
+        ], [
+            'numeric_level' => 'Numeric level',
+        ]);
+
+        $id = AcademicStructureService::createGradeLevel($data);
+
+        return $this->json(['grade_level_id' => $id], 'Grade level created successfully.', 201);
+    }
+
+    // --------------------------------------------------------- sections --
+
+    public function sections(Request $request): Response
+    {
+        $filters = [
+            'grade_level_id' => $request->int('grade_level_id', 0) ?: null,
+            'strand'         => $request->string('strand', ''),
+            'adviser_id'     => $request->int('adviser_id', 0) ?: null,
+            'status'         => $request->string('status', ''),
+            'search'         => $request->string('search', ''),
+        ];
+
+        $sections = AcademicStructureService::sections($filters);
+
+        if ($request->wantsJson()) {
+            return $this->json(['rows' => $sections]);
+        }
+
+        return $this->view('admin.academic.sections', [
+            'pageTitle'    => 'Sections',
+            'sections'     => $sections,
+            'filters'      => $filters,
+            'gradeLevels'  => AcademicStructureService::gradeLevels(),
+            'teachers'     => TeacherService::paginate(['status' => 'active'], 1, 500)['rows'],
+            'classrooms'   => AcademicStructureService::classrooms(true),
+            'schoolYears'  => SchoolYearService::all(),
+        ]);
+    }
+
+    public function showSection(Request $request): Response
+    {
+        $sectionId = $request->routeInt('id');
+        $section   = AcademicStructureService::findSection($sectionId);
+
+        if ($section === null) {
+            throw new HttpException(404, 'NOT_FOUND', 'Section not found.');
+        }
+
+        $payload = [
+            'section'   => $section,
+            'roster'    => AcademicStructureService::sectionRoster($sectionId),
+            'schedules' => ScheduleService::forSection($sectionId),
+        ];
+
+        if ($request->wantsJson()) {
+            return $this->json($payload);
+        }
+
+        return $this->view('admin.academic.section-detail', $payload + [
+            'pageTitle' => (string) $section['section_code'],
+        ]);
+    }
+
+    public function storeSection(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'section_code'   => 'required|string|max:30|code',
+            'section_name'   => 'required|string|max:80|no_html',
+            'grade_level_id' => 'required|int|exists:grade_levels,grade_level_id',
+            'adviser_id'     => 'nullable|int',
+            'strand'         => 'nullable|string|max:30|code',
+            'capacity'       => 'required|int|between:1,200',
+            'default_classroom_id' => 'nullable|int',
+            'status'         => 'nullable|in:active,inactive',
+        ], [
+            'section_code'   => 'Section code',
+            'grade_level_id' => 'Grade level',
+        ]);
+
+        $id = AcademicStructureService::createSection($data, $this->requireUserId());
+
+        return $this->json(['section_id' => $id], 'Section created successfully.', 201);
+    }
+
+    public function updateSection(Request $request): Response
+    {
+        $id = $request->routeInt('id');
+
+        $data = $this->validate($request, [
+            'section_name'   => 'required|string|max:80|no_html',
+            'grade_level_id' => 'nullable|int',
+            'adviser_id'     => 'nullable|int',
+            'strand'         => 'nullable|string|max:30|code',
+            'capacity'       => 'required|int|between:1,200',
+            'default_classroom_id' => 'nullable|int',
+            'status'         => 'nullable|in:active,inactive',
+        ]);
+
+        AcademicStructureService::updateSection($id, $data, $this->requireUserId());
+
+        return $this->json(['section_id' => $id], 'Section updated successfully.');
+    }
+
+    public function archiveSection(Request $request): Response
+    {
+        AcademicStructureService::archiveSection($request->routeInt('id'));
+
+        return $this->json([], 'Section archived. Attendance history is retained.');
+    }
+
+    // --------------------------------------------------------- subjects --
+
+    public function subjects(Request $request): Response
+    {
+        $filters = [
+            'department_id' => $request->int('department_id', 0) ?: null,
+            'status'        => $request->string('status', ''),
+            'search'        => $request->string('search', ''),
+        ];
+
+        $subjects = AcademicStructureService::subjects($filters);
+
+        if ($request->wantsJson()) {
+            return $this->json(['rows' => $subjects]);
+        }
+
+        return $this->view('admin.academic.subjects', [
+            'pageTitle'   => 'Subjects',
+            'subjects'    => $subjects,
+            'filters'     => $filters,
+            'departments' => AcademicStructureService::departments(true),
+            'gradeLevels' => AcademicStructureService::gradeLevels(),
+        ]);
+    }
+
+    public function storeSubject(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'subject_code'    => 'required|string|max:30|code',
+            'subject_name'    => 'required|string|max:150|no_html',
+            'description'     => 'nullable|string|max:500|no_html',
+            'department_id'   => 'required|int|exists:departments,department_id',
+            'units'           => 'nullable|numeric|between:0,20',
+            'grade_level_ids' => 'required|array|min:1',
+            'status'          => 'nullable|in:active,inactive',
+        ], [
+            'subject_code'    => 'Subject code',
+            'department_id'   => 'Department',
+            'grade_level_ids' => 'Offered to grade level(s)',
+        ]);
+
+        $id = AcademicStructureService::createSubject($data);
+
+        return $this->json(['subject_id' => $id], 'Subject created successfully.', 201);
+    }
+
+    public function updateSubject(Request $request): Response
+    {
+        $id = $request->routeInt('id');
+
+        $data = $this->validate($request, [
+            'subject_name'    => 'required|string|max:150|no_html',
+            'description'     => 'nullable|string|max:500|no_html',
+            'department_id'   => 'required|int|exists:departments,department_id',
+            'units'           => 'nullable|numeric|between:0,20',
+            'grade_level_ids' => 'nullable|array',
+            'status'          => 'nullable|in:active,inactive',
+        ]);
+
+        AcademicStructureService::updateSubject($id, $data);
+
+        return $this->json(['subject_id' => $id], 'Subject updated successfully.');
+    }
+
+    public function subjectDetail(Request $request): Response
+    {
+        $id = $request->routeInt('id');
+
+        return $this->json([
+            'grade_level_ids' => AcademicStructureService::subjectGradeLevelIds($id),
+        ]);
+    }
+
+    // ------------------------------------------------------- classrooms --
+
+    public function classrooms(Request $request): Response
+    {
+        $classrooms = AcademicStructureService::classrooms();
+
+        if ($request->wantsJson()) {
+            return $this->json(['rows' => $classrooms]);
+        }
+
+        return $this->view('admin.academic.classrooms', [
+            'pageTitle'  => 'Classrooms',
+            'classrooms' => $classrooms,
+        ]);
+    }
+
+    public function storeClassroom(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'room_number'   => 'required|string|max:30|code',
+            'building'      => 'nullable|string|max:60|no_html',
+            'floor'         => 'nullable|string|max:20|no_html',
+            'capacity'      => 'required|int|between:1,300',
+            'location_note' => 'nullable|string|max:255|no_html',
+            'status'        => 'nullable|in:active,inactive,maintenance',
+        ], [
+            'room_number' => 'Room number',
+        ]);
+
+        $id = AcademicStructureService::createClassroom($data);
+
+        return $this->json(['classroom_id' => $id], 'Classroom created successfully.', 201);
+    }
+}
