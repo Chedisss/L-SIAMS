@@ -80,6 +80,38 @@ BEGIN
     SET MESSAGE_TEXT = 'Attendance records are permanent and cannot be deleted. Use an administrator correction instead.';
 END $$
 
+-- An attendance row cannot be deleted, but it must still be updatable: a
+-- time-out writes onto the existing row, session close stamps automatic
+-- time-outs, and an administrator correction may amend the times and statuses
+-- (recording every change in attendance_modifications with a reason).
+--
+-- What must never change is *whose* record it is and *what* it is a record of.
+-- Re-pointing a row at a different student, session, section, subject, teacher
+-- or classroom would silently rewrite history while leaving the correction
+-- trail describing something else entirely — the one edit no legitimate code
+-- path performs, and exactly what a compromised one would attempt.
+DROP TRIGGER IF EXISTS trg_attendance_immutable_identity $$
+CREATE TRIGGER trg_attendance_immutable_identity
+BEFORE UPDATE ON attendance_records
+FOR EACH ROW
+BEGIN
+  IF NEW.attendance_id  <> OLD.attendance_id
+  OR NEW.session_id     <> OLD.session_id
+  OR NEW.student_id     <> OLD.student_id
+  OR NEW.section_id     <> OLD.section_id
+  OR NEW.grade_level_id <> OLD.grade_level_id
+  OR NEW.subject_id     <> OLD.subject_id
+  OR NEW.teacher_id     <> OLD.teacher_id
+  OR NEW.classroom_id   <> OLD.classroom_id
+  OR NOT (NEW.created_at <=> OLD.created_at)
+  OR NOT (NEW.rfid_uid   <=> OLD.rfid_uid)
+  OR NOT (NEW.request_id <=> OLD.request_id)
+  THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'An attendance record cannot be re-attributed. Its student, session, section, grade level, subject, teacher, classroom, card, request id and creation time are permanent.';
+  END IF;
+END $$
+
 DROP TRIGGER IF EXISTS trg_audit_no_delete $$
 CREATE TRIGGER trg_audit_no_delete
 BEFORE DELETE ON audit_logs
