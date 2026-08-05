@@ -100,16 +100,19 @@ checks for it and tells you if it is not running.
 If you administer the database through phpMyAdmin — a XAMPP install, typically —
 you do not need to run the migrations from a shell:
 
-1. In phpMyAdmin, create a database named `lsiams_db` with collation
-   `utf8mb4_unicode_ci`.
-2. Select it, open **Import**, and upload
+1. In phpMyAdmin, open **Import** and upload
    [`database/lsiams_schema.sql`](database/lsiams_schema.sql). That single file
    carries every table, view, trigger, index and constraint, plus the reference
-   data the system needs to start.
-3. Copy `.env.example` to `.env` and fill in the database credentials
+   data the system needs to start. It creates the `lsiams_db` database and
+   selects it on the way in, so you do not have to make one first.
+2. Copy `.env.example` to `.env` and fill in the database credentials
    (XAMPP's defaults are user `root` with an empty password).
-4. Run `php bin/console key:generate` once, then
+3. Run `php bin/console key:generate` once, then
    `php bin/console user:create-admin` to create the first login.
+
+If you paste the file's contents into the **SQL** tab rather than using
+**Import**, make sure `lsiams_db` is selected in the left sidebar first, or
+MySQL answers every statement with `#1046 - No database selected`.
 
 The schema file deliberately contains **no user accounts and no student,
 teacher or attendance data** — a schema that shipped a known login would be a
