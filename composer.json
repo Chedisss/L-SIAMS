@@ -21,7 +21,7 @@
     "scripts": {
         "migrate": "php bin/console migrate",
         "seed": "php bin/console seed",
-        "serve": "php -S 0.0.0.0:8000 -t public public/index.php"
+        "serve": "php -S 0.0.0.0:8000 -t public bin/router.php"
     },
     "config": {
         "optimize-autoloader": true
