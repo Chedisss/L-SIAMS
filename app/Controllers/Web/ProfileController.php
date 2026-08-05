@@ -108,6 +108,16 @@ final class ProfileController extends Controller
      */
     private function storeImage(array $file, string $folder): string
     {
+        // Every upload is decoded and re-encoded through GD, which is what
+        // strips anything hidden in the original file. Without the extension
+        // there is no safe path, so refuse rather than store what was sent.
+        if (!extension_loaded('gd')) {
+            throw new ValidationException(['photo' => [
+                "Photo upload is unavailable because PHP's gd extension is not enabled. "
+                . 'Enable it in php.ini and restart the system.',
+            ]]);
+        }
+
         $error = (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE);
 
         if ($error !== UPLOAD_ERR_OK) {

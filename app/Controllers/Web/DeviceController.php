@@ -354,6 +354,19 @@ final class DeviceController extends Controller
             return $this->fail('NO_RECORDS', 'There are no valid rows to register.', 422);
         }
 
+        // Checked before anything is written: the device keys are shown exactly
+        // once, inside the bundle. Registering and then failing to build it
+        // would leave terminals in the database that can never be provisioned.
+        if (!class_exists(\ZipArchive::class)) {
+            return $this->fail(
+                'ZIP_UNAVAILABLE',
+                "Bulk registration needs PHP's zip extension, which is not enabled — the provisioning "
+                . 'bundle could not be delivered and the keys would be lost. Enable it in php.ini, or '
+                . 'register the terminals one at a time.',
+                503
+            );
+        }
+
         $revalidated = ImportService::previewDevices(array_map(
             static fn (array $r): array => array_map('strval', $r),
             $records

@@ -94,6 +94,7 @@ function prompt(string $question, bool $hidden = false): string
 
 try {
     match ($command) {
+        'check'               => commandCheck(),
         'key:generate'        => commandKeyGenerate($flags),
         'migrate'             => commandMigrate(),
         'migrate:status'      => commandMigrateStatus(),
@@ -121,6 +122,7 @@ function commandHelp(): void
     out('  Local IoT-Based Multi-Layer Secured Attendance Monitoring System', 'grey');
     out('');
     out('  Setup', 'cyan');
+    out('    check                   Check PHP, extensions, .env and the database');
     out('    install                 Generate keys, migrate and seed in one step');
     out('    key:generate            Generate cryptographic keys into .env');
     out('    migrate                 Apply pending migrations');
@@ -134,6 +136,132 @@ function commandHelp(): void
     out('    backup                  Create an encrypted database backup');
     out('    security:audit-keys     Verify no weak RNG exists in the key path');
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
+    out('');
+}
+
+/**
+ * Answer "why will it not start?" in one screen.
+ *
+ * Everything here is also checked by start.bat, but that window closes on the
+ * first failure and only reports that one thing. This prints the whole picture
+ * at once — including which php.ini is actually in force, which is the usual
+ * surprise when an extension looks enabled but is not.
+ */
+function commandCheck(): void
+{
+    $problems = 0;
+
+    heading('PHP');
+
+    out(sprintf('  Version          %s', PHP_VERSION));
+    out(sprintf('  Executable       %s', PHP_BINARY));
+    out(sprintf('  php.ini in use   %s', php_ini_loaded_file() ?: '(none loaded)'));
+
+    if (PHP_VERSION_ID < 80100) {
+        out('  ✗ PHP 8.1 or newer is required.', 'red');
+        $problems++;
+    }
+
+    heading('Extensions');
+
+    // Without these nothing runs; the system will not start at all.
+    foreach (['pdo_mysql' => 'database access', 'openssl' => 'encryption and signing',
+              'mbstring' => 'text handling', 'json' => 'API payloads'] as $name => $purpose) {
+        if (extension_loaded($name)) {
+            out('  ✓ ' . sprintf('%-12s %s', $name, $purpose), 'green');
+        } else {
+            out(sprintf('  ✗ %-12s %s — REQUIRED', $name, $purpose), 'red');
+            $problems++;
+        }
+    }
+
+    // These only switch individual features off, so they are never fatal.
+    foreach (['zip' => 'Excel import/export, device provisioning bundles',
+              'gd'  => 'profile photo upload'] as $name => $purpose) {
+        if (extension_loaded($name)) {
+            out('  ✓ ' . sprintf('%-12s %s', $name, $purpose), 'green');
+        } else {
+            out(sprintf('  – %-12s %s — off, everything else still works', $name, $purpose), 'yellow');
+        }
+    }
+
+    heading('Configuration');
+
+    if (is_file(BASE_PATH . '/.env')) {
+        out('  ✓ .env exists', 'green');
+    } else {
+        out('  ✗ .env is missing — run start.bat, or copy .env.local.example to .env', 'red');
+        $problems++;
+    }
+
+    foreach (['APP_KEY', 'API_KEY_PEPPER'] as $key) {
+        if ((string) App\Core\Env::get($key, '') !== '') {
+            out('  ✓ ' . sprintf('%-16s set', $key), 'green');
+        } else {
+            out(sprintf('  ✗ %-16s empty — run: console.bat key:generate', $key), 'red');
+            $problems++;
+        }
+    }
+
+    heading('Writable folders');
+
+    foreach (['storage/logs', 'storage/reports', 'storage/framework/sessions',
+              'storage/tmp', 'database/backups', 'public/uploads'] as $relative) {
+        if (is_writable(BASE_PATH . '/' . $relative)) {
+            out('  ✓ ' . $relative, 'green');
+        } else {
+            out(sprintf('  ✗ %s is not writable', $relative), 'red');
+            $problems++;
+        }
+    }
+
+    heading('Database');
+
+    try {
+        $db = Database::instance();
+        $db->scalar('SELECT 1');
+        out('  ✓ ' . sprintf('Connected to %s', (string) Config::get('database.database', 'lsiams_db')), 'green');
+
+        // Separate from the connection check: an empty database is a normal
+        // first-run state, not a connection failure, and must not be reported
+        // as one.
+        try {
+            ensureMigrationsTable($db);
+
+            $applied = (int) $db->scalar('SELECT COUNT(*) FROM schema_migrations');
+            $total   = count(discoverMigrations());
+
+            if ($applied >= $total) {
+                out('  ✓ ' . sprintf('%d of %d migrations applied', $applied, $total), 'green');
+            } else {
+                out(sprintf('  – %d of %d migrations applied — run: console.bat migrate', $applied, $total), 'yellow');
+            }
+
+            $users = (int) $db->scalar('SELECT COUNT(*) FROM users');
+
+            if ($users > 0) {
+                out('  ✓ ' . sprintf('%d user account(s) exist', $users), 'green');
+            } else {
+                out('  – No accounts yet — run: console.bat user:create-admin', 'yellow');
+            }
+        } catch (Throwable $e) {
+            out('  – The schema is not in place yet — run: console.bat migrate', 'yellow');
+        }
+    } catch (Throwable $e) {
+        out('  ✗ Cannot reach the database: ' . $e->getMessage(), 'red');
+        out('    Start MySQL in the XAMPP Control Panel, then check DB_USER and', 'grey');
+        out('    DB_PASS in .env — XAMPP defaults to user "root" with no password.', 'grey');
+        $problems++;
+    }
+
+    out('');
+
+    if ($problems === 0) {
+        out('  Everything the system needs is in place.', 'green');
+    } else {
+        out(sprintf('  %d problem(s) above must be fixed before the system will run.', $problems), 'red');
+    }
+
     out('');
 }
 

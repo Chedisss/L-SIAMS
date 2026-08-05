@@ -45,6 +45,13 @@ final class ImportService
 
         $extension = strtolower(pathinfo((string) $file['name'], PATHINFO_EXTENSION));
 
+        if ($extension === 'xlsx' && !XlsxWriter::isSupported()) {
+            throw new ValidationException(['file' => [
+                "Excel files cannot be read because PHP's zip extension is not enabled. "
+                . 'Save the sheet as .csv and upload that instead.',
+            ]]);
+        }
+
         $raw = match ($extension) {
             'csv', 'txt' => CsvWriter::parse((string) file_get_contents((string) $file['tmp_name'])),
             'xlsx'       => XlsxWriter::read((string) $file['tmp_name']),

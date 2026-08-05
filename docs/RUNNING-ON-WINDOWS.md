@@ -165,6 +165,7 @@ Open a Command Prompt in the project folder (Shift + right-click the folder →
 
 | Command | What it does |
 |---|---|
+| `console.bat check` | check PHP, extensions, `.env` and the database in one screen |
 | `console.bat seed --demo` | fill the system with sample data |
 | `console.bat user:create-admin` | add another administrator |
 | `console.bat backup` | take an encrypted backup right now |
@@ -176,9 +177,40 @@ Open a Command Prompt in the project folder (Shift + right-click the folder →
 
 ## When something goes wrong
 
+Before anything else, run `console.bat check`. It prints PHP, the extensions,
+`.env`, the folders and the database on one screen, and each failing line says
+what to run to fix it.
+
 **"Could not find php.exe"**
 XAMPP is not installed, or not on `C:`, `D:` or `E:`. Install it, or add
 `C:\xampp\php` to your PATH.
+
+**"PHP is missing: …" or "Optional PHP extensions are off: …"**
+An extension is switched off in `php.ini`. Turn it on like this:
+
+1. Run `console.bat check` and read the **php.ini in use** line — edit *that*
+   file, not any other `php.ini` on the PC. On a normal XAMPP install it is
+   `C:\xampp\php\php.ini`.
+2. Open it in Notepad. (Right-click Notepad → **Run as administrator** if
+   Windows refuses to save.)
+3. Press **Ctrl + F** and search for `extension=zip` — or `extension=gd`,
+   whichever was named.
+4. You will find a line like `;extension=zip`. **Delete the semicolon** at the
+   very start so it reads `extension=zip`.
+5. Repeat for each extension the message listed.
+6. **Save** (Ctrl + S) and close Notepad.
+7. Close the L-SIAMS window and double-click `start.bat` again.
+
+The two optional ones are not worth panicking about:
+
+| Off | What stops working | What still works |
+|---|---|---|
+| `zip` | Excel `.xlsx` export and import, device provisioning bundles | reports as CSV and PDF, adding devices one at a time |
+| `gd` | uploading a profile photo | everything else on the profile page |
+
+Attendance, RFID, fingerprints, schedules, dashboards and the reports you need
+for a defence do not depend on either. If they are off, `start.bat` says so and
+carries on, and the affected pages explain themselves when you use them.
 
 **"Cannot connect to MySQL"**
 MySQL is not started. XAMPP Control Panel → Start next to MySQL. If it is green

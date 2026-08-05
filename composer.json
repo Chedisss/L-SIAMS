@@ -9,9 +9,11 @@
         "ext-pdo_mysql": "*",
         "ext-json": "*",
         "ext-openssl": "*",
-        "ext-mbstring": "*",
-        "ext-zip": "*",
-        "ext-gd": "*"
+        "ext-mbstring": "*"
+    },
+    "suggest": {
+        "ext-zip": "Excel (.xlsx) import and export, and device provisioning bundles",
+        "ext-gd": "Profile photo upload"
     },
     "autoload": {
         "psr-4": {

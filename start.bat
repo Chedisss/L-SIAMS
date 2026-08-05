@@ -46,7 +46,14 @@ if not defined PHP (
     exit /b 1
 )
 
-for /f "tokens=2" %%V in ('"%PHP%" -r "echo 'PHP ' . PHP_VERSION;"') do set "PHPVER=%%V"
+REM The doubled quotes are not a typo. FOR /F hands the command to `cmd /c`,
+REM which strips the outermost pair before running it — so a command that is
+REM itself quoted needs a spare pair, or php.exe and its -r argument get torn
+REM apart mid-string.
+for /f "usebackq tokens=*" %%V in (`""%PHP%" -r "echo PHP_VERSION;""`) do set "PHPVER=%%V"
+for /f "usebackq tokens=*" %%F in (`""%PHP%" -r "echo php_ini_loaded_file();""`) do set "PHPINI=%%F"
+if not defined PHPINI set "PHPINI=C:\xampp\php\php.ini"
+
 echo   [ok] PHP %PHPVER%
 echo        %PHP%
 
@@ -59,21 +66,50 @@ if errorlevel 1 (
 )
 
 REM --------------------------------------------------------- extensions ----
+REM Split in two on purpose. Without the first four the system cannot start at
+REM all. zip and gd only power Excel files, device bundles and profile photos —
+REM refusing to run attendance because a photo cannot be resized helps nobody,
+REM so those are a warning and the features say so themselves when used.
 set "MISSING="
-for %%X in (pdo_mysql openssl mbstring zip gd json) do (
+for %%X in (pdo_mysql openssl mbstring json) do (
     "%PHP%" -r "exit(extension_loaded('%%X') ? 0 : 1);"
     if errorlevel 1 set "MISSING=!MISSING! %%X"
 )
 if defined MISSING (
     echo   [X] PHP is missing:!MISSING!
     echo.
-    echo       Open C:\xampp\php\php.ini, remove the ';' in front of the
-    echo       matching 'extension=' lines, save, and run this again.
+    echo       Open this file in Notepad:
+    echo         %PHPINI%
+    echo       Find the line for each one - for example  ;extension=mbstring
+    echo       Delete the ';' at the start, save the file, and run this again.
     echo.
     pause
     exit /b 1
 )
 echo   [ok] Required PHP extensions present
+
+set "OPTIONAL="
+for %%X in (zip gd) do (
+    "%PHP%" -r "exit(extension_loaded('%%X') ? 0 : 1);"
+    if errorlevel 1 set "OPTIONAL=!OPTIONAL! %%X"
+)
+if defined OPTIONAL (
+    echo   [--] Optional PHP extensions are off:!OPTIONAL!
+    echo.
+    echo        zip  Excel .xlsx export and import, device provisioning bundles
+    echo        gd   profile photo upload
+    echo.
+    echo        The system still runs. Attendance, reports as CSV and PDF,
+    echo        devices and everything else are unaffected.
+    echo.
+    echo        To switch them on, open this file in Notepad:
+    echo          %PHPINI%
+    echo        delete the ';' in front of the matching 'extension=' line,
+    echo        save, close this window and run start.bat again.
+    echo.
+) else (
+    echo   [ok] Optional extensions present ^(zip, gd^)
+)
 
 REM --------------------------------------------------------------- .env ----
 set "FIRSTRUN="

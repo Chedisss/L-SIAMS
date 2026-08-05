@@ -636,6 +636,16 @@ final class ReportService
         $slug      = self::slug((string) $report['title']);
         $timestamp = Clock::now()->format('Ymd-His');
 
+        // An .xlsx is a ZIP archive, so ext-zip decides whether this is offered
+        // at all. Say so where the user chose the format instead of failing
+        // later with a stack trace they cannot act on.
+        if ($format === 'xlsx' && !XlsxWriter::isSupported()) {
+            throw new ValidationException(['format' => [
+                "Excel export is unavailable because PHP's zip extension is not enabled. "
+                . 'Choose CSV or PDF, or enable it in php.ini.',
+            ]]);
+        }
+
         return match ($format) {
             'csv' => [
                 'content'  => CsvWriter::build($report['headers'], $report['rows']),

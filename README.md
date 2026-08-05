@@ -73,10 +73,15 @@ worker and the realtime server. **`stop.bat`** closes all three.
 **`console.bat`** runs any console command without hunting for `php.exe`:
 
 ```
+console.bat check              why will it not start? PHP, extensions, .env, database
 console.bat seed --demo        fill the system with sample data
 console.bat user:create-admin  add another administrator
 console.bat backup             take an encrypted backup
 ```
+
+`ext-zip` and `ext-gd` are optional. Without them the system still runs; only
+Excel import/export and device provisioning bundles (`zip`) and profile photo
+upload (`gd`) are unavailable, and each says so where it is used.
 
 You still start **MySQL** yourself from the XAMPP Control Panel; `start.bat`
 checks for it and tells you if it is not running.
@@ -141,6 +146,7 @@ systemd units and the database privilege model, are in
 ## Console commands
 
 ```
+php bin/console check                   Check PHP, extensions, .env and the database
 php bin/console install                 Full first-time setup
 php bin/console key:generate            Generate the cryptographic keys
 php bin/console migrate                 Apply pending migrations

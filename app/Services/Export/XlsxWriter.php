@@ -18,12 +18,26 @@ use ZipArchive;
 final class XlsxWriter
 {
     /**
+     * Is ext-zip loaded?
+     *
+     * A stock XAMPP does not always enable it, and an .xlsx is a ZIP archive of
+     * XML parts — there is no way to write or read one without it. Callers ask
+     * first so the user gets "choose CSV or PDF instead" rather than a 500.
+     */
+    public static function isSupported(): bool
+    {
+        return class_exists(ZipArchive::class);
+    }
+
+    /**
      * @param  list<string>                  $headers
      * @param  list<array<string|int,mixed>> $rows
      * @return string raw .xlsx bytes
      */
     public static function build(array $headers, array $rows, string $sheetName = 'Sheet1', ?string $title = null): string
     {
+        self::assertSupported();
+
         $tmpFile = tempnam(sys_get_temp_dir(), 'lsiams_xlsx_');
 
         if ($tmpFile === false) {
@@ -52,6 +66,16 @@ final class XlsxWriter
         @unlink($tmpFile);
 
         return $content;
+    }
+
+    private static function assertSupported(): void
+    {
+        if (!self::isSupported()) {
+            throw new RuntimeException(
+                "Excel files need PHP's zip extension, which is not enabled. "
+                . "Enable 'extension=zip' in php.ini and restart, or use CSV instead."
+            );
+        }
     }
 
     /**
@@ -249,6 +273,8 @@ final class XlsxWriter
      */
     public static function read(string $path): array
     {
+        self::assertSupported();
+
         $zip = new ZipArchive();
 
         if ($zip->open($path) !== true) {
