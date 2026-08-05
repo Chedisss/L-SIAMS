@@ -61,7 +61,14 @@ CREATE TABLE IF NOT EXISTS devices (
   UNIQUE KEY uq_device_mac (mac_address),
   KEY idx_device_classroom (classroom_id),
   KEY idx_device_status (status, last_heartbeat_at),
-  CONSTRAINT fk_device_classroom  FOREIGN KEY (classroom_id)  REFERENCES classrooms(classroom_id) ON UPDATE CASCADE ON DELETE SET NULL,
+  -- RESTRICT on both actions, for the same reason as rfid_cards.student_id:
+  -- live_slot below is a generated column over this one, and MariaDB will not
+  -- create it if the engine might rewrite the column behind its back. Neither
+  -- action was reachable anyway — classroom_id is a surrogate key that is never
+  -- updated, and classrooms are soft-deleted rather than removed. RESTRICT is
+  -- also the safer failure: a hard delete that would orphan a terminal is
+  -- refused rather than silently unassigning it.
+  CONSTRAINT fk_device_classroom  FOREIGN KEY (classroom_id)  REFERENCES classrooms(classroom_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT fk_device_registrant FOREIGN KEY (registered_by) REFERENCES users(user_id)           ON UPDATE CASCADE ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -35,11 +35,21 @@ final class AttendanceSessionService
         array $device,
         array $teacher,
         array $schedule,
-        int $fingerprintLogId,
+        ?int $fingerprintLogId = null,
         ?int $apiKeyId = null
     ): array {
         $db  = Database::instance();
         $now = Clock::now();
+
+        // fingerprint_log_id is a nullable foreign key recording which
+        // verification authorised this session. Zero is not a log id — it is
+        // what a caller with nothing to record naturally passes — and writing
+        // it would fail the constraint at insert time with an error that says
+        // nothing about the real cause. Normalise it to NULL, which is what
+        // "no log row" actually means.
+        $fingerprintLogId = ($fingerprintLogId !== null && $fingerprintLogId > 0)
+            ? $fingerprintLogId
+            : null;
 
         $date  = $now->format('Y-m-d');
         $start = Clock::combine($date, (string) $schedule['start_time']);

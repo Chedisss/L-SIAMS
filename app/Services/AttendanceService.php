@@ -39,6 +39,22 @@ final class AttendanceService
     public const INTENT_COMPLETE = 'complete';
 
     /**
+     * Writes that must outlive a rolled-back rejection.
+     *
+     * A rejected tap records why it was rejected and then throws, which unwinds
+     * the transaction. Left inside it, the rejection log and the session's
+     * rejected-tap counter would be rolled back along with the rejection —
+     * losing exactly the evidence they exist to preserve. These buffers hold
+     * them until the rollback is done. See flushDeferredWrites().
+     *
+     * @var list<array<string,mixed>>
+     */
+    private static array $deferredLogs = [];
+
+    /** @var list<int> session ids whose rejected-tap counter should increment */
+    private static array $deferredRejectedCounts = [];
+
+    /**
      * Process one card tap.
      *
      * @param  array<string,mixed> $device authenticated device row
@@ -60,13 +76,28 @@ final class AttendanceService
         // time whenever possible").
         $now = $occurredAt ?? Clock::now();
 
+        // Anything left over from an earlier tap would otherwise be attributed
+        // to this one.
+        self::discardDeferredWrites();
+
         try {
-            return $db->transaction(static function (Database $db) use ($device, $cardUid, $requestId, $forcedIntent, $now): array {
+            $result = $db->transaction(static function (Database $db) use ($device, $cardUid, $requestId, $forcedIntent, $now): array {
                 return self::processTap($db, $device, $cardUid, $requestId, $forcedIntent, $now);
             });
+
+            self::discardDeferredWrites();
+
+            return $result;
         } catch (BusinessRuleException $e) {
+            // The transaction has rolled back; the rejection log and the
+            // session's rejected-tap counter are written now so that they
+            // survive it.
+            self::flushDeferredWrites($db);
+
             throw $e;
         } catch (PDOException $e) {
+            self::flushDeferredWrites($db);
+
             // Expected race: another connection inserted the row between our
             // lock and our insert. That is a duplicate tap, not a server fault.
             if (Database::isDuplicateKey($e)) {
@@ -112,6 +143,35 @@ final class AttendanceService
         DateTimeImmutable $now
     ): array {
         $deviceRowId = (int) $device['id'];
+
+        // --- 6b. This exact tap has already been applied ---------------------
+        // A request_id identifies one physical tap, not one HTTP call, so a
+        // record that was already written must be recognised however it comes
+        // back — including a queue replay that arrives long after the fact.
+        //
+        // Without this check the replay falls through to intent resolution,
+        // which sees the student is timed in and reads the *same* tap as a
+        // time-out. A terminal that synced successfully but lost the response
+        // would then close a student's attendance by retrying, which is the
+        // precise failure idempotency exists to prevent.
+        //
+        // The unique key on request_id does not cover this: it only fires on an
+        // INSERT, and the misread replay performs an UPDATE.
+        if ($requestId !== null && $requestId !== '') {
+            $existing = $db->selectOne(
+                'SELECT attendance_id FROM attendance_records WHERE request_id = :rid LIMIT 1',
+                ['rid' => $requestId]
+            );
+
+            if ($existing !== null) {
+                throw new BusinessRuleException(
+                    'DUPLICATE_REQUEST',
+                    'This tap was already processed.',
+                    self::display('ALREADY RECORDED', '', 'amber', 'long'),
+                    409
+                );
+            }
+        }
 
         // --- 7. An attendance session is open on this device -----------------
         // LOCK 1. Taking the session lock first serialises every tap for this
@@ -894,12 +954,13 @@ final class AttendanceService
         return $counters;
     }
 
+    /**
+     * Buffered rather than applied, for the same reason as the rejection log:
+     * the caller increments and then throws, and the rollback would undo it.
+     */
     private static function incrementRejected(Database $db, int $sessionId): void
     {
-        $db->execute(
-            'UPDATE attendance_sessions SET rejected_tap_count = rejected_tap_count + 1 WHERE session_id = :id',
-            ['id' => $sessionId]
-        );
+        self::$deferredRejectedCounts[] = $sessionId;
     }
 
     private static function logScan(
@@ -914,23 +975,84 @@ final class AttendanceService
         ?int $sessionSectionId,
         ?string $message
     ): void {
+        $row = [
+            'card_uid'           => $cardUid,
+            'student_id'         => $studentId,
+            'device_row_id'      => $deviceRowId,
+            'session_id'         => $sessionId,
+            'intent'             => $intent,
+            'result'             => $result,
+            'student_section_id' => $studentSectionId,
+            'session_section_id' => $sessionSectionId,
+            'message'            => $message === null ? null : mb_substr($message, 0, 255),
+            'ip_address'         => RequestContext::ip(),
+            'created_at'         => Clock::nowString(),
+        ];
+
+        // A rejection is recorded by writing the log and then throwing, which
+        // rolls the transaction back — and would take the log with it. The
+        // whole point of the rejection log is to survive the rejection, so the
+        // row is buffered here and written by flushDeferredWrites() once the
+        // rollback is complete. An accepted tap has no such problem: its log
+        // belongs in the same transaction as the attendance row, so that either
+        // both exist or neither does.
+        if ($result !== 'accepted') {
+            self::$deferredLogs[] = $row;
+
+            return;
+        }
+
         try {
-            $db->insert('rfid_logs', [
-                'card_uid'           => $cardUid,
-                'student_id'         => $studentId,
-                'device_row_id'      => $deviceRowId,
-                'session_id'         => $sessionId,
-                'intent'             => $intent,
-                'result'             => $result,
-                'student_section_id' => $studentSectionId,
-                'session_section_id' => $sessionSectionId,
-                'message'            => $message === null ? null : mb_substr($message, 0, 255),
-                'ip_address'         => RequestContext::ip(),
-                'created_at'         => Clock::nowString(),
-            ]);
+            $db->insert('rfid_logs', $row);
         } catch (Throwable $e) {
             Logger::error('RFID log write failed', ['error' => $e->getMessage(), 'uid' => $cardUid]);
         }
+    }
+
+    /**
+     * Write everything that must outlive a rolled-back rejection.
+     *
+     * Called after the transaction has unwound, so these run on a connection
+     * with no open transaction and commit on their own. Failures are logged and
+     * swallowed: the caller is already returning a rejection to the terminal,
+     * and losing the audit row must not turn a clean business rejection into a
+     * server error.
+     */
+    private static function flushDeferredWrites(Database $db): void
+    {
+        $logs      = self::$deferredLogs;
+        $rejected  = self::$deferredRejectedCounts;
+
+        // Cleared first: a failure below must not leave rows buffered for the
+        // next tap to write a second time.
+        self::$deferredLogs            = [];
+        self::$deferredRejectedCounts  = [];
+
+        foreach ($logs as $row) {
+            try {
+                $db->insert('rfid_logs', $row);
+            } catch (Throwable $e) {
+                Logger::error('RFID log write failed', ['error' => $e->getMessage(), 'uid' => $row['card_uid'] ?? '']);
+            }
+        }
+
+        foreach (array_count_values($rejected) as $sessionId => $count) {
+            try {
+                $db->execute(
+                    'UPDATE attendance_sessions SET rejected_tap_count = rejected_tap_count + :n WHERE session_id = :id',
+                    ['n' => $count, 'id' => (int) $sessionId]
+                );
+            } catch (Throwable $e) {
+                Logger::error('Rejected-tap counter update failed', ['error' => $e->getMessage(), 'session' => $sessionId]);
+            }
+        }
+    }
+
+    /** Drop anything buffered by a tap that ended up succeeding. */
+    private static function discardDeferredWrites(): void
+    {
+        self::$deferredLogs           = [];
+        self::$deferredRejectedCounts = [];
     }
 
     private static function recordUnknownCard(Database $db, string $cardUid, int $deviceRowId, ?int $sessionId): void

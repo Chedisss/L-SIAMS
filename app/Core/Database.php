@@ -75,9 +75,13 @@ final class Database
             PDO::ATTR_EMULATE_PREPARES   => false,
             PDO::ATTR_STRINGIFY_FETCHES  => false,
             PDO::ATTR_PERSISTENT         => (bool) ($this->config['persistent'] ?? false),
+            // Only assignable system variables belong here. The isolation level
+            // is set separately below: `SET SESSION TRANSACTION ISOLATION LEVEL`
+            // is its own statement form and cannot be comma-chained with
+            // variable assignments, and the variable that would express it is
+            // spelled differently across MySQL and MariaDB versions.
             PDO::MYSQL_ATTR_INIT_COMMAND => sprintf(
-                "SET SESSION TRANSACTION ISOLATION LEVEL %s, sql_mode='%s', time_zone='%s'",
-                str_replace('-', ' ', $isolation),
+                "SET SESSION sql_mode='%s', time_zone='%s'",
                 $sqlMode,
                 self::mysqlTimezoneOffset()
             ),
@@ -90,13 +94,41 @@ final class Database
                 (string) $this->config['password'],
                 $options
             );
+
+            // READ COMMITTED is a correctness requirement, not a preference:
+            // the tap engine takes explicit row locks in a fixed order, and
+            // REPEATABLE READ would add gap locks that turn concurrent taps on
+            // adjacent students into avoidable lock waits. A connection that
+            // could not be set to it must not be handed out.
+            $this->pdo->exec(sprintf(
+                'SET SESSION TRANSACTION ISOLATION LEVEL %s',
+                self::isolationClause($isolation)
+            ));
         } catch (PDOException $e) {
             // The DSN carries the credentials; never let it reach a log or a page.
             Logger::critical('Database connection failed', ['code' => $e->getCode()]);
+            $this->pdo = null;
             throw new RuntimeException('Database connection failed.', 0, $e);
         }
 
         return $this->pdo;
+    }
+
+    /**
+     * Map a configured isolation level onto the SQL clause spelling.
+     *
+     * Allowlisted rather than interpolated: this value reaches the server
+     * inside a statement that cannot be parameterised, so an unrecognised
+     * setting falls back to the safe default instead of being passed through.
+     */
+    private static function isolationClause(string $isolation): string
+    {
+        return match (strtoupper(str_replace([' ', '_'], '-', trim($isolation)))) {
+            'READ-UNCOMMITTED' => 'READ UNCOMMITTED',
+            'REPEATABLE-READ'  => 'REPEATABLE READ',
+            'SERIALIZABLE'     => 'SERIALIZABLE',
+            default            => 'READ COMMITTED',
+        };
     }
 
     private static function mysqlTimezoneOffset(): string
@@ -113,6 +145,8 @@ final class Database
     public function query(string $sql, array $bindings = []): PDOStatement
     {
         $started = microtime(true);
+
+        [$sql, $bindings] = self::expandRepeatedPlaceholders($sql, $bindings);
 
         try {
             $statement = $this->pdo()->prepare($sql);
@@ -131,6 +165,80 @@ final class Database
         }
 
         return $statement;
+    }
+
+    /**
+     * Give every occurrence of a repeated named placeholder its own name.
+     *
+     * Emulated prepares let `:now` appear twice in one statement and bind once.
+     * Native prepares — which this class insists on, because they are what
+     * actually stops SQL injection — do not: the driver sends each marker to the
+     * server separately, and a second occurrence with no binding of its own
+     * fails with HY093 "Invalid parameter number".
+     *
+     * Rather than forbid the pattern and rely on every author remembering, the
+     * rewrite happens here: `:now` used three times becomes `:now`, `:now__2`,
+     * `:now__3`, each bound to the same value. Call sites stay readable, native
+     * prepares stay on, and a query that reads naturally cannot fail at runtime
+     * for a reason that has nothing to do with its logic.
+     *
+     * Only genuine placeholders are touched. A `:` inside a quoted literal is
+     * skipped, as is `::` (a cast), so rewriting cannot alter what the statement
+     * means.
+     *
+     * @param  array<string|int,mixed> $bindings
+     * @return array{0:string, 1:array<string|int,mixed>}
+     */
+    private static function expandRepeatedPlaceholders(string $sql, array $bindings): array
+    {
+        // Positional bindings have no names to collide, and a statement with no
+        // colon cannot contain a named placeholder. Both are the common case.
+        if ($bindings === [] || !str_contains($sql, ':') || array_is_list($bindings)) {
+            return [$sql, $bindings];
+        }
+
+        $seen  = [];
+        $extra = [];
+
+        $rewritten = preg_replace_callback(
+            // A quoted literal or a comment is consumed by the first two
+            // alternatives so its contents can never match as a placeholder.
+            '/\'(?:[^\'\\\\]|\\\\.)*\'|"(?:[^"\\\\]|\\\\.)*"|::|:([a-zA-Z_][a-zA-Z0-9_]*)/',
+            static function (array $m) use (&$seen, &$extra, $bindings): string {
+                // No captured name: this was a string literal or a cast.
+                if (!isset($m[1]) || $m[1] === '') {
+                    return $m[0];
+                }
+
+                $name  = $m[1];
+                $count = ($seen[$name] = ($seen[$name] ?? 0) + 1);
+
+                if ($count === 1) {
+                    return ':' . $name;
+                }
+
+                // Only rewrite when a value was actually supplied under this
+                // name; otherwise leave it alone so the driver reports the
+                // missing binding rather than this silently inventing one.
+                if (!array_key_exists($name, $bindings) && !array_key_exists(':' . $name, $bindings)) {
+                    return $m[0];
+                }
+
+                $alias         = $name . '__' . $count;
+                $extra[$alias] = $bindings[$name] ?? $bindings[':' . $name];
+
+                return ':' . $alias;
+            },
+            $sql
+        );
+
+        // preg_replace_callback returns null only on a PCRE failure; if that
+        // ever happened, running the original statement is the safe fallback.
+        if ($rewritten === null || $extra === []) {
+            return [$sql, $bindings];
+        }
+
+        return [$rewritten, $bindings + $extra];
     }
 
     /** @param array<string|int,mixed> $bindings */

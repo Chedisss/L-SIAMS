@@ -56,7 +56,13 @@ CREATE TABLE IF NOT EXISTS rfid_cards (
   UNIQUE KEY uq_rfid_uid (card_uid),
   KEY idx_rfid_student (student_id, status),
   KEY idx_rfid_status (status),
-  CONSTRAINT fk_rfid_student  FOREIGN KEY (student_id)       REFERENCES students(student_id)  ON UPDATE CASCADE ON DELETE RESTRICT,
+  -- ON UPDATE RESTRICT, not CASCADE. student_id is an AUTO_INCREMENT surrogate
+  -- key that is never updated, so the cascade would never fire — but MariaDB
+  -- refuses to build a generated column over a foreign-key child column that
+  -- carries a write-back referential action, and active_student_id below is
+  -- exactly that. Trading a no-op cascade for the partial-unique index is the
+  -- obvious way round, and it costs nothing.
+  CONSTRAINT fk_rfid_student  FOREIGN KEY (student_id)       REFERENCES students(student_id)  ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT fk_rfid_previous FOREIGN KEY (replaced_rfid_id) REFERENCES rfid_cards(rfid_id)   ON UPDATE CASCADE ON DELETE SET NULL,
   CONSTRAINT fk_rfid_issuer   FOREIGN KEY (issued_by)        REFERENCES users(user_id)        ON UPDATE CASCADE ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

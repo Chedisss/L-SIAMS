@@ -33,6 +33,23 @@ php -m | grep -E '^(pdo_mysql|openssl|mbstring|zip|gd|json|zlib|sockets)$'
 All eight must appear. `sockets` is used only by the realtime server; the rest
 are used by the web application and will cause a hard failure at boot if absent.
 
+`gmp` is **not** required. The base62 encoder in the key path uses it when
+present and falls back to rejection sampling when it is not; both routes produce
+the same 59-character keys, and `php bin/console security:audit-keys` exercises
+whichever one this host takes.
+
+### MySQL or MariaDB
+
+Both are supported and the schema has been verified on each. One difference is
+worth knowing if you ever revisit the foreign keys: MariaDB refuses to build a
+generated column over a foreign-key child column that carries a write-back
+referential action (`ON UPDATE CASCADE`, `ON DELETE SET NULL`). Three of the
+system's uniqueness guarantees are generated columns over such columns, so those
+foreign keys use `RESTRICT` on both actions. Neither action was reachable anyway
+— the parents are AUTO_INCREMENT surrogate keys that are never updated, and rows
+are soft-deleted rather than removed — so nothing is lost, but changing them back
+to `CASCADE` would break `migrate` on MariaDB.
+
 ### PHP configuration
 
 In `/etc/php/8.4/fpm/php.ini`:

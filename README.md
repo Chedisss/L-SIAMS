@@ -194,6 +194,17 @@ The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a
 real MySQL server, not a mock — the guarantee being tested is the database's.
 
+The suite freezes the clock at 10:00 for the duration of a run. A schedule is a
+time of day, and the fixture has to place a window that contains "now" while
+satisfying the schema's CHECK constraints; against the wall clock that is
+satisfiable in the morning and impossible late at night, so an unfrozen suite
+would pass all day and fail in the evening for reasons unrelated to the code.
+Nothing under test needs real elapsed time — the dwell cases backdate `time_in`
+in SQL rather than waiting.
+
+Last verified run: 44 passed, 0 failed, tap p95 6.7 ms, 152–181 taps/second
+sustained, against MariaDB 10.11.
+
 Fixtures are prefixed `TEST-CONC-` and torn down afterwards. **Point the suite at
 a test database**, never at a school's live data.
 

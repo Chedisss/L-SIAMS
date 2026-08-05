@@ -31,12 +31,21 @@ final class Crypto
     /** Cryptographically-strong base62 string derived from $bytes of entropy. */
     public static function randomBase62(int $bytes): string
     {
+        // ext-gmp is optional and is not in this project's required extension
+        // list, so availability must be tested before the call, not after it.
+        // Checking gmp_import()'s return value cannot work: on a host without
+        // the extension the call itself is a fatal "undefined function", and
+        // the fallback below is never reached. That made key generation fail
+        // outright on exactly the stock installs the fallback exists to serve.
+        if (!function_exists('gmp_import')) {
+            return self::base62FromRandom($bytes);
+        }
+
         $raw    = self::randomBytes($bytes);
         $number = gmp_import($raw);
         $out    = '';
 
         if ($number === false) {
-            // gmp is optional; fall back to a rejection-sampling encoder.
             return self::base62FromRandom($bytes);
         }
 

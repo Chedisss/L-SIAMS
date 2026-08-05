@@ -565,19 +565,61 @@ function commandAuditKeys(): void
             continue;
         }
 
-        $contents = (string) file_get_contents($path);
-        $found    = [];
+        // Scan tokens, not raw text. A regex over the file body cannot tell a
+        // call from the comment above it explaining why the call is absent, and
+        // it flagged exactly those comments — an audit that reports a problem
+        // where the code is correct trains people to ignore it, which is worse
+        // than not running it at all. The tokenizer sees only real function
+        // names, so comments and string literals cannot produce a finding.
+        $tokens = @token_get_all((string) file_get_contents($path));
+        $found  = [];
 
-        foreach ($forbidden as $needle) {
-            // random_int is fine; the check must not trip on it.
-            $pattern = '/(?<![a-z_])' . preg_quote(rtrim($needle, '('), '/') . '\s*\(/i';
+        $banned = array_map(
+            static fn (string $needle): string => strtolower(rtrim($needle, '(')),
+            $forbidden
+        );
 
-            if (preg_match($pattern, $contents) === 1
-                && !str_contains($needle, 'random_int')
-            ) {
-                $found[] = rtrim($needle, '(');
+        foreach ($tokens as $index => $token) {
+            if (!is_array($token) || $token[0] !== T_STRING) {
+                continue;
             }
+
+            $name = strtolower($token[1]);
+
+            if (!in_array($name, $banned, true)) {
+                continue;
+            }
+
+            // A bare identifier is not a call. Look ahead past whitespace for
+            // the opening parenthesis, so a method named `shuffle` on some
+            // object, or a constant, is not mistaken for the global function.
+            $next = $index + 1;
+
+            while (isset($tokens[$next]) && is_array($tokens[$next]) && $tokens[$next][0] === T_WHITESPACE) {
+                $next++;
+            }
+
+            if (($tokens[$next] ?? null) !== '(') {
+                continue;
+            }
+
+            // `$this->rand()` and `Foo::rand()` are not the global function.
+            $previous = $index - 1;
+
+            while (isset($tokens[$previous]) && is_array($tokens[$previous]) && $tokens[$previous][0] === T_WHITESPACE) {
+                $previous--;
+            }
+
+            $before = $tokens[$previous] ?? null;
+
+            if (is_array($before) && in_array($before[0], [T_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION], true)) {
+                continue;
+            }
+
+            $found[$name] = $name;
         }
+
+        $found = array_values($found);
 
         if ($found === []) {
             ok(sprintf('%-46s clean', $relative));

@@ -336,7 +336,9 @@ final class Fixture
             ]);
 
             // Windows are set wide so the tests exercise concurrency rather
-            // than tripping over clock boundaries.
+            // than tripping over clock boundaries. The suite freezes the clock
+            // at 10:00 precisely so this window is always well inside the day —
+            // see the Clock::freeze() call where the runner is constructed.
             $start = Clock::now()->modify('-10 minutes');
             $end   = Clock::now()->modify('+110 minutes');
 
@@ -512,6 +514,20 @@ final class Fixture
 }
 
 // ===========================================================================
+
+// Pin the clock to a fixed mid-morning instant for the whole suite.
+//
+// A schedule is a time of day, and the fixture has to place one that contains
+// "now" while satisfying both schema CHECKs — end_time > start_time, and a
+// window long enough for the time-in and time-out sub-windows to fit inside it.
+// Run against the wall clock, that is satisfiable at 10am and impossible at
+// 11pm, so the suite would pass all day and fail in the evening for reasons
+// having nothing to do with the code under test.
+//
+// Nothing here needs real elapsed time: the tests that exercise the dwell rules
+// backdate `time_in` in SQL rather than waiting. So freezing costs nothing and
+// buys a suite whose result depends only on the code.
+Clock::freeze(Clock::now()->setTime(10, 0, 0));
 
 $runner  = new TestRunner();
 $fixture = new Fixture();
