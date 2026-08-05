@@ -128,7 +128,7 @@ $fieldsByType = [
                         <option value="">All classrooms</option>
                         <?php foreach ($classrooms as $classroom): ?>
                             <option value="<?= e($classroom['classroom_id']) ?>">
-                                <?= e($classroom['room_number']) ?> — <?= e($classroom['room_name']) ?>
+                                <?= e($classroom['room_number']) ?><?php if (!empty($classroom['building'])): ?> — <?= e($classroom['building']) ?><?php endif; ?>
                             </option>
                         <?php endforeach; ?>
                     </select>

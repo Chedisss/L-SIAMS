@@ -249,8 +249,12 @@ final class RfidService
         $total = (int) $db->scalar("SELECT COUNT(*) {$base}", $bindings);
 
         $rows = $db->select(
+            // previous_uid is filled in below rather than joined here: the
+            // replacement chain is a self-join on the same table, and resolving
+            // it inline made the query noticeably harder to read for one column
+            // that is null on almost every row.
             "SELECT rc.*, s.student_number, s.first_name, s.last_name, s.photo_path,
-                    sec.section_code, prev.card_uid AS previous_uid,
+                    sec.section_code,
                     (SELECT COUNT(*) FROM rfid_logs rl WHERE rl.card_uid = rc.card_uid) AS tap_count,
                     (SELECT MAX(rl2.created_at) FROM rfid_logs rl2 WHERE rl2.card_uid = rc.card_uid) AS last_tap_at
              {$base}
@@ -259,15 +263,15 @@ final class RfidService
             $bindings
         );
 
-        // The replacement chain is a self-join; pulling it inline keeps the
-        // main query readable.
+        // Every row carries the key, so a template can read it without having
+        // to guard — only the replaced cards carry a value.
         foreach ($rows as $index => $row) {
-            if ($row['replaced_rfid_id'] !== null) {
-                $rows[$index]['previous_uid'] = $db->scalar(
+            $rows[$index]['previous_uid'] = $row['replaced_rfid_id'] === null
+                ? null
+                : $db->scalar(
                     'SELECT card_uid FROM rfid_cards WHERE rfid_id = :id',
                     ['id' => (int) $row['replaced_rfid_id']]
                 );
-            }
         }
 
         return ['rows' => $rows, 'total' => $total];

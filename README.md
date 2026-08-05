@@ -29,9 +29,13 @@ no cloud service, no external API, and no internet dependency at runtime.
 
 ## Requirements
 
-- **PHP 8.4** with `pdo_mysql`, `openssl`, `mbstring`, `zip`, `gd`, `json`,
-  `zlib`, and `sockets` (the last one only for the realtime server)
-- **MySQL 8.0** or MariaDB 10.6+
+- **PHP 8.1 or newer** with `pdo_mysql`, `openssl`, `mbstring`, `zip`, `gd`,
+  `json`, `zlib`, and `sockets` (the last one only for the realtime server).
+  Developed and tested on 8.4; nothing in the codebase uses a construct newer
+  than 8.1, so the PHP shipped with current XAMPP builds works.
+- **MariaDB 10.6+** or **MySQL 8.0**. Verified against MariaDB 10.11 — which is
+  also what runs underneath phpMyAdmin in a XAMPP install. MySQL 8 is supported
+  but has not been exercised here.
 - **Apache 2.4** with `mod_rewrite`, or **nginx** with PHP-FPM
 - ESP32 terminals with an MFRC522 RFID reader, an R307 fingerprint sensor and an
   I²C display — see [`docs/FIRMWARE.md`](docs/FIRMWARE.md)
@@ -57,6 +61,27 @@ php bin/console key:generate      # writes APP_KEY, API_KEY_PEPPER, REALTIME_TIC
 
 php bin/console install           # migrate + seed + create the first administrator
 ```
+
+### Installing through phpMyAdmin instead
+
+If you administer the database through phpMyAdmin — a XAMPP install, typically —
+you do not need to run the migrations from a shell:
+
+1. In phpMyAdmin, create a database named `lsiams_db` with collation
+   `utf8mb4_unicode_ci`.
+2. Select it, open **Import**, and upload
+   [`database/lsiams_schema.sql`](database/lsiams_schema.sql). That single file
+   carries every table, view, trigger, index and constraint, plus the reference
+   data the system needs to start.
+3. Copy `.env.example` to `.env` and fill in the database credentials
+   (XAMPP's defaults are user `root` with an empty password).
+4. Run `php bin/console key:generate` once, then
+   `php bin/console user:create-admin` to create the first login.
+
+The schema file deliberately contains **no user accounts and no student,
+teacher or attendance data** — a schema that shipped a known login would be a
+backdoor in every installation that used it. Regenerate it after any migration
+with `php bin/console schema:dump`.
 
 `install` runs the migrations, seeds the reference data (roles, permissions,
 grade levels, departments, the attendance-status vocabulary and the default
@@ -92,6 +117,7 @@ php bin/console seed [--demo]           Seed reference data, optionally demo dat
 php bin/console worker [--once]         Background worker: auto-close, retention, alerts
 php bin/console backup                  Take an encrypted backup now
 php bin/console security:audit-keys     Audit the API-key path for weak randomness
+php bin/console schema:dump             Regenerate database/lsiams_schema.sql
 php bin/console user:create-admin       Create an additional administrator
 ```
 
