@@ -718,7 +718,7 @@ function commandCreateAdmin(): void
 
     $hash = Hash::make($password);
 
-    $userId = (int) $db->transaction(static function (Database $db) use ($role, $username, $email, $hash, $fullName): string {
+    $userId = (int) $db->transaction(static function (Database $db) use ($role, $username, $email, $hash, $fullName, $generated): string {
         $id = $db->insert('users', [
             'role_id'              => (int) $role['role_id'],
             'username'             => $username,
@@ -726,7 +726,13 @@ function commandCreateAdmin(): void
             'password_hash'        => $hash,
             'full_name'            => $fullName,
             'status'               => 'active',
-            'must_change_password' => 1,
+            // Only force a change when the console generated the password.
+            // Somebody who typed their own, at this prompt, seconds ago has
+            // already chosen it — making them choose again teaches nothing and
+            // is one more thing to go wrong in front of an audience. A
+            // generated password is different: it has been printed to a
+            // terminal and possibly a scrollback buffer, so it must not stay.
+            'must_change_password' => $generated ? 1 : 0,
             'password_changed_at'  => Clock::nowString(),
             'created_at'           => Clock::nowString(),
             'updated_at'           => Clock::nowString(),

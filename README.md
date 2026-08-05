@@ -273,6 +273,7 @@ a test database**, never at a school's live data.
 
 | | |
 |---|---|
+| [`docs/RUNNING-ON-WINDOWS.md`](docs/RUNNING-ON-WINDOWS.md) | Step-by-step first run on Windows with XAMPP, and what to do when it breaks |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Web server, TLS, systemd, MySQL tuning, database privileges, backups |
 | [`docs/API.md`](docs/API.md) | Device API, request signing, error codes, browser API |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The security model, threat by threat |
