@@ -806,7 +806,10 @@ function commandSchemaDump(): void
     -- L-SIAMS — complete schema and reference data
     --
     -- Import through phpMyAdmin (Import → choose file → Go) or from a shell:
-    --   mysql -u root -p lsiams_db < lsiams_schema.sql
+    --   mysql -u root -p < lsiams_schema.sql
+    --
+    -- The file creates the `%s` database and selects it, so nothing needs to
+    -- exist or be selected beforehand.
     --
     -- Contains every table, view, trigger, index and constraint, plus the
     -- reference data the system needs to start: roles, permissions, grade
@@ -863,7 +866,19 @@ function commandSchemaDump(): void
         }
     }
 
-    file_put_contents($target, sprintf($header, date('Y-m-d')) . $body);
+    // mysqldump of a single database emits no CREATE DATABASE or USE, so the
+    // file only works if something already selected the target — paste it into
+    // phpMyAdmin's server-level SQL tab and every statement dies with
+    // "#1046 - No database selected". Naming the target up front makes the file
+    // import cleanly on a machine that has never run L-SIAMS before.
+    $quoted   = '`' . str_replace('`', '``', $database) . '`';
+    $preamble = sprintf(
+        "CREATE DATABASE IF NOT EXISTS %s CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\nUSE %s;\n\n",
+        $quoted,
+        $quoted
+    );
+
+    file_put_contents($target, sprintf($header, $database, date('Y-m-d')) . $preamble . $body);
 
     ok(sprintf("database/lsiams_schema.sql written (%.1f KB)", filesize($target) / 1024));
     out(sprintf('  %d tables, %d triggers, %d insert statements',
