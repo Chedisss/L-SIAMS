@@ -218,11 +218,20 @@ and this still happens, check `DB_USER` and `DB_PASS` in the `.env` file —
 XAMPP's default is user `root` with an empty password.
 
 **The browser says "can't reach this page"**
-The web window closed. Look for an error in it, then run `start.bat` again.
+The web window closed. It now stays open and prints the reason — read the lines
+above `The web server has stopped`, then run `start.bat` again. If the window is
+gone entirely, run `console.bat check`.
 
-**Port 8080 is already in use**
-Something else is using it. Open `start.bat` in Notepad and change
-`set "WEB_PORT=8080"` to `8081`, then change `APP_URL` in `.env` to match.
+**The window flashes and disappears immediately**
+Almost always a `.bat` file saved with Unix line endings, which `cmd.exe`
+mis-parses. Re-clone or re-pull the project: `.gitattributes` forces Windows
+line endings on every `.bat`, so a fresh checkout is correct by construction.
+
+**"Port 8080 is already in use"**
+Usually L-SIAMS is already running — look for a window titled **L-SIAMS web**,
+or just open <http://localhost:8080>. If it is something else, run `stop.bat`,
+or open `start.bat` in Notepad, change `set "WEB_PORT=8080"` to `8081`, and
+change `APP_URL` in `.env` to match.
 
 **Login says the password is wrong and you are sure it is not**
 Check `SESSION_COOKIE_SECURE=false` in `.env`. A "Secure" cookie is never sent

@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================================================
-REM  L-SIAMS — stop everything start.bat opened
+REM  L-SIAMS - stop everything start.bat opened
 REM
 REM  Closes the web, worker and realtime windows. Your database keeps running:
 REM  stop MySQL from the XAMPP Control Panel if you want that off too.

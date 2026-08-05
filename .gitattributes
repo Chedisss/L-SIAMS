@@ -1,0 +1,12 @@
+# Windows batch files must keep CRLF endings. cmd.exe mis-parses LF-only .bat
+# files: a parenthesised block can silently do nothing, and the last line of
+# the file may never run. Git normalises these on checkout so a clone on
+# Windows always gets usable launchers.
+*.bat text eol=crlf
+
+# Everything else stays LF, including the files the ESP32 toolchain reads.
+*.php text eol=lf
+*.sql text eol=lf
+*.md  text eol=lf
+*.ino text eol=lf
+*.h   text eol=lf
