@@ -213,6 +213,11 @@ title L-SIAMS web
 REM -t public makes public\ the web root, so app\, config\ and .env are not
 REM reachable over HTTP the way they would be if you pointed a browser at the
 REM project folder itself.
-"%PHP%" -S 0.0.0.0:%WEB_PORT% -t public public\index.php
+REM
+REM bin\router.php is the router script, not the front controller. The built-in
+REM server sends every request to its router, so pointing this at index.php
+REM directly would route CSS and images like pages and serve the site unstyled.
+REM The router hands real files back and passes everything else to index.php.
+"%PHP%" -S 0.0.0.0:%WEB_PORT% -t public bin\router.php
 
 endlocal
