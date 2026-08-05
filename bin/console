@@ -848,6 +848,22 @@ function commandSchemaDump(): void
         return;
     }
 
+    // mysqldump stamps the account that produced the dump into every view,
+    // trigger and routine. That account does not exist on the machine doing the
+    // import, and the server refuses to run an object whose definer it cannot
+    // resolve — the admin dashboard 500s on the first view it touches, which is
+    // v_device_status. Dropping the clause makes the importing account the
+    // definer, and SQL SECURITY INVOKER then evaluates views with the
+    // privileges of whoever queries them, so the REVOKEs that
+    // docs/DEPLOYMENT.md applies to lsiams_app still bite.
+    $body = (string) preg_replace('/DEFINER=`(?:[^`]|``)*`@`(?:[^`]|``)*`\s?/', '', $body);
+    $body = str_replace('SQL SECURITY DEFINER', 'SQL SECURITY INVOKER', $body);
+
+    if (str_contains($body, 'DEFINER=')) {
+        fail('Could not strip every DEFINER clause from the dump. Refusing to write a file that only imports on this machine.');
+        return;
+    }
+
     // Refuse to ship real people's data. A dump taken against a live or
     // demo-seeded database would otherwise be committed to the repository.
     $db = Database::instance();
