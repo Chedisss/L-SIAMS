@@ -29,9 +29,11 @@ no cloud service, no external API, and no internet dependency at runtime.
 
 ## Requirements
 
-- **PHP 8.1 or newer** with `pdo_mysql`, `openssl`, `mbstring`, `zip`, `gd`,
-  `json` and `zlib` — all of which XAMPP enables by default. Developed and
-  tested on 8.4; nothing in the codebase uses a construct newer than 8.1.
+- **PHP 8.1 or newer.** Required: `pdo_mysql`, `openssl`, `mbstring`, `json`,
+  `zlib`. Optional: `zip` (Excel export and the bulk device provisioning
+  bundle) and `gd` (profile photo uploads) — the system runs without them and
+  each feature says what to enable if you use it. Developed and tested on 8.4;
+  nothing in the codebase uses a construct newer than 8.1.
 - **MariaDB 10.6+** or **MySQL 8.0**. Verified against MariaDB 10.11 — which is
   also what runs underneath phpMyAdmin in a XAMPP install. MySQL 8 is supported
   but has not been exercised here.

@@ -46,8 +46,17 @@ if not defined PHP (
     exit /b 1
 )
 
-for /f "tokens=2" %%V in ('"%PHP%" -r "echo 'PHP ' . PHP_VERSION;"') do set "PHPVER=%%V"
-echo   [ok] PHP %PHPVER%
+REM Read the version through a temp file rather than a for/f loop. `for /f`
+REM hands its command to `cmd /c`, which re-parses the quotes and mangles a
+REM quoted program path that also contains a quoted -r argument.
+"%PHP%" -r "echo PHP_VERSION;" > "%TEMP%\lsiams_php_version.txt" 2>nul
+set "PHPVER="
+if exist "%TEMP%\lsiams_php_version.txt" (
+    set /p PHPVER=<"%TEMP%\lsiams_php_version.txt"
+    del "%TEMP%\lsiams_php_version.txt" >nul 2>&1
+)
+
+echo   [ok] PHP !PHPVER!
 echo        %PHP%
 
 REM Refuse rather than fail obscurely later. The codebase needs 8.1 features.
@@ -59,21 +68,53 @@ if errorlevel 1 (
 )
 
 REM --------------------------------------------------------- extensions ----
+REM Two groups, deliberately.
+REM
+REM The first is needed to boot and to record attendance at all — without one
+REM of them nothing works, so stop and say so.
+REM
+REM The second powers individual features: zip builds the Excel exports and the
+REM device provisioning bundle, gd re-encodes uploaded profile photos. Missing
+REM one of those is worth saying out loud, but it is no reason to refuse to run
+REM the attendance system.
 set "MISSING="
-for %%X in (pdo_mysql openssl mbstring zip gd json) do (
+for %%X in (pdo_mysql openssl mbstring json) do (
     "%PHP%" -r "exit(extension_loaded('%%X') ? 0 : 1);"
     if errorlevel 1 set "MISSING=!MISSING! %%X"
 )
+
 if defined MISSING (
     echo   [X] PHP is missing:!MISSING!
     echo.
-    echo       Open C:\xampp\php\php.ini, remove the ';' in front of the
-    echo       matching 'extension=' lines, save, and run this again.
+    echo       Open  C:\xampp\php\php.ini  in Notepad, use Ctrl+F to find each
+    echo       name above, delete the ';' at the start of that line, save, then
+    echo       run this again. Example:
+    echo.
+    echo           ;extension=mbstring        becomes      extension=mbstring
     echo.
     pause
     exit /b 1
 )
-echo   [ok] Required PHP extensions present
+
+set "OPTIONAL="
+for %%X in (zip gd) do (
+    "%PHP%" -r "exit(extension_loaded('%%X') ? 0 : 1);"
+    if errorlevel 1 set "OPTIONAL=!OPTIONAL! %%X"
+)
+
+if defined OPTIONAL (
+    echo   [--] Off, and only these features need them:!OPTIONAL!
+    echo          zip  Excel exports, device provisioning bundle
+    echo          gd   profile photo uploads
+    echo.
+    echo        Attendance, reports as PDF/CSV and everything else still work.
+    echo        To switch them on: open  C:\xampp\php\php.ini  in Notepad,
+    echo        find  ;extension=zip  and  ;extension=gd  and delete the ';'
+    echo        at the start of the line, then save and run this again.
+    echo.
+) else (
+    echo   [ok] PHP extensions present
+)
 
 REM --------------------------------------------------------------- .env ----
 set "FIRSTRUN="

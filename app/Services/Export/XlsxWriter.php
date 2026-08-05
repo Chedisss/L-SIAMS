@@ -24,6 +24,18 @@ final class XlsxWriter
      */
     public static function build(array $headers, array $rows, string $sheetName = 'Sheet1', ?string $title = null): string
     {
+        // An .xlsx file is a ZIP of XML parts, so this writer cannot work
+        // without ext-zip. Saying so beats "Class ZipArchive not found" in a
+        // log somewhere, which tells whoever clicked Export nothing at all.
+        // PDF and CSV do not need the extension and remain available.
+        if (!class_exists(ZipArchive::class)) {
+            throw new RuntimeException(
+                'Excel export needs the PHP "zip" extension, which is not enabled. '
+                . 'Enable extension=zip in php.ini and restart the web server, '
+                . 'or export as PDF or CSV instead.'
+            );
+        }
+
         $tmpFile = tempnam(sys_get_temp_dir(), 'lsiams_xlsx_');
 
         if ($tmpFile === false) {

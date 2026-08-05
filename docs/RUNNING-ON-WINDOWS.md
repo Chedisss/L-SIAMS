@@ -176,6 +176,27 @@ Open a Command Prompt in the project folder (Shift + right-click the folder →
 
 ## When something goes wrong
 
+**"PHP is missing: ..." and it refuses to start**
+Only four extensions are genuinely required — `pdo_mysql`, `openssl`,
+`mbstring` and `json`. Open `C:\xampp\php\php.ini` in Notepad, press Ctrl+F,
+find each name it listed, and delete the `;` at the start of that line:
+
+```
+;extension=mbstring     becomes     extension=mbstring
+```
+
+Save, then run `start.bat` again.
+
+**"Off, and only these features need them: zip gd"**
+Not an error — the system starts and runs normally. Those two extensions power
+three things only: Excel exports, the bulk device provisioning bundle (`zip`),
+and profile photo uploads (`gd`). Attendance, PDF and CSV reports and every
+other page work without them, and each of those three features says exactly
+what to enable if you try to use it.
+
+To switch them on, same as above: find `;extension=zip` and `;extension=gd` in
+`C:\xampp\php\php.ini`, delete the leading `;`, save, run `start.bat` again.
+
 **"Could not find php.exe"**
 XAMPP is not installed, or not on `C:`, `D:` or `E:`. Install it, or add
 `C:\xampp\php` to your PATH.

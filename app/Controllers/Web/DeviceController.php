@@ -384,6 +384,17 @@ final class DeviceController extends Controller
     /** @param list<array<string,mixed>> $provisioning */
     private function buildProvisioningZip(array $provisioning): string
     {
+        if (!class_exists(\ZipArchive::class)) {
+            throw new HttpException(
+                500,
+                'ZIP_UNAVAILABLE',
+                'Bulk provisioning needs the PHP "zip" extension, which is not enabled. '
+                . 'Enable extension=zip in php.ini and restart the web server, or register '
+                . 'the terminals one at a time — a single device downloads its provisioning '
+                . 'file as plain JSON and needs no archive.'
+            );
+        }
+
         $tmp = tempnam(sys_get_temp_dir(), 'lsiams_prov_');
 
         if ($tmp === false) {
