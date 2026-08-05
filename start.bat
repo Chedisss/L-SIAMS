@@ -46,7 +46,10 @@ if not defined PHP (
     exit /b 1
 )
 
-for /f "tokens=2" %%V in ('"%PHP%" -r "echo 'PHP ' . PHP_VERSION;"') do set "PHPVER=%%V"
+REM The extra outer quotes are not a typo. FOR /F hands this to `cmd /c`,
+REM which strips the first and last quote it sees. Without the spare pair it
+REM would eat the ones around the php.exe path and the -r script.
+for /f "tokens=2 delims= " %%V in ('""%PHP%" -r "echo 'PHP ' . PHP_VERSION;""') do set "PHPVER=%%V"
 echo   [ok] PHP %PHPVER%
 echo        %PHP%
 
@@ -59,8 +62,9 @@ if errorlevel 1 (
 )
 
 REM --------------------------------------------------------- extensions ----
+REM Nothing runs without these.
 set "MISSING="
-for %%X in (pdo_mysql openssl mbstring zip gd json) do (
+for %%X in (pdo_mysql openssl mbstring json) do (
     "%PHP%" -r "exit(extension_loaded('%%X') ? 0 : 1);"
     if errorlevel 1 set "MISSING=!MISSING! %%X"
 )
@@ -73,7 +77,28 @@ if defined MISSING (
     pause
     exit /b 1
 )
-echo   [ok] Required PHP extensions present
+
+REM These only break individual features, so warn and carry on rather than
+REM stopping someone from using the rest of the system.
+set "OPTMISSING="
+for %%X in (zip gd) do (
+    "%PHP%" -r "exit(extension_loaded('%%X') ? 0 : 1);"
+    if errorlevel 1 set "OPTMISSING=!OPTMISSING! %%X"
+)
+if defined OPTMISSING (
+    echo   [warn] PHP is missing:!OPTMISSING!
+    echo.
+    echo       Everything still runs, but these stay broken until you add them:
+    echo         zip  -  Excel exports, firmware downloads
+    echo         gd   -  profile photo uploads
+    echo.
+    echo       To fix: open C:\xampp\php\php.ini, delete the ';' at the start
+    echo       of the 'extension=zip' and 'extension=gd' lines, save, then run
+    echo       this file again.
+    echo.
+) else (
+    echo   [ok] Required PHP extensions present
+)
 
 REM --------------------------------------------------------------- .env ----
 set "FIRSTRUN="
