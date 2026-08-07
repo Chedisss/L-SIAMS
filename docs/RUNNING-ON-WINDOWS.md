@@ -158,6 +158,42 @@ keeps running until you stop it in the Control Panel.
 
 ---
 
+## Getting a newer version — `update.bat`
+
+Do **not** delete the folder and download the ZIP again. That throws away your
+`.env` file, your uploaded photos and your generated reports, and it makes you
+redo the whole setup.
+
+Double-click **`update.bat`** instead. It downloads only what actually changed —
+usually a few kilobytes — and applies any new database changes for you.
+
+The first time you run it, it will say the folder is not linked to GitHub yet
+and offer to link it. Answer **Y**. That happens once. Every update after that
+is: double-click, wait a few seconds, done.
+
+It needs Git installed. If you do not have it, `update.bat` will say so and
+point you at <https://git-scm.com/download/win> — run the installer and click
+Next through every screen, the defaults are all correct. Also a one-time thing.
+
+**What is never touched by an update:**
+
+| Safe | Why |
+|---|---|
+| `.env` | your keys and database password are not in the repository |
+| `public/uploads/` | student and teacher photos |
+| `storage/reports/`, `storage/logs/` | generated reports and logs |
+| `database/backups/` | your backups |
+| The database itself | it lives in MySQL, not in this folder |
+
+**What is replaced:** the program files. If you edited any of them yourself,
+your edit is replaced by the official version — so keep your own changes
+somewhere else.
+
+After it finishes, close the running L-SIAMS windows and run `start.bat` again
+so the new version is loaded.
+
+---
+
 ## Using it from a phone or another laptop
 
 `start.bat` prints two addresses when it finishes:

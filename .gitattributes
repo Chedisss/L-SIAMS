@@ -1,0 +1,18 @@
+# Batch files must reach Windows with CRLF endings.
+#
+# cmd.exe reads a running .bat by byte offset rather than buffering the whole
+# file, and its line accounting assumes CRLF. An LF-only batch file mostly
+# works, and then does not: `goto` can resume mid-line, and a label at the end
+# of the file can be missed entirely. update.bat is built out of labels, so it
+# is the one most exposed to this.
+#
+# Stored as LF in the repository, checked out as CRLF everywhere.
+*.bat text eol=crlf
+
+# The rest is left to git's own detection, except where a byte-exact file
+# would be corrupted by newline translation.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
