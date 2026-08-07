@@ -124,7 +124,7 @@ $__view->start('content');
                 <div class="form-group">
                     <label for="a-uid" class="required">Card UID</label>
                     <input type="text" id="a-uid" name="card_uid" required maxlength="32"
-                           placeholder="Tap the card on the enrolment reader" style="font-family:var(--mono);text-transform:uppercase">
+                           placeholder="Tap the card on the enrolment reader" data-uppercase style="font-family:var(--mono);text-transform:uppercase">
                     <span class="field-help">8–32 hexadecimal characters, as read by an MFRC522.</span>
                 </div>
                 <div class="form-group">

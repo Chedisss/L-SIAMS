@@ -135,7 +135,7 @@ $__view->start('content');
                     <div class="form-group">
                         <label for="s-code" class="required">Section code</label>
                         <input type="text" id="s-code" name="section_code" required maxlength="30"
-                               placeholder="G12-STEM-A" style="text-transform:uppercase;font-family:var(--mono)">
+                               placeholder="G12-STEM-A" data-uppercase style="text-transform:uppercase;font-family:var(--mono)">
                     </div>
                     <div class="form-group">
                         <label for="s-name" class="required">Section name</label>

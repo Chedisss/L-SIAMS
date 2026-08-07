@@ -889,6 +889,34 @@
                 }
             });
 
+            // Fields drawn in uppercase are uppercased for real.
+            //
+            // text-transform:uppercase is a painting instruction: the box shows
+            // MATH-101 while the value stays "math-101", and the two only
+            // diverge at the moment it matters — submission. Doing it to the
+            // value as well means what is on screen is what is sent, and what
+            // is stored.
+            document.addEventListener('input', (event) => {
+                const el = event.target instanceof Element
+                    ? event.target.closest('input[data-uppercase]')
+                    : null;
+
+                if (!el) return;
+
+                const upper = el.value.toUpperCase();
+
+                if (upper === el.value) return;
+
+                // Assigning to value moves the caret to the end, which makes
+                // editing the middle of a code impossible. Put it back.
+                const start = el.selectionStart;
+                const end   = el.selectionEnd;
+
+                el.value = upper;
+
+                if (start !== null && end !== null) el.setSelectionRange(start, end);
+            });
+
             // Any control marked data-filter-input announces a change; each page
             // listens for the event and runs its own query. Announcing rather
             // than calling a named global keeps the page's controller private to

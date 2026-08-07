@@ -81,7 +81,7 @@ $__view->start('content');
                 <div class="form-group">
                     <label for="d-code" class="required">Department code</label>
                     <input type="text" id="d-code" name="department_code" required maxlength="20"
-                           placeholder="ENG" style="text-transform:uppercase;font-family:var(--mono)">
+                           placeholder="ENG" data-uppercase style="text-transform:uppercase;font-family:var(--mono)">
                     <span class="field-help">Immutable once created — every export and report keys on it.</span>
                 </div>
 

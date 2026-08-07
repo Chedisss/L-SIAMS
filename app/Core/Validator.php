@@ -144,9 +144,21 @@ final class Validator
                 ? true
                 : $this->reject($field, sprintf('%s may contain letters, spaces, apostrophes, periods and hyphens only.', $label)),
 
-            'code' => preg_match('/^[A-Z0-9-]+$/', (string) $value) === 1
+            // Case-insensitive on purpose. Every field that carries this rule is
+            // passed through strtoupper() by its service before it is written,
+            // so rejecting "math-101" refused a value the system was about to
+            // normalise anyway. Worse, these inputs are styled
+            // text-transform:uppercase, which only changes how the text is
+            // drawn — the value stays as typed. Someone typing "math-101" saw
+            // "MATH-101" on screen and was told it was not uppercase, with
+            // nothing on the page to explain the contradiction.
+            //
+            // What the rule is actually for is keeping spaces, slashes and
+            // punctuation out of an identifier that ends up in URLs, filenames
+            // and report headings. It still does that.
+            'code' => preg_match('/^[A-Za-z0-9-]+$/', (string) $value) === 1
                 ? true
-                : $this->reject($field, sprintf('%s must be uppercase letters, numbers and hyphens.', $label)),
+                : $this->reject($field, sprintf('%s may contain letters, numbers and hyphens only — no spaces.', $label)),
 
             'date' => $this->checkDate($field, (string) $value, 'Y-m-d'),
             'datetime' => $this->checkDate($field, (string) $value, 'Y-m-d H:i:s', ['Y-m-d\TH:i:s', 'Y-m-d\TH:i:sP', DATE_ATOM]),

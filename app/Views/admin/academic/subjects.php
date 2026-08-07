@@ -95,7 +95,7 @@ $__view->start('content');
                     <div class="form-group">
                         <label for="sub-code" class="required">Subject code</label>
                         <input type="text" id="sub-code" name="subject_code" required maxlength="30"
-                               placeholder="ENG12" style="text-transform:uppercase;font-family:var(--mono)">
+                               placeholder="ENG12" data-uppercase style="text-transform:uppercase;font-family:var(--mono)">
                     </div>
                     <div class="form-group">
                         <label for="sub-department" class="required">Department</label>
