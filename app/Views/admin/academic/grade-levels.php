@@ -50,7 +50,7 @@ $__view->start('content');
                     <div class="form-group">
                         <label for="g-code" class="required">Code</label>
                         <input type="text" id="g-code" name="grade_level_code" required maxlength="10"
-                               placeholder="G7" style="text-transform:uppercase">
+                               placeholder="G7" data-uppercase style="text-transform:uppercase">
                     </div>
                     <div class="form-group">
                         <label for="g-numeric" class="required">Numeric level</label>
