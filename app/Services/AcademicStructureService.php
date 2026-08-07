@@ -296,7 +296,7 @@ final class AcademicStructureService
                 'section_name'   => trim((string) $data['section_name']),
                 'grade_level_id' => (int) $data['grade_level_id'],
                 'adviser_id'     => $adviserId,
-                'strand'         => self::nullIfBlank($data['strand'] ?? null),
+                'strand'         => self::strandFor((int) $data['grade_level_id'], $data['strand'] ?? null),
                 'capacity'       => max(1, (int) ($data['capacity'] ?? 45)),
                 'school_year_id' => (int) ($data['school_year_id'] ?? SchoolYearService::currentId()),
                 'default_classroom_id' => empty($data['default_classroom_id']) ? null : (int) $data['default_classroom_id'],
@@ -381,7 +381,10 @@ final class AcademicStructureService
         $update = [
             'section_name' => trim((string) ($data['section_name'] ?? $existing['section_name'])),
             'adviser_id'   => $adviserId,
-            'strand'       => self::nullIfBlank($data['strand'] ?? $existing['strand']),
+            'strand'       => self::strandFor(
+                (int) $existing['grade_level_id'],
+                $data['strand'] ?? $existing['strand']
+            ),
             'capacity'     => $capacity,
             'default_classroom_id' => array_key_exists('default_classroom_id', $data)
                 ? (empty($data['default_classroom_id']) ? null : (int) $data['default_classroom_id'])
@@ -800,5 +803,26 @@ final class AcademicStructureService
         $value = is_string($value) ? trim($value) : $value;
 
         return $value === null || $value === '' ? null : (string) $value;
+    }
+
+    /**
+     * A strand only exists in Senior High.
+     *
+     * Grades 7–10 follow a single curriculum with no track, so a strand there
+     * is meaningless — and meaningless once stored is meaningless in every
+     * report and export that reads the column afterwards. The section form
+     * hides the field below Grade 11, but hiding a field is a convenience;
+     * this is the rule. A value submitted for a junior grade is dropped rather
+     * than rejected, because the request is not malicious — it is a stale
+     * field on a form whose grade level changed.
+     */
+    private static function strandFor(int $gradeLevelId, mixed $strand): ?string
+    {
+        $numericLevel = (int) Database::instance()->scalar(
+            'SELECT numeric_level FROM grade_levels WHERE grade_level_id = :id',
+            ['id' => $gradeLevelId]
+        );
+
+        return $numericLevel >= 11 ? self::nullIfBlank($strand) : null;
     }
 }
