@@ -132,9 +132,11 @@ return static function (Database $db): void {
         ['FIL',   'Filipino Department',             'Wika at panitikang Filipino.'],
         ['AP',    'Araling Panlipunan Department',   'Social studies, history and civics.'],
         ['MAPEH', 'MAPEH Department',                'Music, arts, physical education and health.'],
-        ['TLE',   'TLE / TVL Department',            'Technology and livelihood education, technical-vocational tracks.'],
+        ['TLE',   'TLE / TVL Department',            'Technology and livelihood education, including the ICT, Home Economics, Industrial Arts and Agri-Fishery Arts strands.'],
         ['ESP',   'Values Education Department',     'Edukasyon sa Pagpapakatao.'],
-        ['ICT',   'Computer Studies / ICT Department', 'Computer studies and information technology.'],
+        // No separate ICT department: in DepEd, ICT is a strand under the TVL
+        // track, not a department of its own. Subjects like Empowerment
+        // Technologies belong to TLE above.
     ];
 
     foreach ($departments as [$code, $name, $description]) {

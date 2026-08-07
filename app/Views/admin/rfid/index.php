@@ -112,7 +112,7 @@ $__view->start('content');
             <h3 class="modal__title">Issue an RFID card</h3>
             <button class="modal__close" type="button" data-modal-close>&times;</button>
         </div>
-        <form data-ajax action="/admin/rfid/assign" data-reload="true">
+        <form method="post" data-ajax action="/admin/rfid/assign" data-reload="true">
             <div class="modal__body">
                 <div class="form-group">
                     <label for="a-student" class="required">Student</label>

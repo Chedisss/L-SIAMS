@@ -142,6 +142,17 @@ final class ProfileController extends Controller
             throw new ValidationException(['photo' => ['Image dimensions may not exceed 6000×6000.']]);
         }
 
+        // Uploads are re-encoded through GD rather than stored as received —
+        // that is what stops a file which merely looks like an image from
+        // being anything else. Without the extension there is no safe way to
+        // accept the upload, so it is refused rather than trusted.
+        if (!extension_loaded('gd')) {
+            throw new ValidationException(['photo' => [
+                'Photo upload needs the PHP "gd" extension, which is not enabled. '
+                . 'Enable extension=gd in php.ini and restart the web server.',
+            ]]);
+        }
+
         $source = $info[2] === IMAGETYPE_JPEG
             ? @imagecreatefromjpeg($tmpName)
             : @imagecreatefrompng($tmpName);

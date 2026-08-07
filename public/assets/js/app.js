@@ -50,6 +50,23 @@
                 delete opts.passive;
             }
 
+            // A GET or HEAD may not carry a body — fetch() throws a TypeError
+            // rather than sending it, and that TypeError is indistinguishable
+            // from a genuine network failure by the time it reaches the catch
+            // below. Moving the values to the query string keeps the caller
+            // working instead of failing in a way that points at the network.
+            if (opts.body && ['GET', 'HEAD'].includes(opts.method.toUpperCase())) {
+                if (!(opts.body instanceof FormData) && typeof opts.body === 'object') {
+                    const query = new URLSearchParams(
+                        Object.entries(opts.body).filter(([, v]) => v !== null && v !== undefined && v !== '')
+                    ).toString();
+
+                    if (query !== '') url += (url.includes('?') ? '&' : '?') + query;
+                }
+
+                delete opts.body;
+            }
+
             if (opts.body && !(opts.body instanceof FormData) && typeof opts.body === 'object') {
                 opts.headers['Content-Type'] = 'application/json';
                 opts.body = JSON.stringify(opts.body);
@@ -848,7 +865,17 @@
             LS.util.setBusy(button, true, form.dataset.busyLabel || 'Saving…');
 
             try {
-                const method = (form.dataset.method || form.method || 'POST').toUpperCase();
+                // form.getAttribute('method'), not form.method. The property
+                // reflects the *effective* method and returns "get" when the
+                // attribute is absent, so `form.method || 'POST'` never reached
+                // its fallback — every data-ajax form without an explicit
+                // method="post" was sent as a GET carrying a JSON body, which
+                // fetch() rejects outright with "Request with GET/HEAD method
+                // cannot have body". That surfaced to the user as "Could not
+                // reach the server", which is exactly the wrong thing to look
+                // at. The attribute is null when unset, so the fallback works.
+                const method = (form.dataset.method || form.getAttribute('method') || 'POST').toUpperCase();
+
                 const response = await LS.http.request(form.action, {
                     method: method,
                     body: LS.util.formData(form),

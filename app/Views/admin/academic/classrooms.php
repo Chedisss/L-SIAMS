@@ -57,7 +57,7 @@ $__view->start('content');
             <h3 class="modal__title">Add Classroom</h3>
             <button class="modal__close" type="button" data-modal-close>&times;</button>
         </div>
-        <form data-ajax action="/admin/classrooms" data-reload="true">
+        <form method="post" data-ajax action="/admin/classrooms" data-reload="true">
             <div class="modal__body">
                 <div class="form-grid">
                     <div class="form-group">

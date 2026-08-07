@@ -146,14 +146,43 @@ $__view->start('content');
                         <select id="s-grade" name="grade_level_id" required>
                             <option value="">Select…</option>
                             <?php foreach ($gradeLevels as $grade): ?>
-                                <option value="<?= e($grade['grade_level_id']) ?>"><?= e($grade['grade_level_name']) ?></option>
+                                <option value="<?= e($grade['grade_level_id']) ?>"
+                                        data-level="<?= e($grade['numeric_level']) ?>">
+                                    <?= e($grade['grade_level_name']) ?>
+                                </option>
                             <?php endforeach; ?>
                         </select>
                         <span class="field-help">Cannot be changed once students are enrolled.</span>
                     </div>
-                    <div class="form-group">
+
+                    <!--
+                        Strand belongs to Senior High only. Grades 7-10 follow one
+                        curriculum with no track, so asking for a strand there invites
+                        a value that means nothing and then shows up in every report.
+                        Hidden and cleared below whenever the chosen grade is under 11.
+                    -->
+                    <div class="form-group" id="s-strand-group" hidden>
                         <label for="s-strand">Strand / track</label>
-                        <input type="text" id="s-strand" name="strand" maxlength="30" placeholder="STEM" style="text-transform:uppercase">
+                        <select id="s-strand" name="strand">
+                            <option value="">Select a strand…</option>
+                            <optgroup label="Academic">
+                                <option value="STEM">STEM — Science, Technology, Engineering and Mathematics</option>
+                                <option value="ABM">ABM — Accountancy, Business and Management</option>
+                                <option value="HUMSS">HUMSS — Humanities and Social Sciences</option>
+                                <option value="GAS">GAS — General Academic Strand</option>
+                            </optgroup>
+                            <optgroup label="Technical-Vocational-Livelihood">
+                                <option value="TVL-ICT">TVL-ICT — Information and Communications Technology</option>
+                                <option value="TVL-HE">TVL-HE — Home Economics</option>
+                                <option value="TVL-IA">TVL-IA — Industrial Arts</option>
+                                <option value="TVL-AFA">TVL-AFA — Agri-Fishery Arts</option>
+                            </optgroup>
+                            <optgroup label="Other tracks">
+                                <option value="SPORTS">Sports Track</option>
+                                <option value="ARTS">Arts and Design Track</option>
+                            </optgroup>
+                        </select>
+                        <span class="field-help">Senior High only. Grades 7–10 have no strand.</span>
                     </div>
                     <div class="form-group">
                         <label for="s-adviser">Adviser</label>
@@ -242,6 +271,26 @@ function applyFilters() {
         }
     });
 
+    /* ---- strand is Senior High only -------------------------------------- */
+    const gradeSelect  = document.getElementById('s-grade');
+    const strandGroup  = document.getElementById('s-strand-group');
+    const strandSelect = document.getElementById('s-strand');
+
+    function syncStrand() {
+        const option = gradeSelect.selectedOptions[0];
+        const level  = option ? parseInt(option.dataset.level, 10) : NaN;
+        const senior = level >= 11;
+
+        strandGroup.hidden = !senior;
+
+        // Cleared when hidden so a strand chosen for Grade 11 cannot survive a
+        // switch to Grade 8 and be saved invisibly.
+        if (!senior) strandSelect.value = '';
+    }
+
+    gradeSelect.addEventListener('change', syncStrand);
+    syncStrand();
+
     document.addEventListener('click', async (event) => {
         const edit = event.target.closest('[data-edit]');
         if (edit) {
@@ -252,6 +301,12 @@ function applyFilters() {
                 if (field) field.value = value === null ? '' : value;
             });
             document.getElementById('s-code').readOnly = true;
+
+            // After the values are in, so visibility matches the grade level
+            // this section actually has.
+            syncStrand();
+            if (data.strand) strandSelect.value = data.strand;
+
             LS.modal.open('section-modal');
         }
 
@@ -289,6 +344,7 @@ function applyFilters() {
             document.getElementById('s-id').value = '';
             document.getElementById('s-code').readOnly = false;
             document.getElementById('section-modal-title').textContent = 'Add Section';
+            syncStrand();
         }, 200);
     });
 })();
