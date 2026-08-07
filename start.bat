@@ -46,10 +46,34 @@ if not defined PHP (
     exit /b 1
 )
 
-REM The extra outer quotes are not a typo. FOR /F hands this to `cmd /c`,
-REM which strips the first and last quote it sees. Without the spare pair it
-REM would eat the ones around the php.exe path and the -r script.
-for /f "tokens=2 delims= " %%V in ('""%PHP%" -r "echo 'PHP ' . PHP_VERSION;""') do set "PHPVER=%%V"
+REM `php -v` rather than `php -r "echo PHP_VERSION;"`. A command inside FOR /F
+REM is parsed twice - once here, then again by the `cmd /c` that FOR spawns -
+REM and the -r form does not always survive the second pass: the terminating
+REM semicolon is dropped, PHP is handed a statement with no terminator, and it
+REM prints "Parse error: ... expecting "," or ";"" to stdout. That parse error
+REM is then what this loop captures, so the launcher reported the version as
+REM "error:" and carried on. `php -v` carries no quotes, no semicolon and no
+REM operators of its own, so a second round of parsing has nothing to damage.
+REM
+REM Left as a bare `"path\php.exe" -v`, with no pipe and no redirection, so
+REM `cmd /c` takes its documented path of keeping the quotes around a command
+REM that is nothing but a quoted executable and its switches. Piping this into
+REM findstr to filter it would put a special character back into the string and
+REM hand the quote handling straight back to the case that failed above.
+REM
+REM So the filtering happens in batch instead. `php -v` prints five lines and
+REM only the first begins with "PHP"; the rest are the copyright notice, whose
+REM second word would otherwise land in PHPVER. The digit test rejects a PHP
+REM startup warning, which begins with "PHP" as well but reads "PHP Warning:".
+set "PHPVER="
+for /f "tokens=1,2 delims= " %%A in ('"%PHP%" -v') do (
+    if not defined PHPVER if /i "%%A"=="PHP" (
+        set "VERTOKEN=%%B"
+        if "!VERTOKEN:~0,1!" geq "0" if "!VERTOKEN:~0,1!" leq "9" set "PHPVER=%%B"
+    )
+)
+if not defined PHPVER set "PHPVER=(version not detected)"
+
 echo   [ok] PHP %PHPVER%
 echo        %PHP%
 
