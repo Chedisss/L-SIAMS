@@ -24,7 +24,7 @@ $__view->start('content');
     </div>
 </div>
 
-<form class="filter-bar" id="attendance-filters" onsubmit="return false">
+<form class="filter-bar" id="attendance-filters" data-no-submit>
     <div class="form-group">
         <label for="f-from">From</label>
         <input type="date" id="f-from" name="date_from" value="<?= e($filters['date_from']) ?>">
@@ -153,7 +153,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS = window.LSIAMS;
 

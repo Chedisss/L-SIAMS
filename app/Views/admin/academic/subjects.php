@@ -11,10 +11,10 @@ $__view->start('content');
     'actions'     => '<button class="btn btn-primary" data-modal-open="subject-modal"><i class="fa-solid fa-plus"></i> Add Subject</button>',
 ]); ?>
 
-<form class="filter-bar" onsubmit="return false">
+<form class="filter-bar" data-no-submit>
     <div class="form-group">
         <label for="f-department">Department</label>
-        <select id="f-department" name="department_id" onchange="applySubjectFilters()">
+        <select id="f-department" name="department_id" data-filter-input>
             <option value="">All departments</option>
             <?php foreach ($departments as $department): ?>
                 <option value="<?= e($department['department_id']) ?>" <?= (int) ($filters['department_id'] ?? 0) === (int) $department['department_id'] ? 'selected' : '' ?>>
@@ -28,7 +28,7 @@ $__view->start('content');
         <input type="search" id="f-search" name="search" value="<?= e($filters['search']) ?>" placeholder="Subject code or name">
     </div>
     <div class="filter-bar__actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.search=''">Reset</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-filters">Reset</button>
     </div>
 </form>
 
@@ -153,7 +153,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 function applySubjectFilters() {
     const params = new URLSearchParams();
     const department = document.getElementById('f-department').value;
@@ -234,5 +234,9 @@ function applySubjectFilters() {
         }, 200);
     });
 })();
+
+// The filter controls announce changes rather than calling this directly:
+// an inline onchange= attribute cannot be authorised by a CSP nonce.
+document.addEventListener('ls:filter-change', applySubjectFilters);
 </script>
 <?php $__view->stop(); ?>

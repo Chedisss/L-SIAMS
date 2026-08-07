@@ -8,6 +8,7 @@ use App\Core\Config;
 use App\Core\Database;
 use App\Core\Exceptions\ValidationException;
 use App\Core\Hash;
+use App\Core\Site;
 use PDOException;
 use SensitiveParameter;
 
@@ -456,7 +457,7 @@ final class UserRegistrationService
             '  Username  : ' . $username,
             '  Password  : ' . $password,
             '',
-            '  Sign in at: ' . Config::get('app.url'),
+            '  Sign in at: ' . Site::url(),
             '',
             '  You will be asked to change this password',
             '  the first time you sign in.',

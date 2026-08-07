@@ -23,7 +23,7 @@
             <p class="text-muted"><?= e($message) ?></p>
 
             <div class="flex gap-1 justify-between mt-3" style="justify-content:center">
-                <button type="button" class="btn btn-secondary" onclick="history.back()">
+                <button type="button" class="btn btn-secondary" data-action="history-back">
                     <i class="fa-solid fa-arrow-left"></i> Go back
                 </button>
                 <a class="btn btn-primary" href="/">

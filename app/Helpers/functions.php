@@ -4,7 +4,9 @@ declare(strict_types=1);
 use App\Core\Auth;
 use App\Core\Clock;
 use App\Core\Config;
+use App\Core\Csp;
 use App\Core\Flash;
+use App\Core\Site;
 use App\Services\CsrfService;
 
 /**
@@ -54,6 +56,32 @@ if (!function_exists('json_attr')) {
     }
 }
 
+if (!function_exists('json_js')) {
+    /**
+     * Safely embed a PHP value as a JSON literal inside an inline <script>.
+     *
+     * Not json_attr(). That one HTML-escapes, which is right for
+     * data-x='{"a":1}' and wrong inside a script element: HTML escaping turns
+     * the JSON string delimiters into &quot;, and the browser hands script
+     * content to the JS parser without decoding entities, so the whole block
+     * dies with "Unexpected token '&'". Every inline script that used
+     * json_attr() was a syntax error — invisible only because the
+     * Content-Security-Policy was refusing to run those blocks at all.
+     *
+     * The hex flags are the actual protection here: they prevent a value
+     * containing </script>, <!--, & or a quote from ending the element early
+     * and turning attacker-controlled data into markup.
+     */
+    function json_js(mixed $value): string
+    {
+        return (string) json_encode(
+            $value,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+            | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+        );
+    }
+}
+
 if (!function_exists('config')) {
     function config(string $key, mixed $default = null): mixed
     {
@@ -65,6 +93,20 @@ if (!function_exists('csrf_token')) {
     function csrf_token(): string
     {
         return CsrfService::token();
+    }
+}
+
+if (!function_exists('csp_nonce')) {
+    /**
+     * The Content-Security-Policy nonce for this response.
+     *
+     * Every inline <script> and <style> block in the views must carry
+     * nonce="<?= csp_nonce() ?>" or the browser will refuse to run it. See
+     * App\Core\Csp for why the policy is built this way.
+     */
+    function csp_nonce(): string
+    {
+        return Csp::nonce();
     }
 }
 
@@ -107,7 +149,7 @@ if (!function_exists('auth')) {
 if (!function_exists('url')) {
     function url(string $path = '/'): string
     {
-        return rtrim((string) Config::get('app.url', ''), '/') . '/' . ltrim($path, '/');
+        return Site::url() . '/' . ltrim($path, '/');
     }
 }
 

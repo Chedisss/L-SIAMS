@@ -123,7 +123,7 @@ $past = array_values(array_filter($sessions, static fn (array $s): bool => $s['s
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS = window.LSIAMS;
 

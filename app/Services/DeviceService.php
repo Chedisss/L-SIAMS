@@ -6,6 +6,8 @@ namespace App\Services;
 use App\Core\Auth;
 use App\Core\Clock;
 use App\Core\Config;
+use App\Core\Realtime;
+use App\Core\Site;
 use App\Core\Crypto;
 use App\Core\Database;
 use App\Core\Exceptions\BusinessRuleException;
@@ -345,11 +347,11 @@ final class DeviceService
             'device_role'     => (string) $device['device_role'],
             'api_key'         => (string) $credentials['api_key'],
             'hmac_secret'     => (string) $credentials['hmac_secret'],
-            'server_url'      => (string) Config::get('app.url'),
+            'server_url'      => Site::url(),
             // Certificate pinning defeats a LAN man-in-the-middle even if an
             // attacker can persuade the device to resolve the server elsewhere.
             'server_fingerprint' => self::serverCertificateFingerprint(),
-            'ws_url'          => (string) Config::get('realtime.public_url'),
+            'ws_url'          => Realtime::publicUrl(),
             'heartbeat_interval_sec' => (int) $device['heartbeat_interval_sec'],
             'sync_interval_sec'      => (int) $device['sync_interval_sec'],
             'offline_queue_limit'    => (int) $device['offline_queue_limit'],

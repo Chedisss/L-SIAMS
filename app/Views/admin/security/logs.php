@@ -9,14 +9,14 @@ $__view->start('content');
     'breadcrumbs' => [['Dashboard', '/admin'], ['Security Center', '/admin/security'], ['Logs', null]],
 ]); ?>
 
-<form class="filter-bar" onsubmit="return false">
+<form class="filter-bar" data-no-submit>
     <div class="form-group form-group--wide">
         <label for="f-search">Search</label>
         <input type="search" id="f-search" name="search" value="<?= e($filters['search']) ?>" placeholder="Event, description or source IP">
     </div>
     <div class="form-group">
         <label for="f-severity">Severity</label>
-        <select id="f-severity" name="severity" onchange="applySecurityFilters()">
+        <select id="f-severity" name="severity" data-filter-input>
             <option value="">All</option>
             <?php foreach (['critical', 'high', 'medium', 'low'] as $severity): ?>
                 <option value="<?= e($severity) ?>" <?= $filters['severity'] === $severity ? 'selected' : '' ?>><?= e(ucfirst($severity)) ?></option>
@@ -25,7 +25,7 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-resolution">Status</label>
-        <select id="f-resolution" name="resolution_status" onchange="applySecurityFilters()">
+        <select id="f-resolution" name="resolution_status" data-filter-input>
             <option value="">All</option>
             <?php foreach (['open', 'investigating', 'resolved', 'false_positive'] as $status): ?>
                 <option value="<?= e($status) ?>" <?= $filters['resolution_status'] === $status ? 'selected' : '' ?>>
@@ -36,14 +36,14 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-from">From</label>
-        <input type="date" id="f-from" name="date_from" value="<?= e($filters['date_from']) ?>" onchange="applySecurityFilters()">
+        <input type="date" id="f-from" name="date_from" value="<?= e($filters['date_from']) ?>" data-filter-input>
     </div>
     <div class="form-group">
         <label for="f-to">To</label>
-        <input type="date" id="f-to" name="date_to" value="<?= e($filters['date_to']) ?>" onchange="applySecurityFilters()">
+        <input type="date" id="f-to" name="date_to" value="<?= e($filters['date_to']) ?>" data-filter-input>
     </div>
     <div class="filter-bar__actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.search=''">Reset</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-filters">Reset</button>
     </div>
 </form>
 
@@ -123,7 +123,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 function applySecurityFilters() {
     const params = new URLSearchParams();
     ['f-search:search', 'f-severity:severity', 'f-resolution:resolution_status', 'f-from:date_from', 'f-to:date_to']
@@ -174,5 +174,9 @@ window.securityTable = {
         }
     });
 })();
+
+// The filter controls announce changes rather than calling this directly:
+// an inline onchange= attribute cannot be authorised by a CSP nonce.
+document.addEventListener('ls:filter-change', applySecurityFilters);
 </script>
 <?php $__view->stop(); ?>

@@ -725,13 +725,19 @@
                     const params = Object.assign({}, config.filters(), state);
                     const response = await LS.http.get(config.endpoint, params);
 
+                    // The address bar is updated before rendering, not after.
+                    // A render callback is allowed to reload the page — the
+                    // students list does exactly that — and a reload that
+                    // happened before the query string was synced would fetch
+                    // page 2 and then reload page 1, so paging appeared to do
+                    // nothing at all.
+                    LS.util.syncQuery(params);
+
                     if (config.render) {
                         config.render(response.data.rows, response.data.pagination);
                     }
 
                     if (config.onLoad) config.onLoad(response.data);
-
-                    LS.util.syncQuery(params);
                 } catch (error) {
                     LS.toast.fromError(error);
                 } finally {
@@ -838,6 +844,131 @@
 
     /* --------------------------------------------------------------- boot -- */
 
+    /* -------------------------------------------------- declarative behaviours -- */
+
+    /**
+     * Replaces the inline `onclick=` / `onchange=` / `onsubmit=` attributes the
+     * views used to carry.
+     *
+     * A Content-Security-Policy nonce authorises a <script> block; it does not
+     * authorise an inline event-handler attribute — nothing does, short of
+     * 'unsafe-inline', which would undo the whole policy. So every handler that
+     * used to live in an attribute is expressed as a data attribute here and
+     * bound once, by delegation, which also means markup injected later (a
+     * re-rendered table body, a fresh page of results) is wired automatically
+     * without any re-binding call.
+     */
+    LS.behaviors = {
+        init() {
+            // Filter bars submit nothing: they re-query over AJAX. The attribute
+            // marks the form so the default navigation is suppressed.
+            document.addEventListener('submit', (event) => {
+                const form = event.target;
+                if (form instanceof Element && form.matches('form[data-no-submit]')) event.preventDefault();
+            });
+
+            document.addEventListener('click', (event) => {
+                const el = event.target instanceof Element
+                    ? event.target.closest('[data-action]')
+                    : null;
+
+                if (!el) return;
+
+                switch (el.dataset.action) {
+                    case 'clear-filters':
+                        // Drop the query string; the page re-renders unfiltered.
+                        event.preventDefault();
+                        window.location.href = window.location.pathname;
+                        break;
+                    case 'history-back':
+                        event.preventDefault();
+                        history.back();
+                        break;
+                    default:
+                        break;
+                }
+            });
+
+            // Any control marked data-filter-input announces a change; each page
+            // listens for the event and runs its own query. Announcing rather
+            // than calling a named global keeps the page's controller private to
+            // the page and out of the window namespace.
+            document.addEventListener('change', (event) => {
+                const el = event.target instanceof Element
+                    ? event.target.closest('[data-filter-input]')
+                    : null;
+
+                if (!el) return;
+
+                document.dispatchEvent(new CustomEvent('ls:filter-change', { detail: { field: el } }));
+            });
+
+            this.initPagination();
+        },
+
+        /**
+         * Resolve a dotted path such as "window.tableController" against the
+         * global object. Property lookup only — never eval, which the policy
+         * forbids and which would reintroduce exactly the injection risk the
+         * nonce exists to prevent.
+         */
+        resolve(path) {
+            if (!path) return null;
+
+            return String(path).split('.').reduce(
+                (obj, key) => (obj == null ? null : (key === 'window' ? obj : obj[key])),
+                window
+            );
+        },
+
+        /**
+         * Navigate by query string. The fallback for a pagination block whose
+         * page did not register a controller — previously those blocks called a
+         * name that did not exist and the buttons did nothing at all.
+         */
+        navigateWithParams(params) {
+            const query = new URLSearchParams(window.location.search);
+            Object.entries(params).forEach(([key, value]) => query.set(key, String(value)));
+            window.location.search = query.toString();
+        },
+
+        initPagination() {
+            document.addEventListener('click', (event) => {
+                const link = event.target instanceof Element
+                    ? event.target.closest('[data-page]')
+                    : null;
+
+                if (!link || link.disabled) return;
+
+                const page       = parseInt(link.dataset.page, 10);
+                const controller = this.resolve(link.closest('[data-pagination-target]')?.dataset.paginationTarget);
+
+                if (controller && typeof controller.page === 'function') {
+                    controller.page(page);
+                } else {
+                    this.navigateWithParams({ page: page });
+                }
+            });
+
+            document.addEventListener('change', (event) => {
+                const select = event.target instanceof Element
+                    ? event.target.closest('[data-per-page]')
+                    : null;
+
+                if (!select) return;
+
+                const perPage    = parseInt(select.value, 10);
+                const controller = this.resolve(select.closest('[data-pagination-target]')?.dataset.paginationTarget);
+
+                if (controller && typeof controller.load === 'function') {
+                    controller.load({ per_page: perPage, page: 1 });
+                } else {
+                    this.navigateWithParams({ per_page: perPage, page: 1 });
+                }
+            });
+        },
+    };
+
     document.addEventListener('DOMContentLoaded', function () {
         LS.theme.init();
         LS.shell.init();
@@ -902,5 +1033,7 @@
                 LS.util.setBusy(button, false);
             }
         });
+
+        LS.behaviors.init();
     });
 })();

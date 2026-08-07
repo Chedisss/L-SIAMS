@@ -403,14 +403,14 @@ $rotateDays = (int) config('security.api_key.rotation_days', 90);
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS = window.LSIAMS;
     const ID = <?= (int) $device['device_row_id'] ?>;
-    const DEVICE_ID = <?= json_attr((string) $device['device_id']) ?>;
+    const DEVICE_ID = <?= json_js((string) $device['device_id']) ?>;
 
     /* ---- heartbeat chart -------------------------------------------------- */
-    const heartbeats = <?= json_attr(array_reverse(array_map(static fn (array $h): array => [
+    const heartbeats = <?= json_js(array_reverse(array_map(static fn (array $h): array => [
         'at'     => (string) $h['created_at'],
         'signal' => $h['wifi_signal'] === null ? null : (int) $h['wifi_signal'],
         'queue'  => (int) $h['queue_depth'],

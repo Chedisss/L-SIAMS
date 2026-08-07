@@ -6,6 +6,7 @@ namespace App\Services;
 use App\Core\Auth;
 use App\Core\Clock;
 use App\Core\Config;
+use App\Core\Realtime;
 use App\Core\Crypto;
 use App\Core\Database;
 use App\Core\Logger;
@@ -239,7 +240,7 @@ final class RealtimeService
             'ticket'     => $ticket,
             'expires_at' => $expires->format(DATE_ATOM),
             'channels'   => $channels,
-            'url'        => (string) Config::get('realtime.public_url', ''),
+            'url'        => Realtime::publicUrl(),
         ];
     }
 

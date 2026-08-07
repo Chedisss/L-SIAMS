@@ -190,7 +190,7 @@ final class Response
                     if ($name === 'Strict-Transport-Security' && !self::isHttps()) {
                         continue;
                     }
-                    header($name . ': ' . $value);
+                    header($name . ': ' . Csp::apply((string) $value));
                 }
                 header_remove('X-Powered-By');
             }

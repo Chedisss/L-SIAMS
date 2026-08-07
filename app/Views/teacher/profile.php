@@ -307,7 +307,7 @@ $fingerprintEnrolled = ($teacher['fingerprint_status'] ?? 'not_enrolled') === 'e
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS   = window.LSIAMS;
     const form = document.getElementById('profile-form');

@@ -193,7 +193,7 @@ final class App
         Flash::error($e->firstMessage());
 
         $referer = $request->header('referer');
-        $target  = $referer !== null && str_starts_with($referer, (string) Config::get('app.url'))
+        $target  = $referer !== null && str_starts_with($referer, Site::url())
             ? $referer
             : $request->path();
 

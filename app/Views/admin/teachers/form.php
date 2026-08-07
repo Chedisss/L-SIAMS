@@ -203,13 +203,13 @@ $editing = $teacher !== null;
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS = window.LSIAMS;
     const editing = <?= $editing ? 'true' : 'false' ?>;
     const teacherId = <?= (int) ($teacher['teacher_id'] ?? 0) ?>;
-    const preselectedSubjects = <?= json_attr($subjectIds) ?>;
-    const preselectedSections = <?= json_attr($sectionIds) ?>;
+    const preselectedSubjects = <?= json_js($subjectIds) ?>;
+    const preselectedSections = <?= json_js($sectionIds) ?>;
 
     const department = document.getElementById('department_id');
     const subjects   = document.getElementById('subject_ids');

@@ -196,11 +196,39 @@ REM The web server runs in this window; closing it stops the site.
 timeout /t 2 /nobreak >nul
 start "" "%URL%"
 
+REM Find this PC's address on the school network so the other devices can be
+REM told where to go. Picking the first IPv4 that is not loopback is right on
+REM the overwhelmingly common single-adapter machine; a PC on both Wi-Fi and
+REM Ethernet may show the other one, which is why the address is printed for
+REM the operator to read rather than written into any configuration.
+set "LANIP="
+for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /c:"IPv4 Address"') do (
+    if not defined LANIP (
+        for /f "tokens=* delims= " %%B in ("%%A") do (
+            if not "%%B"=="127.0.0.1" set "LANIP=%%B"
+        )
+    )
+)
+
 echo.
 echo   ================================================
 echo    L-SIAMS is running
 echo.
-echo      %URL%
+echo      On this PC:        %URL%
+if defined LANIP (
+    echo      On other devices:  http://%LANIP%:%WEB_PORT%
+    echo.
+    echo    Phones, tablets and laptops on the same Wi-Fi can
+    echo    open that second address. The first time, Windows
+    echo    Firewall will ask to allow PHP - choose Private
+    echo    networks and click Allow access. If nothing loads,
+    echo    see docs\NETWORK-ACCESS.md
+) else (
+    echo.
+    echo    This PC has no network address yet, so other devices
+    echo    cannot reach it. Connect it to the school Wi-Fi or
+    echo    plug in the network cable, then run this file again.
+)
 echo.
 echo    Close this window or press Ctrl+C to stop.
 echo    Then run stop.bat to close the other two.

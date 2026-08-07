@@ -17,7 +17,7 @@ for ($i = 1; $i <= $lastPage; $i++) {
     }
 }
 ?>
-<div class="pagination">
+<div class="pagination" data-pagination-target="<?= e($target ?? 'window.tableController') ?>">
     <div>
         <?php if ($total === 0): ?>
             No records
@@ -29,8 +29,7 @@ for ($i = 1; $i <= $lastPage; $i++) {
 
     <div class="flex items-center gap-1">
         <label class="text-sm text-muted" for="per-page-select" style="margin:0">Rows</label>
-        <select id="per-page-select" style="width:auto;padding:.25rem .45rem;font-size:12px"
-                onchange="<?= e($target ?? 'window.tableController') ?>.load({ per_page: parseInt(this.value, 10), page: 1 })">
+        <select id="per-page-select" style="width:auto;padding:.25rem .45rem;font-size:12px" data-per-page>
             <?php foreach ((array) config('app.pagination.allowed', [10, 25, 50, 100]) as $option): ?>
                 <option value="<?= e($option) ?>" <?= (int) ($pagination['per_page'] ?? 25) === $option ? 'selected' : '' ?>>
                     <?= e($option) ?>
@@ -42,7 +41,7 @@ for ($i = 1; $i <= $lastPage; $i++) {
     <?php if ($lastPage > 1): ?>
         <div class="pagination__pages">
             <button class="pagination__link" type="button" <?= $page <= 1 ? 'disabled' : '' ?>
-                    onclick="<?= e($target ?? 'window.tableController') ?>.page(<?= e($page - 1) ?>)"
+                    data-page="<?= e($page - 1) ?>"
                     aria-label="Previous page">
                 <i class="fa-solid fa-chevron-left"></i>
             </button>
@@ -53,7 +52,7 @@ for ($i = 1; $i <= $lastPage; $i++) {
                     <span class="text-subtle" style="padding:0 .2rem">…</span>
                 <?php endif; ?>
                 <button class="pagination__link <?= $number === $page ? 'active' : '' ?>" type="button"
-                        onclick="<?= e($target ?? 'window.tableController') ?>.page(<?= e($number) ?>)"
+                        data-page="<?= e($number) ?>"
                         <?= $number === $page ? 'aria-current="page"' : '' ?>>
                     <?= e($number) ?>
                 </button>
@@ -61,7 +60,7 @@ for ($i = 1; $i <= $lastPage; $i++) {
             <?php endforeach; ?>
 
             <button class="pagination__link" type="button" <?= $page >= $lastPage ? 'disabled' : '' ?>
-                    onclick="<?= e($target ?? 'window.tableController') ?>.page(<?= e($page + 1) ?>)"
+                    data-page="<?= e($page + 1) ?>"
                     aria-label="Next page">
                 <i class="fa-solid fa-chevron-right"></i>
             </button>
