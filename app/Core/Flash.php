@@ -15,6 +15,19 @@ final class Flash
     private const OLD_INPUT = '_lsiams_old_input';
     private const ERRORS    = '_lsiams_errors';
 
+    /**
+     * Errors and old input are cleared from the session while a controller
+     * assembles its view data — before the template that needs them has run.
+     * These hold what was cleared so `field_error()` and `old()` still answer
+     * for the rest of the request, without the values surviving into the next.
+     *
+     * @var array<string,list<string>>|null
+     */
+    private static ?array $errorsThisRequest = null;
+
+    /** @var array<string,mixed>|null */
+    private static ?array $oldThisRequest = null;
+
     public static function start(): void
     {
         if (session_status() === PHP_SESSION_ACTIVE) {
@@ -78,18 +91,28 @@ final class Flash
         self::start();
         unset($input['password'], $input['password_confirmation'], $input['current_password'], $input['_csrf']);
         $_SESSION[self::OLD_INPUT] = $input;
+        self::$oldThisRequest      = $input;
     }
 
     public static function old(string $key, mixed $default = null): mixed
     {
         self::start();
 
-        return $_SESSION[self::OLD_INPUT][$key] ?? $default;
+        if (self::$oldThisRequest === null) {
+            /** @var array<string,mixed> $stored */
+            $stored               = $_SESSION[self::OLD_INPUT] ?? [];
+            self::$oldThisRequest = $stored;
+        }
+
+        return self::$oldThisRequest[$key] ?? $default;
     }
 
     public static function clearOld(): void
     {
         self::start();
+        // Read first: this keeps the values available to the template that is
+        // about to render, while removing them from the session.
+        self::old('');
         unset($_SESSION[self::OLD_INPUT]);
     }
 
@@ -98,21 +121,29 @@ final class Flash
     {
         self::start();
         $_SESSION[self::ERRORS] = $errors;
+        self::$errorsThisRequest = $errors;
     }
 
     /** @return array<string,list<string>> */
     public static function errors(): array
     {
         self::start();
-        /** @var array<string,list<string>> $errors */
-        $errors = $_SESSION[self::ERRORS] ?? [];
 
-        return $errors;
+        if (self::$errorsThisRequest === null) {
+            /** @var array<string,list<string>> $errors */
+            $errors                  = $_SESSION[self::ERRORS] ?? [];
+            self::$errorsThisRequest = $errors;
+        }
+
+        return self::$errorsThisRequest;
     }
 
     public static function clearErrors(): void
     {
         self::start();
+        // Read first: this keeps the errors available to the template that is
+        // about to render, while removing them from the session.
+        self::errors();
         unset($_SESSION[self::ERRORS]);
     }
 

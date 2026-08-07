@@ -60,6 +60,8 @@ abstract class Controller
 
         // Errors and old input are single-use; clearing here means a later
         // successful render does not redisplay a stale validation message.
+        // Flash keeps its own copy for the rest of this request, so the
+        // template rendered below can still call field_error() and old().
         Flash::clearErrors();
         Flash::clearOld();
 
