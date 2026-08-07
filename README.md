@@ -84,6 +84,12 @@ console.bat user:create-admin  add another administrator
 console.bat backup             take an encrypted backup
 ```
 
+**`update.bat`** pulls a newer version in place — only the changed lines, then
+any pending migrations. It leaves `.env`, the uploaded photos, the generated
+reports and the backups alone, which is the reason to use it rather than
+deleting the folder and downloading the ZIP again. On its first run it offers to
+link an unzipped folder to the repository; that part happens once.
+
 You still start **MySQL** yourself from the XAMPP Control Panel; `start.bat`
 checks for it and tells you if it is not running.
 
