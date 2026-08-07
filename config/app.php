@@ -22,6 +22,7 @@ return [
         'reports'    => BASE_PATH . '/storage/reports',
         'cache'      => BASE_PATH . '/storage/cache',
         'tmp'        => BASE_PATH . '/storage/tmp',
+        'sessions'   => BASE_PATH . '/storage/framework/sessions',
         'backups'    => BASE_PATH . '/database/backups',
         'migrations' => BASE_PATH . '/database/migrations',
         'seeders'    => BASE_PATH . '/database/seeders',

@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace App\Core;
 
+use RuntimeException;
+
 /**
  * One-request message and old-input storage, backed by the PHP session.
  *
@@ -44,8 +46,46 @@ final class Flash
             'samesite' => (string) ($config['samesite'] ?? 'Strict'),
         ]);
 
+        // Store sessions inside the project rather than wherever php.ini
+        // happens to point.
+        //
+        // This is not tidiness. If the configured save path does not exist or
+        // is not writable — the default on a stock XAMPP install is a directory
+        // that may never have been created — session_start() fails, $_SESSION
+        // is never persisted, and the CSRF token is silently regenerated on
+        // every request. Every form then fails with "your session security
+        // token expired", which points at the session having timed out rather
+        // than at storage that was never working. Owning the directory removes
+        // that failure mode entirely.
+        $sessionPath = (string) Config::get('app.paths.sessions', '');
+
+        if ($sessionPath !== '') {
+            if (!is_dir($sessionPath)) {
+                @mkdir($sessionPath, 0770, true);
+            }
+
+            if (is_dir($sessionPath) && is_writable($sessionPath)) {
+                session_save_path($sessionPath);
+            }
+        }
+
         session_name('lsiams_ui');
-        @session_start();
+
+        // Deliberately not suppressed. A session that cannot start breaks CSRF
+        // and every flash message, and it did so invisibly for as long as the
+        // warning was hidden behind an @.
+        if (!session_start()) {
+            Logger::critical('PHP session could not be started', [
+                'save_path' => session_save_path(),
+                'writable'  => is_writable(session_save_path()),
+            ]);
+
+            throw new RuntimeException(
+                'The session store could not be opened. Check that '
+                . (string) Config::get('app.paths.sessions', 'the session directory')
+                . ' exists and is writable.'
+            );
+        }
     }
 
     public static function add(string $type, string $message): void
