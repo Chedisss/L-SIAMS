@@ -14,14 +14,14 @@ $__view->start('content');
         . '<a class="dropdown__item" href="#" data-export="pdf">PDF</a></div></div>',
 ]); ?>
 
-<form class="filter-bar" onsubmit="return false">
+<form class="filter-bar" data-no-submit>
     <div class="form-group form-group--wide">
         <label for="f-search">Search</label>
         <input type="search" id="f-search" name="search" value="<?= e($filters['search']) ?>" placeholder="Description, record or actor">
     </div>
     <div class="form-group">
         <label for="f-action">Action</label>
-        <select id="f-action" name="action" onchange="applyAuditFilters()">
+        <select id="f-action" name="action" data-filter-input>
             <option value="">All actions</option>
             <?php foreach ($actions as $action): ?>
                 <option value="<?= e($action) ?>" <?= $filters['action'] === $action ? 'selected' : '' ?>><?= e($action) ?></option>
@@ -30,7 +30,7 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-module">Module</label>
-        <select id="f-module" name="module" onchange="applyAuditFilters()">
+        <select id="f-module" name="module" data-filter-input>
             <option value="">All modules</option>
             <?php foreach ($modules as $module): ?>
                 <option value="<?= e($module) ?>" <?= $filters['module'] === $module ? 'selected' : '' ?>><?= e($module) ?></option>
@@ -39,14 +39,14 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-from">From</label>
-        <input type="date" id="f-from" name="date_from" value="<?= e($filters['date_from']) ?>" onchange="applyAuditFilters()">
+        <input type="date" id="f-from" name="date_from" value="<?= e($filters['date_from']) ?>" data-filter-input>
     </div>
     <div class="form-group">
         <label for="f-to">To</label>
-        <input type="date" id="f-to" name="date_to" value="<?= e($filters['date_to']) ?>" onchange="applyAuditFilters()">
+        <input type="date" id="f-to" name="date_to" value="<?= e($filters['date_to']) ?>" data-filter-input>
     </div>
     <div class="filter-bar__actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.search=''">Reset</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-filters">Reset</button>
     </div>
 </form>
 
@@ -109,7 +109,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 function applyAuditFilters() {
     const params = new URLSearchParams();
     ['f-search:search', 'f-action:action', 'f-module:module', 'f-from:date_from', 'f-to:date_to']
@@ -163,5 +163,9 @@ window.auditTable = {
         LS.modal.open('audit-detail-modal');
     });
 })();
+
+// The filter controls announce changes rather than calling this directly:
+// an inline onchange= attribute cannot be authorised by a CSP nonce.
+document.addEventListener('ls:filter-change', applyAuditFilters);
 </script>
 <?php $__view->stop(); ?>

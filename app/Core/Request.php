@@ -337,17 +337,10 @@ final class Request
 
     public function isSecure(): bool
     {
-        if (($_SERVER['HTTPS'] ?? '') !== '' && strtolower((string) $_SERVER['HTTPS']) !== 'off') {
-            return true;
-        }
-        if ((int) ($_SERVER['SERVER_PORT'] ?? 0) === 443) {
-            return true;
-        }
-        if (Config::get('security.network.trust_proxy', false)) {
-            return strtolower($this->header('x-forwarded-proto', '') ?? '') === 'https';
-        }
-
-        return false;
+        // One implementation, in Site, so the HTTPS redirect, the cookie flags
+        // and the derived base URL can never disagree about whether this
+        // request arrived over TLS.
+        return Site::isSecure();
     }
 
     /** True when the request is an XHR/fetch call rather than a document navigation. */
@@ -383,7 +376,7 @@ final class Request
 
     public function url(): string
     {
-        return rtrim((string) Config::get('app.url', ''), '/') . $this->path;
+        return Site::url() . $this->path;
     }
 
     public function fullPathWithQuery(): string

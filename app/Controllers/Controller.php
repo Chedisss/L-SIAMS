@@ -5,6 +5,7 @@ namespace App\Controllers;
 
 use App\Core\Auth;
 use App\Core\Config;
+use App\Core\Realtime;
 use App\Core\Exceptions\AuthorizationException;
 use App\Core\Flash;
 use App\Core\Request;
@@ -44,7 +45,7 @@ abstract class Controller
             'pageTitle'    => $data['pageTitle'] ?? (string) Config::get('app.name'),
             'idleTimeout'  => SessionService::idleTimeoutMinutes(),
             'warnSeconds'  => (int) Config::get('security.session.warning_seconds_before', 60),
-            'realtimeUrl'  => (string) Config::get('realtime.public_url'),
+            'realtimeUrl'  => Realtime::publicUrl(),
             'pollInterval' => (int) Config::get('realtime.fallback.poll_interval_ms', 3000),
         ];
 

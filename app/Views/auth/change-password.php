@@ -64,7 +64,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
     (function () {
         const password = document.getElementById('password');
         const confirm  = document.getElementById('password_confirmation');

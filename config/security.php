@@ -3,39 +3,6 @@ declare(strict_types=1);
 
 use App\Core\Env;
 
-if (!function_exists('realtime_csp_origin')) {
-    /**
-     * The realtime endpoint as a Content-Security-Policy source.
-     *
-     * Returns just the scheme, host and port — "ws://localhost:8443" — because
-     * a CSP source may not carry a path. Falls back to the two schemes rather
-     * than to nothing if the URL is unset or unparseable, so a misconfiguration
-     * degrades to the old permissive behaviour instead of silently blocking
-     * every live update with no clue as to why.
-     */
-    function realtime_csp_origin(): string
-    {
-        $url = trim((string) Env::get('REALTIME_WS_PUBLIC_URL', ''));
-
-        if ($url === '') {
-            return 'ws: wss:';
-        }
-
-        $parts = parse_url($url);
-
-        if ($parts === false || !isset($parts['scheme'], $parts['host'])) {
-            return 'ws: wss:';
-        }
-
-        return sprintf(
-            '%s://%s%s',
-            $parts['scheme'],
-            $parts['host'],
-            isset($parts['port']) ? ':' . (int) $parts['port'] : ''
-        );
-    }
-}
-
 return [
     // --- Passwords ---------------------------------------------------------
     'password' => [
@@ -132,13 +99,37 @@ return [
 
     // --- Response headers --------------------------------------------------
     'headers' => [
-        // connect-src carries the realtime origin explicitly rather than a bare
-        // scheme. The WebSocket lives on its own port, so it is never 'self',
-        // and a deployment served over plain HTTP for a demo would have its
-        // ws:// connection blocked by a policy that only allowed wss:. Naming
-        // the configured origin keeps the policy tight — one host and port,
-        // not every wss: endpoint on the internet — and correct in both setups.
-        'Content-Security-Policy'   => "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self' " . realtime_csp_origin() . "; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
+        // Two placeholders are filled in per response by App\Core\Csp, because
+        // both depend on the request and this array is built once.
+        //
+        // {realtime_origin} is the WebSocket endpoint as a source: scheme, host
+        // and port. The WebSocket lives on its own port, so it is never 'self',
+        // and it has to name the host the browser actually used — a policy
+        // pinned to localhost blocks every device on the LAN. Naming one origin
+        // keeps the policy tight; a bare `wss:` would allow every WebSocket
+        // endpoint on the internet.
+        //
+        // {nonce} authorises this response's inline scripts.
+        // The layouts and the view-level script blocks are inline by design —
+        // there is no bundler here — and a bare 'self' silently refused all of
+        // them, which broke the CSRF bootstrap, the realtime URL and every
+        // button whose handler lived in a view. 'unsafe-inline' would have
+        // fixed that by removing the protection; the nonce keeps it.
+        // The layouts and the view-level script blocks are inline by design —
+        // there is no bundler here — and a bare 'self' silently refused all of
+        // them, which broke the CSRF bootstrap, the realtime URL and every
+        // button whose handler lived in a view. 'unsafe-inline' would have
+        // fixed that by removing the protection; the nonce keeps it.
+        //
+        // style-src does allow 'unsafe-inline', and that is a deliberate,
+        // narrower concession: a nonce only authorises <style> elements, and
+        // the views carry ~230 inline style *attributes* — progress-bar widths,
+        // chart bar heights, status-colour swatches — which no nonce can cover.
+        // The residual risk is CSS-based data inference, not script execution;
+        // script-src stays strict, which is where the injection risk actually
+        // lives. Note that adding a nonce to style-src would make browsers
+        // ignore 'unsafe-inline' entirely, so it deliberately has none.
+        'Content-Security-Policy'   => "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'nonce-{nonce}'; font-src 'self'; connect-src 'self' {realtime_origin}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
         'X-Frame-Options'           => 'DENY',
         'X-Content-Type-Options'    => 'nosniff',
         'Referrer-Policy'           => 'same-origin',

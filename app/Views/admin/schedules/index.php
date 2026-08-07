@@ -12,7 +12,7 @@ $__view->start('content');
         . '<i class="fa-solid fa-plus"></i> Add Schedule</button>',
 ]); ?>
 
-<form class="filter-bar" onsubmit="return false">
+<form class="filter-bar" data-no-submit>
     <div class="form-group">
         <label for="filter-teacher">Teacher</label>
         <select id="filter-teacher" name="teacher_id">
@@ -63,7 +63,7 @@ $__view->start('content');
     </div>
 
     <div class="filter-bar__actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.search=''">Reset</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-filters">Reset</button>
     </div>
 </form>
 
@@ -281,7 +281,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS = window.LSIAMS;
 

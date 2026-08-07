@@ -228,7 +228,7 @@ $fieldsByType = [
                                 <?php foreach ($history as $report): ?>
                                     <tr>
                                         <td class="cell-stack">
-                                            <span class="cell-primary"><?= e($report['title']) ?></span>
+                                            <span class="cell-primary"><?= e($report['report_name']) ?></span>
                                             <span class="cell-muted"><?= e($types[$report['report_type']] ?? $report['report_type']) ?></span>
                                         </td>
                                         <td><span class="badge badge-neutral"><?= e(strtoupper((string) $report['format'])) ?></span></td>
@@ -256,12 +256,12 @@ $fieldsByType = [
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS   = window.LSIAMS;
-    const BASE = <?= json_attr($base) ?>;
+    const BASE = <?= json_js($base) ?>;
 
-    const FIELDS = <?= json_attr($fieldsByType) ?>;
+    const FIELDS = <?= json_js($fieldsByType) ?>;
 
     const form   = document.getElementById('report-form');
     const type   = document.getElementById('r-type');

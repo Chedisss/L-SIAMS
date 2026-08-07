@@ -28,14 +28,14 @@ $__view->start('content');
     <?php endforeach; ?>
 </div>
 
-<form class="filter-bar" onsubmit="return false">
+<form class="filter-bar" data-no-submit>
     <div class="form-group form-group--wide">
         <label for="f-search">Search</label>
         <input type="search" id="f-search" name="search" value="<?= e($filters['search']) ?>" placeholder="Card UID, student number or name">
     </div>
     <div class="form-group">
         <label for="f-status">Status</label>
-        <select id="f-status" name="status" onchange="applyRfidFilters()">
+        <select id="f-status" name="status" data-filter-input>
             <option value="">All</option>
             <?php foreach (['active', 'inactive', 'lost', 'blacklisted', 'replaced'] as $status): ?>
                 <option value="<?= e($status) ?>" <?= $filters['status'] === $status ? 'selected' : '' ?>><?= e(ucfirst($status)) ?></option>
@@ -44,7 +44,7 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-section">Section</label>
-        <select id="f-section" name="section_id" onchange="applyRfidFilters()">
+        <select id="f-section" name="section_id" data-filter-input>
             <option value="">All sections</option>
             <?php foreach ($sections as $section): ?>
                 <option value="<?= e($section['section_id']) ?>" <?= (int) ($filters['section_id'] ?? 0) === (int) $section['section_id'] ? 'selected' : '' ?>>
@@ -54,7 +54,7 @@ $__view->start('content');
         </select>
     </div>
     <div class="filter-bar__actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.search=''">Reset</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-filters">Reset</button>
     </div>
 </form>
 
@@ -161,7 +161,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 function applyRfidFilters() {
     const params = new URLSearchParams();
     ['f-search:search', 'f-status:status', 'f-section:section_id'].forEach((pair) => {
@@ -260,5 +260,9 @@ window.rfidTable = {
         }
     });
 })();
+
+// The filter controls announce changes rather than calling this directly:
+// an inline onchange= attribute cannot be authorised by a CSP nonce.
+document.addEventListener('ls:filter-change', applyRfidFilters);
 </script>
 <?php $__view->stop(); ?>

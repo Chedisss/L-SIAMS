@@ -11,7 +11,7 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%232563EB'/><text x='50' y='68' font-size='52' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'>L</text></svg>">
     <link rel="stylesheet" href="<?= e(asset('css/app.css')) ?>">
     <link rel="stylesheet" href="<?= e(asset('css/icons.css')) ?>">
-    <style>
+    <style nonce="<?= e(csp_nonce()) ?>">
         .auth-shell {
             min-height: 100vh; display: grid;
             grid-template-columns: 1fr 460px;
@@ -107,7 +107,7 @@
     </main>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
     window.__LSIAMS_CONFIG__ = <?= json_encode([
         'csrfToken'     => csrf_token(),
         'authenticated' => false,

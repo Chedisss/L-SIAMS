@@ -64,7 +64,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
     document.getElementById('toggle-password').addEventListener('click', function () {
         const field = document.getElementById('password');
         const icon  = this.querySelector('i');

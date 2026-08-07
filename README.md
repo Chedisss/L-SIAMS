@@ -58,7 +58,11 @@ cd /var/www/lsiams
 
 cp .env.example .env
 php bin/console key:generate      # writes APP_KEY, API_KEY_PEPPER, REALTIME_TICKET_SECRET
-# edit .env: database credentials, APP_URL, TRUSTED_*_CIDRS
+# edit .env: database credentials, TRUSTED_*_CIDRS
+# APP_URL and REALTIME_WS_PUBLIC_URL may be left blank — the base URL and the
+# realtime endpoint then follow the address each browser used, so one PC serves
+# localhost and the whole LAN without either being configured. Set them behind
+# a reverse proxy, where the public name is not the one this process sees.
 
 php bin/console install           # migrate + seed + create the first administrator
 ```
@@ -279,6 +283,7 @@ a test database**, never at a school's live data.
 | | |
 |---|---|
 | [`docs/RUNNING-ON-WINDOWS.md`](docs/RUNNING-ON-WINDOWS.md) | Step-by-step first run on Windows with XAMPP, and what to do when it breaks |
+| [`docs/NETWORK-ACCESS.md`](docs/NETWORK-ACCESS.md) | Reaching the system from phones and laptops on the same school network |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Web server, TLS, systemd, MySQL tuning, database privileges, backups |
 | [`docs/API.md`](docs/API.md) | Device API, request signing, error codes, browser API |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The security model, threat by threat |

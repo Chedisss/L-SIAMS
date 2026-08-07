@@ -226,12 +226,12 @@ foreach ($roster as $entry) {
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS   = window.LSIAMS;
-    const CODE = <?= json_attr((string) $session['session_code']) ?>;
+    const CODE = <?= json_js((string) $session['session_code']) ?>;
     const ID   = <?= (int) $session['session_id'] ?>;
-    const BASE = <?= json_attr($sessionsPath) ?>;
+    const BASE = <?= json_js($sessionsPath) ?>;
 
     /* ---- roster filtering ------------------------------------------------ */
     const search = document.getElementById('roster-search');

@@ -11,10 +11,10 @@ $__view->start('content');
     'actions'     => '<button class="btn btn-primary" data-modal-open="section-modal"><i class="fa-solid fa-plus"></i> Add Section</button>',
 ]); ?>
 
-<form class="filter-bar" onsubmit="return false">
+<form class="filter-bar" data-no-submit>
     <div class="form-group">
         <label for="f-grade">Grade level</label>
-        <select id="f-grade" name="grade_level_id" onchange="applyFilters()">
+        <select id="f-grade" name="grade_level_id" data-filter-input>
             <option value="">All grades</option>
             <?php foreach ($gradeLevels as $grade): ?>
                 <option value="<?= e($grade['grade_level_id']) ?>" <?= (int) ($filters['grade_level_id'] ?? 0) === (int) $grade['grade_level_id'] ? 'selected' : '' ?>>
@@ -25,11 +25,11 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-strand">Strand</label>
-        <input type="text" id="f-strand" name="strand" value="<?= e($filters['strand']) ?>" placeholder="STEM" onchange="applyFilters()">
+        <input type="text" id="f-strand" name="strand" value="<?= e($filters['strand']) ?>" placeholder="STEM" data-filter-input>
     </div>
     <div class="form-group">
         <label for="f-status">Status</label>
-        <select id="f-status" name="status" onchange="applyFilters()">
+        <select id="f-status" name="status" data-filter-input>
             <option value="">All</option>
             <option value="active" <?= $filters['status'] === 'active' ? 'selected' : '' ?>>Active</option>
             <option value="inactive" <?= $filters['status'] === 'inactive' ? 'selected' : '' ?>>Inactive</option>
@@ -41,7 +41,7 @@ $__view->start('content');
         <input type="search" id="f-search" name="search" value="<?= e($filters['search']) ?>" placeholder="Section code or name">
     </div>
     <div class="filter-bar__actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.search=''">Reset</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-filters">Reset</button>
     </div>
 </form>
 
@@ -231,7 +231,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 function applyFilters() {
     const params = new URLSearchParams();
     ['f-grade:grade_level_id', 'f-strand:strand', 'f-status:status', 'f-search:search'].forEach((pair) => {
@@ -348,5 +348,9 @@ function applyFilters() {
         }, 200);
     });
 })();
+
+// The filter controls announce changes rather than calling this directly:
+// an inline onchange= attribute cannot be authorised by a CSP nonce.
+document.addEventListener('ls:filter-change', applyFilters);
 </script>
 <?php $__view->stop(); ?>

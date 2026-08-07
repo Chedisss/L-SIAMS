@@ -16,7 +16,7 @@ $__view->start('content');
         . '<a class="btn btn-primary" href="/admin/students/create"><i class="fa-solid fa-plus"></i> Add Student</a>',
 ]); ?>
 
-<form class="filter-bar" id="student-filters" onsubmit="return false">
+<form class="filter-bar" id="student-filters" data-no-submit>
     <div class="form-group form-group--wide">
         <label for="filter-search">Search</label>
         <input type="search" id="filter-search" name="search" value="<?= e($filters['search']) ?>"
@@ -191,7 +191,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS = window.LSIAMS;
     const form = document.getElementById('student-filters');

@@ -25,7 +25,7 @@ $__view->start('content');
     </div>
 <?php endif; ?>
 
-<form class="filter-bar" onsubmit="return false">
+<form class="filter-bar" data-no-submit>
     <div class="form-group form-group--wide">
         <label for="f-search">Search</label>
         <input type="search" id="f-search" name="search" value="<?= e($filters['search']) ?>"
@@ -33,7 +33,7 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-department">Department</label>
-        <select id="f-department" name="department_id" onchange="applyTeacherFilters()">
+        <select id="f-department" name="department_id" data-filter-input>
             <option value="">All departments</option>
             <?php foreach ($departments as $department): ?>
                 <option value="<?= e($department['department_id']) ?>" <?= (int) ($filters['department_id'] ?? 0) === (int) $department['department_id'] ? 'selected' : '' ?>>
@@ -44,7 +44,7 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-fingerprint">Fingerprint</label>
-        <select id="f-fingerprint" name="fingerprint_status" onchange="applyTeacherFilters()">
+        <select id="f-fingerprint" name="fingerprint_status" data-filter-input>
             <option value="">Any</option>
             <option value="enrolled" <?= $filters['fingerprint_status'] === 'enrolled' ? 'selected' : '' ?>>Enrolled</option>
             <option value="not_enrolled" <?= $filters['fingerprint_status'] === 'not_enrolled' ? 'selected' : '' ?>>Not enrolled</option>
@@ -53,14 +53,14 @@ $__view->start('content');
     </div>
     <div class="form-group">
         <label for="f-status">Status</label>
-        <select id="f-status" name="status" onchange="applyTeacherFilters()">
+        <select id="f-status" name="status" data-filter-input>
             <option value="">All</option>
             <option value="active" <?= $filters['status'] === 'active' ? 'selected' : '' ?>>Active</option>
             <option value="inactive" <?= $filters['status'] === 'inactive' ? 'selected' : '' ?>>Inactive</option>
         </select>
     </div>
     <div class="filter-bar__actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.search=''">Reset</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-filters">Reset</button>
     </div>
 </form>
 
@@ -137,7 +137,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 function applyTeacherFilters() {
     const params = new URLSearchParams();
     ['f-search:search', 'f-department:department_id', 'f-fingerprint:fingerprint_status', 'f-status:status']
@@ -156,5 +156,9 @@ window.teacherTable = {
 
 document.getElementById('f-search').addEventListener('input',
     window.LSIAMS.util.debounce(applyTeacherFilters, 500));
+
+// The filter controls announce changes rather than calling this directly:
+// an inline onchange= attribute cannot be authorised by a CSP nonce.
+document.addEventListener('ls:filter-change', applyTeacherFilters);
 </script>
 <?php $__view->stop(); ?>

@@ -158,6 +158,21 @@ keeps running until you stop it in the Control Panel.
 
 ---
 
+## Using it from a phone or another laptop
+
+`start.bat` prints two addresses when it finishes:
+
+```
+     On this PC:        http://localhost:8080
+     On other devices:  http://192.168.1.14:8080
+```
+
+Any device on the same Wi-Fi can open that second one. Nothing to install on
+those devices, and nothing to configure here — but Windows Firewall has to be
+allowed through once. [`NETWORK-ACCESS.md`](NETWORK-ACCESS.md) walks through it.
+
+---
+
 ## `console.bat` — the useful commands
 
 Open a Command Prompt in the project folder (Shift + right-click the folder →

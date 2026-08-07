@@ -7,7 +7,13 @@ return [
     'enabled'    => true,
     'ws_host'    => Env::get('REALTIME_WS_HOST', '0.0.0.0'),
     'ws_port'    => (int) Env::get('REALTIME_WS_PORT', '8443'),
-    'public_url' => Env::get('REALTIME_WS_PUBLIC_URL', 'wss://192.168.1.10:8443'),
+    // Left empty on purpose. When it is empty, App\Core\Realtime derives the
+    // endpoint from the host the browser actually used, so a device reaching
+    // the system at http://192.168.1.10:8080 is told to connect to
+    // ws://192.168.1.10:8443 rather than to its own localhost. Set it
+    // explicitly for a deployment behind a reverse proxy, where the public
+    // name is not the name this process sees; an explicit value always wins.
+    'public_url' => Env::get('REALTIME_WS_PUBLIC_URL', ''),
 
     'tls' => [
         // Defaults to on, and should stay on anywhere a real session cookie

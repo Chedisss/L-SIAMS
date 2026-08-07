@@ -29,7 +29,7 @@ $__view->start('content');
     </div>
 <?php endif; ?>
 
-<form class="filter-bar" id="attendance-filters" onsubmit="return false">
+<form class="filter-bar" id="attendance-filters" data-no-submit>
     <div class="form-group">
         <label for="f-from">From</label>
         <input type="date" id="f-from" name="date_from" value="<?= e($filters['date_from']) ?>">
@@ -86,7 +86,7 @@ $__view->start('content');
                placeholder="Student, number, card UID, teacher or session">
     </div>
     <div class="filter-bar__actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.search=''">Reset</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-filters">Reset</button>
     </div>
 </form>
 
@@ -182,7 +182,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS = window.LSIAMS;
 

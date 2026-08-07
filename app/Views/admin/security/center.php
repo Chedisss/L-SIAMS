@@ -205,10 +205,10 @@ $tone = ['normal' => 'success', 'guarded' => 'info', 'elevated' => 'warning',
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const LS = window.LSIAMS;
-    const trend = <?= json_attr($trend) ?>;
+    const trend = <?= json_js($trend) ?>;
 
     // Roll the per-severity rows into one series per bucket for the chart.
     const buckets = {};

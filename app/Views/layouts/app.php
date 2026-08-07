@@ -126,7 +126,7 @@ $photo    = $authUser['photo_path'] ?? null;
 
 <?php $__view->include('partials.session-modal', ['idleTimeout' => $idleTimeout ?? 10]); ?>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
     window.__LSIAMS_CONFIG__ = <?= json_encode([
         'csrfToken'          => csrf_token(),
         'authenticated'      => true,

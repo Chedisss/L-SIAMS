@@ -195,7 +195,7 @@ $action  = $editing ? '/admin/students/' . $student['student_id'] : '/admin/stud
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 (function () {
     const grade   = document.getElementById('grade_level_id');
     const section = document.getElementById('section_id');
@@ -206,7 +206,7 @@ $__view->start('scripts');
     // Sections are filtered by grade level here purely for convenience — the
     // server re-validates that the section really belongs to the grade level,
     // so a tampered form gains nothing.
-    const sections = <?= json_attr(array_map(static fn (array $s): array => [
+    const sections = <?= json_js(array_map(static fn (array $s): array => [
         'id'    => (int) $s['section_id'],
         'grade' => (int) $s['grade_level_id'],
         'code'  => (string) $s['section_code'],

@@ -167,7 +167,7 @@ $__view->start('content');
 $__view->stop();
 $__view->start('scripts');
 ?>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.getElementById('reset-password').addEventListener('click', async function () {
     const LS = window.LSIAMS;
 
