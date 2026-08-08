@@ -279,12 +279,13 @@ static int signedRequest(const char *method, const String &path, const String &b
 }
 
 /**
- * Set the clock from the server, then retry once.
+ * Set the clock from the server.
  *
- * A rejected timestamp is not a dead end: the server returns the epoch it
- * believes in alongside TIMESTAMP_EXPIRED, precisely so a device with no
- * battery-backed clock and no internet can correct itself. That is the whole
- * bootstrap — no NTP, no manual entry.
+ * A rejected timestamp is not a dead end. The signed call is tried first and
+ * gives the exact epoch when the clock is already close enough; when it is
+ * not, the 401 that comes back still carries an HTTP Date header, which is
+ * good to the second and enough to make the retry succeed. Either way a device
+ * with no battery-backed clock and no internet corrects itself.
  */
 static void setClock(time_t epoch) {
   struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
