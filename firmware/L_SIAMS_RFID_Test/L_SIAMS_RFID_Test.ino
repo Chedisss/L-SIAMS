@@ -91,12 +91,26 @@ static const char *DEVICE_MAC  = "AA:BB:CC:DD:EE:FF";      /* as registered  */
 
 #define CARD_DEBOUNCE_MS 2500
 
+/* The server marks a terminal offline after 90 seconds without a heartbeat
+ * (attendance.device.offline_after_sec), so this has to be comfortably under
+ * that or the dashboard shows Offline for a device that is working perfectly.
+ * 30 seconds gives two chances to miss one before it matters. */
+#define HEARTBEAT_INTERVAL_MS 30000
+
+/* How often to re-read the reader's version register while it is not
+ * answering, so a wiring fix shows up without a reflash. */
+#define READER_WATCH_MS 2000
+
 MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
 
 static String   lastUid;
 static uint32_t lastTapAt = 0;
 static bool     clockSet  = false;
 static String   lastDateHeader;   /* HTTP Date from the most recent response */
+static uint32_t lastHeartbeatAt = 0;
+static bool     heartbeatLogged = false;
+static uint32_t lastReaderCheck = 0;
+static byte     lastReaderVersion = 0xEE;   /* neither 0x00 nor a real version */
 
 /* --------------------------------------------------------------- helpers -- */
 
@@ -443,6 +457,85 @@ static bool syncClockFromServer() {
   return true;
 }
 
+/* ------------------------------------------------------------- heartbeat -- */
+
+/**
+ * Tell the server this terminal is alive.
+ *
+ * Without this the device sits at Offline on the dashboard for ever, with
+ * "never sent a heartbeat" against it, even while it is claimed and signing
+ * requests perfectly — the status column is driven by last_heartbeat_at and
+ * nothing else. The worker flips a terminal to offline 90 seconds after the
+ * last one, so the interval has to stay well inside that.
+ *
+ * Only the first success is logged. A line every thirty seconds would bury
+ * the card taps this sketch exists to show.
+ */
+static void sendHeartbeat() {
+  if (!clockSet) return;
+
+  JsonDocument request;
+  request["firmware"]    = "1.0.0-bench";
+  request["wifi_signal"] = WiFi.RSSI();
+  request["queue"]       = 0;
+  request["uptime"]      = (int) (millis() / 1000);
+  request["free_heap"]   = (int) ESP.getFreeHeap();
+
+  String body;
+  serializeJson(request, body);
+
+  JsonDocument response;
+  int status = signedRequest("POST", "/api/device/heartbeat", body, &response);
+
+  if (status == 200 || status == 201) {
+    if (!heartbeatLogged) {
+      Serial.println("Heartbeat accepted — the dashboard should show Online.");
+      heartbeatLogged = true;
+    }
+    return;
+  }
+
+  Serial.printf("Heartbeat failed (HTTP %d, %s)\n",
+                status, (const char *) (response["code"] | "-"));
+  heartbeatLogged = false;
+}
+
+/* --------------------------------------------------------- reader watch -- */
+
+/**
+ * Report the reader's version register whenever it changes.
+ *
+ * 0x00 means the SPI read came back as all-zero bits — the module is not
+ * answering, which is wiring or power rather than code. Polling it means a
+ * reseated wire shows up in the serial monitor within two seconds instead of
+ * needing a reflash to find out, which is the difference between debugging
+ * with both hands and debugging one guess at a time.
+ */
+static void watchReader() {
+  if (millis() - lastReaderCheck < READER_WATCH_MS) return;
+
+  lastReaderCheck = millis();
+
+  byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+
+  if (version == lastReaderVersion) return;
+
+  lastReaderVersion = version;
+
+  if (version == 0x00 || version == 0xFF) {
+    Serial.printf("READER: 0x%02X — not responding.\n", version);
+    Serial.println("  MISO -> GPIO 19, MOSI -> GPIO 23, SCK -> GPIO 18,");
+    Serial.println("  SDA/SS -> GPIO 5, RST -> GPIO 27, and 3.3V (never 5V).");
+    return;
+  }
+
+  Serial.printf("READER: 0x%02X — responding. Tap a card.\n", version);
+
+  /* It has just come back; re-initialise so the antenna is driven. */
+  rfid.PCD_Init();
+  rfid.PCD_AntennaOn();
+}
+
 /* ------------------------------------------------------------------ card -- */
 
 static String readCardUid() {
@@ -621,11 +714,23 @@ void setup() {
   Serial.println("Syncing clock...");
   syncClockFromServer();
 
+  /* Send one immediately rather than waiting out the first interval, so the
+   * dashboard goes Online while you are still looking at it. */
+  sendHeartbeat();
+  lastHeartbeatAt = millis();
+
   Serial.println();
   Serial.println("Ready — tap a card.");
 }
 
 void loop() {
+  if (millis() - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+    lastHeartbeatAt = millis();
+    sendHeartbeat();
+  }
+
+  watchReader();
+
   String uid = readCardUid();
 
   if (uid.length() == 0) {
