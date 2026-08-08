@@ -496,6 +496,76 @@ static void sendTap(const String &uid) {
   if (strlen(line1)) Serial.printf("  DISPLAY: %s / %s\n", line1, line2);
 }
 
+/* ----------------------------------------------------------- diagnostics -- */
+
+/**
+ * Explain a failed association instead of restating the three usual causes.
+ *
+ * "Check the SSID and the password and whether it is 5 GHz" is advice, not
+ * information — it leaves you testing three things by hand with a reflash
+ * between each. The radio already knows which one is wrong: a scan says
+ * whether this network is visible at all, and comparing the visible names
+ * against the configured one separates "not there" from "typed differently"
+ * from "right name, wrong password".
+ */
+static void diagnoseWifi() {
+  Serial.println("Wi-Fi FAILED.");
+  Serial.printf("  WiFi.status() = %d ", (int) WiFi.status());
+
+  switch (WiFi.status()) {
+    case WL_NO_SSID_AVAIL:  Serial.println("(network not found)");        break;
+    case WL_CONNECT_FAILED: Serial.println("(rejected — usually the password)"); break;
+    case WL_CONNECTION_LOST:Serial.println("(connection lost)");          break;
+    case WL_DISCONNECTED:   Serial.println("(disconnected)");             break;
+    default:                Serial.println();                             break;
+  }
+
+  Serial.println("  Scanning to see what this board can actually reach...");
+
+  WiFi.disconnect();
+  delay(100);
+
+  int found = WiFi.scanNetworks();
+
+  if (found <= 0) {
+    Serial.println("  No networks at all. Nothing here is 2.4 GHz and in range,");
+    Serial.println("  or the board's antenna is faulty.");
+    return;
+  }
+
+  bool nameMatched = false;
+
+  Serial.printf("  %d network(s) visible:\n", found);
+
+  for (int i = 0; i < found; i++) {
+    bool isTarget = (WiFi.SSID(i) == WIFI_SSID);
+    if (isTarget) nameMatched = true;
+
+    Serial.printf("    %-32s ch%-3d %4d dBm%s\n",
+                  WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i),
+                  isTarget ? "   <-- this is WIFI_SSID" : "");
+  }
+
+  Serial.println();
+
+  if (!nameMatched) {
+    Serial.printf("  \"%s\" is not in that list.\n", WIFI_SSID);
+    Serial.println("  Either it is 5 GHz — the ESP32 has no 5 GHz radio, so it");
+    Serial.println("  cannot see those at all — or the name differs. Copy the");
+    Serial.println("  name from the list above exactly; hotspot names often");
+    Serial.println("  carry an apostrophe or an accented character that does");
+    Serial.println("  not survive being retyped.");
+    Serial.println("  On iPhone: Personal Hotspot -> Maximise Compatibility.");
+    Serial.println("  On Android: Hotspot -> AP Band -> 2.4 GHz.");
+    return;
+  }
+
+  Serial.println("  The name matches, so the network is reachable and 2.4 GHz.");
+  Serial.println("  That leaves the password — check case, and l/1/I and O/0.");
+  Serial.println("  If the signal above is weaker than about -80 dBm, move the");
+  Serial.println("  board closer and try again.");
+}
+
 /* ----------------------------------------------------------------- setup -- */
 
 void setup() {
@@ -528,8 +598,7 @@ void setup() {
   Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Wi-Fi FAILED. Check the SSID and password, and that the");
-    Serial.println("network is 2.4 GHz — the ESP32 cannot see 5 GHz networks.");
+    diagnoseWifi();
     return;
   }
 
