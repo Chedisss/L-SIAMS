@@ -49,6 +49,7 @@
 #include <MFRC522.h>
 #include <ArduinoJson.h>
 #include <sys/time.h>
+#include <esp_system.h>      /* esp_random() */
 #include "mbedtls/md.h"
 
 /* ---------------------------------------------------------------- config -- */
@@ -369,7 +370,7 @@ static bool claimDevice() {
   }
 
   Serial.printf("  claim FAILED (HTTP %d, %s): %s\n",
-                status, code, (response["message"] | "").as<const char *>());
+                status, code, (const char *) (response["message"] | ""));
 
   if (strcmp(code, "CLAIM_IDENTITY_MISMATCH") == 0) {
     Serial.println("  -> DEVICE_MAC or DEVICE_ID does not match the registration");
@@ -388,7 +389,12 @@ static bool claimDevice() {
  * with no battery-backed clock and no internet corrects itself.
  */
 static void setClock(time_t epoch) {
-  struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+  /* Fields assigned rather than designated-initialised: the latter is a GNU
+   * extension in C++ and its acceptance varies with the core's -std flag. */
+  struct timeval tv;
+  tv.tv_sec  = epoch;
+  tv.tv_usec = 0;
+
   settimeofday(&tv, nullptr);
   clockSet = true;
 }
@@ -416,7 +422,7 @@ static bool syncClockFromServer() {
 
   if (fromHeader <= 0) {
     Serial.printf("  clock sync failed (HTTP %d, code %s, no usable Date header)\n",
-                  status, (response["code"] | "-").as<const char *>());
+                  status, (const char *) (response["code"] | "-"));
     return false;
   }
 
