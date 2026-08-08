@@ -68,6 +68,21 @@ static const char *DEVICE_ID   = "DEV-2026-0001";          /* "device_id"   */
 static const char *API_KEY     = "lsk_xxxxxxxx.yyyyyyyy";  /* "api_key"     */
 static const char *HMAC_SECRET = "zzzzzzzzzzzzzzzz";       /* "hmac_secret" */
 
+/* A freshly registered device is `unclaimed`, and DeviceAuthMiddleware refuses
+ * every signed request from one — the terminal has to present its single-use
+ * claim token first. That call is the one device route with no signature
+ * requirement, so it works before the clock is set.
+ *
+ * Both values come from the same provisioning JSON. The MAC must be the one
+ * you typed when registering: the server compares it, and a mismatch is
+ * treated as a leaked provisioning file, not a typo. The ESP32's own MAC is
+ * printed at boot below, so register with that and paste it here.
+ *
+ * Claiming is idempotent from your side — once done, the token is consumed and
+ * this call is skipped on every later boot. */
+static const char *CLAIM_TOKEN = "";                       /* "claim_token" */
+static const char *DEVICE_MAC  = "AA:BB:CC:DD:EE:FF";      /* as registered  */
+
 /* ------------------------------------------------------------------ pins -- */
 
 #define PIN_RFID_SS   5
@@ -279,12 +294,98 @@ static int signedRequest(const char *method, const String &path, const String &b
 }
 
 /**
- * Set the clock from the server, then retry once.
+ * Unsigned POST — used only by the claim call, which runs before this device
+ * has anything to sign with and before the clock is set.
+ */
+static int unsignedPost(const String &path, const String &body, JsonDocument *responseOut) {
+  if (WiFi.status() != WL_CONNECTED) return -1;
+
+  String url  = String(SERVER_URL) + path;
+  bool  isTls = url.startsWith("https://");
+
+  WiFiClient       plain;
+  WiFiClientSecure secure;
+  HTTPClient http;
+
+  if (isTls) {
+    secure.setInsecure();
+    if (!http.begin(secure, url)) return -2;
+  } else {
+    if (!http.begin(plain, url)) return -2;
+  }
+
+  http.setTimeout(8000);
+  http.addHeader("Content-Type", "application/json");
+
+  static const char *wanted[] = { "Date" };
+  http.collectHeaders(wanted, 1);
+
+  int status = http.POST(body);
+
+  if (status > 0) {
+    lastDateHeader = http.header("Date");
+    if (responseOut != nullptr) deserializeJson(*responseOut, http.getString());
+  }
+
+  http.end();
+  return status;
+}
+
+/**
+ * Activate this terminal, if it has not been activated already.
  *
- * A rejected timestamp is not a dead end: the server returns the epoch it
- * believes in alongside TIMESTAMP_EXPIRED, precisely so a device with no
- * battery-backed clock and no internet can correct itself. That is the whole
- * bootstrap — no NTP, no manual entry.
+ * CLAIM_TOKEN_USED is not a failure here: it means a previous boot already
+ * claimed the device, which is exactly the state we want to be in. Anything
+ * else is worth stopping for, because no signed request will be accepted until
+ * this succeeds.
+ */
+static bool claimDevice() {
+  if (strlen(CLAIM_TOKEN) == 0) {
+    Serial.println("  no claim token set — skipping (fine if already claimed)");
+    return true;
+  }
+
+  JsonDocument request;
+  request["claim_token"] = CLAIM_TOKEN;
+  request["device_id"]   = DEVICE_ID;
+  request["mac_address"] = DEVICE_MAC;
+
+  String body;
+  serializeJson(request, body);
+
+  JsonDocument response;
+  int status = unsignedPost("/api/device/claim", body, &response);
+
+  const char *code = response["code"] | "";
+
+  if (status == 200 || status == 201) {
+    Serial.println("  device claimed — now active");
+    return true;
+  }
+
+  if (strcmp(code, "CLAIM_TOKEN_USED") == 0) {
+    Serial.println("  already claimed on an earlier boot (fine)");
+    return true;
+  }
+
+  Serial.printf("  claim FAILED (HTTP %d, %s): %s\n",
+                status, code, (response["message"] | "").as<const char *>());
+
+  if (strcmp(code, "CLAIM_IDENTITY_MISMATCH") == 0) {
+    Serial.println("  -> DEVICE_MAC or DEVICE_ID does not match the registration");
+  }
+
+  return false;
+}
+
+/**
+ * Set the clock from the server.
+ *
+ * A rejected timestamp is not a dead end. The signed call is tried first and
+ * gives the exact epoch when the clock is already close enough; when it is
+ * not, the 401 that comes back still carries an HTTP Date header, which is
+ * good to the second and enough to make the retry succeed. Either way a device
+ * with no battery-backed clock and no internet corrects itself.
  */
 static void setClock(time_t epoch) {
   struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
@@ -428,7 +529,19 @@ void setup() {
 
   Serial.print("Wi-Fi ok, IP ");
   Serial.println(WiFi.localIP());
+
+  /* Register the terminal with this MAC, and put the same value in
+   * DEVICE_MAC above — the claim call compares them. */
+  Serial.print("This ESP32's MAC: ");
+  Serial.println(WiFi.macAddress());
   Serial.printf("Server: %s\n", SERVER_URL);
+
+  Serial.println("Claiming...");
+  if (!claimDevice()) {
+    Serial.println("Cannot continue: every signed request is refused until the");
+    Serial.println("device is claimed (DEVICE_UNCLAIMED).");
+    return;
+  }
 
   Serial.println("Syncing clock...");
   syncClockFromServer();
