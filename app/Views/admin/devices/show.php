@@ -461,7 +461,17 @@ $__view->start('scripts');
             document.getElementById('health-meta').textContent =
                 data.seconds_ago === null ? 'never sent a heartbeat' : data.seconds_ago + 's ago';
 
-            (data.health === 'online' ? LS.toast.success : LS.toast.warning)(response.message);
+            /* Called on LS.toast, not lifted off it. The toast helpers are
+             * written as `this.show(...)`, so selecting one with a ternary and
+             * invoking the result detaches it from its object — `this` is then
+             * undefined under strict mode and the call dies with "Cannot read
+             * properties of undefined (reading 'show')", which surfaces as an
+             * error toast for a test that actually succeeded. */
+            if (data.health === 'online') {
+                LS.toast.success(response.message);
+            } else {
+                LS.toast.warning(response.message);
+            }
         } catch (error) {
             LS.toast.fromError(error);
         } finally {
