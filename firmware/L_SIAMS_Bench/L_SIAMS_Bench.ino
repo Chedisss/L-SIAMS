@@ -9,7 +9,7 @@
  *
  * Wiring — MFRC522 (SPI):
  *      SDA/SS -> GPIO 5      SCK -> GPIO 18     MOSI -> GPIO 23
- *      MISO   -> GPIO 19     RST -> GPIO 27
+ *      MISO   -> GPIO 19     RST -> GPIO 22
  *      3.3V   -> 3V3   (NEVER 5V; 5 V destroys this module)
  *      GND    -> GND
  *
@@ -61,7 +61,15 @@ static const char *DEVICE_MAC  = "80:F3:DA:63:1B:40";
 /* ------------------------------------------------------------------ pins -- */
 
 #define PIN_RFID_SS        5
-#define PIN_RFID_RST       27
+
+/* RST on GPIO 22, matching the board as actually wired.
+ *
+ * Worth knowing before the display goes on: config.h assigns GPIO 22 to
+ * PIN_OLED_SCL, so the production firmware expects the reader's RST on GPIO
+ * 27 and this pin for I2C. Two options when you get there — move RST back to
+ * 27, or change PIN_OLED_SCL and PIN_RFID_RST in config.h to match this
+ * board. Either is fine; leaving both on 22 is not. */
+#define PIN_RFID_RST       22
 #define PIN_FINGER_RX      16      /* silkscreen RX2 — sensor TX lands here */
 #define PIN_FINGER_TX      17      /* silkscreen TX2 — sensor RX lands here */
 #define FINGERPRINT_BAUD   57600
@@ -446,7 +454,7 @@ static void watchReader() {
   if (version == 0x00 || version == 0xFF) {
     Serial.printf("READER: 0x%02X — not responding.\n", version);
     Serial.println("  MISO -> GPIO 19, MOSI -> GPIO 23, SCK -> GPIO 18,");
-    Serial.println("  SDA/SS -> GPIO 5, RST -> GPIO 27, and 3.3V (never 5V).");
+    Serial.println("  SDA/SS -> GPIO 5, RST -> GPIO 22, and 3.3V (never 5V).");
     return;
   }
 
