@@ -183,6 +183,20 @@ final class DeviceService
         $token    = 'clm_' . Crypto::randomBase62(12);
         $expires  = Clock::now()->modify('+' . $ttlHours . ' hours');
 
+        // Issuing a new file supersedes the old one, and the API key it carries
+        // is rotated to make that true. The claim token has to follow, or every
+        // download leaves another token alive for the rest of its 24 hours —
+        // so a provisioning file handed to a contractor, superseded, and then
+        // kept could still activate the terminal a day later.
+        $db->execute(
+            'UPDATE device_claims
+                SET expires_at = :now
+              WHERE device_row_id = :device
+                AND claimed_at IS NULL
+                AND expires_at > :now',
+            ['now' => Clock::nowString(), 'device' => $deviceRowId]
+        );
+
         $db->insert('device_claims', [
             'device_row_id'    => $deviceRowId,
             'claim_token_hash' => hash('sha256', $token),
