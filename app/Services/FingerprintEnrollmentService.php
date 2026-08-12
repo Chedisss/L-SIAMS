@@ -48,6 +48,12 @@ final class FingerprintEnrollmentService
         return (int) Config::get('attendance.fingerprint.enrollment_ttl_seconds', 180);
     }
 
+    /** How long a captured-but-unattached print waits for its registration form. */
+    private static function holdSeconds(): int
+    {
+        return (int) Config::get('attendance.fingerprint.enrollment_hold_seconds', 1800);
+    }
+
     // ------------------------------------------------------------- open ----
 
     /**
@@ -77,6 +83,49 @@ final class FingerprintEnrollmentService
             ]);
         }
 
+        return self::openRequest(
+            $deviceRowId,
+            $requestedBy,
+            $teacherId,
+            trim($teacher['first_name'] . ' ' . $teacher['last_name'])
+        );
+    }
+
+    /**
+     * Capture for somebody who is not registered yet.
+     *
+     * Registration takes the fingerprint first and creates the teacher second,
+     * so there is nobody to point the request at while the sensor is working.
+     * The slot it allocates is held against this request until a teacher row is
+     * created and bound to it — or until the request is abandoned, at which
+     * point the terminal is told to delete the template so the slot is genuinely
+     * free rather than merely unreferenced.
+     *
+     * @return array<string,mixed>
+     */
+    public static function openForRegistration(string $label, int $deviceRowId, int $requestedBy): array
+    {
+        self::expireStale();
+
+        $label = trim($label);
+
+        return self::openRequest(
+            $deviceRowId,
+            $requestedBy,
+            null,
+            $label === '' ? 'New teacher' : mb_substr($label, 0, 120)
+        );
+    }
+
+    /** @return array<string,mixed> */
+    private static function openRequest(
+        int $deviceRowId,
+        int $requestedBy,
+        ?int $teacherId,
+        string $label
+    ): array {
+        $db = Database::instance();
+
         $device = $db->selectOne(
             'SELECT d.*, v.health FROM devices d
           LEFT JOIN v_device_status v ON v.device_row_id = d.id
@@ -104,15 +153,16 @@ final class FingerprintEnrollmentService
         }
 
         return $db->transaction(static function (Database $db) use (
-            $teacherId, $deviceRowId, $requestedBy, $teacher, $device
+            $teacherId, $deviceRowId, $requestedBy, $label, $device
         ): array {
             // One at a time per terminal. Two open requests would race for the
             // person standing at the sensor, and whichever finished first would
             // claim a finger that may have been presented for the other.
             $open = $db->selectOne(
-                "SELECT r.*, t.first_name, t.last_name
+                "SELECT r.request_id,
+                        COALESCE(CONCAT(t.first_name, ' ', t.last_name), r.subject_label) AS who
                    FROM fingerprint_enrollment_requests r
-                   JOIN teachers t ON t.teacher_id = r.teacher_id
+              LEFT JOIN teachers t ON t.teacher_id = r.teacher_id
                   WHERE r.device_row_id = :device
                     AND r.status IN ('pending','scanning')
                   ORDER BY r.request_id DESC LIMIT 1
@@ -124,9 +174,8 @@ final class FingerprintEnrollmentService
                 throw new BusinessRuleException(
                     'ENROLLMENT_IN_PROGRESS',
                     sprintf(
-                        'That terminal is already enrolling %s %s. Wait for it to finish, or cancel it.',
-                        $open['first_name'],
-                        $open['last_name']
+                        'That terminal is already enrolling %s. Wait for it to finish, or cancel it.',
+                        $open['who']
                     ),
                     ['request_id' => (int) $open['request_id']],
                     409
@@ -137,10 +186,11 @@ final class FingerprintEnrollmentService
             // across the whole school, and only the server can see that. The
             // sensor is told which slot to write, and refusing a slot that is
             // already taken is then a server decision, not a firmware one.
-            $slot = FingerprintService::nextAvailableSlot($deviceRowId);
+            $slot = self::nextFreeSlot($db, $deviceRowId);
 
             $requestId = (int) $db->insert('fingerprint_enrollment_requests', [
                 'teacher_id'         => $teacherId,
+                'subject_label'      => $label,
                 'device_row_id'      => $deviceRowId,
                 'sensor_template_id' => $slot,
                 'status'             => 'pending',
@@ -165,9 +215,8 @@ final class FingerprintEnrollmentService
                     'request_id'         => $requestId,
                 ],
                 sprintf(
-                    'Enrolment requested for %s %s on terminal %s, sensor slot %d.',
-                    $teacher['first_name'],
-                    $teacher['last_name'],
+                    'Enrolment requested for %s on terminal %s, sensor slot %d.',
+                    $label,
                     $device['device_id'],
                     $slot
                 ),
@@ -177,6 +226,37 @@ final class FingerprintEnrollmentService
 
             return self::find($requestId) ?? [];
         });
+    }
+
+    /**
+     * The lowest slot that is neither enrolled nor spoken for.
+     *
+     * FingerprintService::nextAvailableSlot() only knows about templates that
+     * have been recorded. A capture taken during registration has written a
+     * real template to the sensor but has no teacher yet, so it is invisible
+     * there — and handing the same slot to the next registration would have the
+     * sensor overwrite one person's finger with another's.
+     */
+    private static function nextFreeSlot(Database $db, int $deviceRowId): int
+    {
+        // 'abandoned' belongs here as much as the in-flight states. Its template
+        // is still in the sensor, waiting for the terminal to delete it — and
+        // handing the slot out before that happens means the delete lands after
+        // the next person has been enrolled into it, wiping the print that was
+        // just taken. The slot only returns to circulation when the terminal
+        // confirms, which flips the row to 'cancelled'.
+        $held = $db->select(
+            "SELECT sensor_template_id
+               FROM fingerprint_enrollment_requests
+              WHERE device_row_id = :device
+                AND status IN ('pending','scanning','completed','abandoned')
+                AND bound_at IS NULL",
+            ['device' => $deviceRowId]
+        );
+
+        $reserved = array_map(static fn (array $r): int => (int) $r['sensor_template_id'], $held);
+
+        return FingerprintService::nextAvailableSlot($deviceRowId, $reserved);
     }
 
     // ------------------------------------------------------ device side ----
@@ -199,9 +279,10 @@ final class FingerprintEnrollmentService
 
         return $db->transaction(static function (Database $db) use ($deviceRowId): ?array {
             $request = $db->selectOne(
-                "SELECT r.*, t.first_name, t.last_name, t.employee_number
+                "SELECT r.*, t.employee_number,
+                        COALESCE(CONCAT(t.first_name, ' ', t.last_name), r.subject_label) AS display_name
                    FROM fingerprint_enrollment_requests r
-                   JOIN teachers t ON t.teacher_id = r.teacher_id
+              LEFT JOIN teachers t ON t.teacher_id = r.teacher_id
                   WHERE r.device_row_id = :device
                     AND r.status IN ('pending','scanning')
                   ORDER BY r.request_id ASC LIMIT 1
@@ -313,26 +394,179 @@ final class FingerprintEnrollmentService
             );
         }
 
-        FingerprintService::enroll(
-            (int) $request['teacher_id'],
-            $sensorTemplateId,
-            $deviceRowId,
-            $quality,
-            $sampleCount,
-            $request['requested_by'] === null ? null : (int) $request['requested_by']
-        );
+        // A capture taken during registration has nobody to enrol yet. The
+        // template is in the sensor and the slot is held against this request;
+        // bind() attaches both to the teacher row the moment it is created.
+        if ($request['teacher_id'] !== null) {
+            FingerprintService::enroll(
+                (int) $request['teacher_id'],
+                $sensorTemplateId,
+                $deviceRowId,
+                $quality,
+                $sampleCount,
+                $request['requested_by'] === null ? null : (int) $request['requested_by']
+            );
+        }
 
         Database::instance()->update('fingerprint_enrollment_requests', [
             'status'        => 'completed',
             'stage'         => self::STAGE_DONE,
-            'message'       => 'Fingerprint enrolled.',
+            'message'       => $request['teacher_id'] === null
+                ? 'Fingerprint captured. Finish the registration form to save it.'
+                : 'Fingerprint enrolled.',
             'quality_score' => $quality,
             'sample_count'  => $sampleCount,
             'completed_at'  => Clock::nowString(),
+            'bound_at'      => $request['teacher_id'] === null ? null : Clock::nowString(),
+            // An unbound capture is now waiting on somebody filling in the rest
+            // of a registration form, which takes longer than the gap between
+            // two finger placements. The window restarts here rather than
+            // running out while they are still typing a department in.
+            'expires_at'    => Clock::now()
+                ->modify('+' . self::holdSeconds() . ' seconds')->format('Y-m-d H:i:s'),
             'updated_at'    => Clock::nowString(),
         ], ['request_id' => $requestId]);
 
         return self::find($requestId) ?? [];
+    }
+
+    /**
+     * Attach a captured fingerprint to the teacher row it was taken for.
+     *
+     * Called inside the transaction that creates the teacher, so a registration
+     * that fails for any other reason does not leave a slot marked as belonging
+     * to a teacher who was never created.
+     */
+    public static function bind(int $requestId, int $teacherId, ?int $userId = null): void
+    {
+        $db = Database::instance();
+
+        $request = $db->selectOne(
+            'SELECT * FROM fingerprint_enrollment_requests WHERE request_id = :id FOR UPDATE',
+            ['id' => $requestId]
+        );
+
+        if ($request === null) {
+            throw new ValidationException([
+                'fingerprint_request_id' => ['That fingerprint capture no longer exists. Scan again.'],
+            ]);
+        }
+
+        if ((string) $request['status'] !== 'completed' || $request['bound_at'] !== null) {
+            throw new ValidationException([
+                'fingerprint_request_id' => [
+                    'That fingerprint capture is not available to attach — it was already used, '
+                    . 'cancelled or timed out. Scan again.',
+                ],
+            ]);
+        }
+
+        if ($request['teacher_id'] !== null && (int) $request['teacher_id'] !== $teacherId) {
+            throw new ValidationException([
+                'fingerprint_request_id' => ['That fingerprint capture belongs to a different teacher.'],
+            ]);
+        }
+
+        FingerprintService::enroll(
+            $teacherId,
+            (int) $request['sensor_template_id'],
+            (int) $request['device_row_id'],
+            $request['quality_score'] === null ? null : (int) $request['quality_score'],
+            (int) $request['sample_count'],
+            $userId
+        );
+
+        $db->update('fingerprint_enrollment_requests', [
+            'teacher_id' => $teacherId,
+            'bound_at'   => Clock::nowString(),
+            'message'    => 'Fingerprint enrolled with the teacher record.',
+            'updated_at' => Clock::nowString(),
+        ], ['request_id' => $requestId]);
+    }
+
+    /**
+     * A capture that will never be bound.
+     *
+     * The template is already in the sensor's flash, so marking the row is not
+     * enough — the slot stays occupied by a print belonging to nobody, and the
+     * next person allocated it would be enrolled over the top. 'abandoned' puts
+     * it on the terminal's delete list; the slot is only genuinely free once the
+     * terminal confirms it has gone.
+     */
+    public static function abandon(int $requestId, ?int $userId = null): void
+    {
+        $request = self::find($requestId);
+
+        if ($request === null || $request['bound_at'] !== null) {
+            return;
+        }
+
+        if (!in_array((string) $request['status'], ['pending', 'scanning', 'completed'], true)) {
+            return;
+        }
+
+        // Nothing was written to the sensor, so there is nothing to delete.
+        $status = (string) $request['status'] === 'completed' ? 'abandoned' : 'cancelled';
+
+        Database::instance()->update('fingerprint_enrollment_requests', [
+            'status'       => $status,
+            'message'      => $status === 'abandoned'
+                ? 'Registration was not completed; the template is being removed from the sensor.'
+                : 'Cancelled before the sensor captured anything.',
+            'completed_at' => $request['completed_at'] ?? Clock::nowString(),
+            'updated_at'   => Clock::nowString(),
+        ], ['request_id' => $requestId]);
+
+        AuditService::log(
+            'FINGERPRINT_ENROLLMENT_ABANDONED',
+            'fingerprints',
+            'teacher',
+            null,
+            null,
+            ['request_id' => $requestId, 'sensor_template_id' => (int) $request['sensor_template_id']],
+            sprintf(
+                'Capture for "%s" was not attached to a teacher; sensor slot %d is being reclaimed.',
+                (string) ($request['subject_label'] ?? 'unknown'),
+                (int) $request['sensor_template_id']
+            ),
+            'success',
+            $userId
+        );
+    }
+
+    /**
+     * Slots this terminal is holding templates for that nothing owns.
+     *
+     * @return list<int>
+     */
+    public static function discardSlotsFor(int $deviceRowId): array
+    {
+        $rows = Database::instance()->select(
+            "SELECT sensor_template_id
+               FROM fingerprint_enrollment_requests
+              WHERE device_row_id = :device AND status = 'abandoned' AND bound_at IS NULL
+              ORDER BY sensor_template_id",
+            ['device' => $deviceRowId]
+        );
+
+        return array_values(array_unique(
+            array_map(static fn (array $r): int => (int) $r['sensor_template_id'], $rows)
+        ));
+    }
+
+    /** The terminal reports it has deleted the template, so the slot is free. */
+    public static function confirmDiscarded(int $deviceRowId, int $slot): void
+    {
+        Database::instance()->execute(
+            "UPDATE fingerprint_enrollment_requests
+                SET status = 'cancelled',
+                    message = 'Template removed from the sensor; the slot is free again.',
+                    updated_at = :now
+              WHERE device_row_id = :device
+                AND sensor_template_id = :slot
+                AND status = 'abandoned'",
+            ['now' => Clock::nowString(), 'device' => $deviceRowId, 'slot' => $slot]
+        );
     }
 
     /** The capture cycle did not produce a usable template. */
@@ -348,7 +582,7 @@ final class FingerprintEnrollmentService
         ], ['request_id' => $requestId]);
 
         Database::instance()->insert('fingerprint_logs', [
-            'teacher_id'         => (int) $request['teacher_id'],
+            'teacher_id'         => $request['teacher_id'] === null ? null : (int) $request['teacher_id'],
             'device_row_id'      => $deviceRowId,
             'sensor_template_id' => (int) $request['sensor_template_id'],
             'result'             => 'failed',
@@ -399,14 +633,18 @@ final class FingerprintEnrollmentService
     /** @return array<string,mixed>|null */
     public static function find(int $requestId): ?array
     {
+        // LEFT JOIN on teachers: a capture taken during registration has no
+        // teacher yet, and an inner join would make the request disappear from
+        // the very screen that is polling for it.
         return Database::instance()->selectOne(
-            'SELECT r.*, t.first_name, t.last_name, t.employee_number,
+            "SELECT r.*, t.first_name, t.last_name, t.employee_number,
+                    COALESCE(CONCAT(t.first_name, ' ', t.last_name), r.subject_label) AS display_name,
                     d.device_id, c.room_number
                FROM fingerprint_enrollment_requests r
-               JOIN teachers t ON t.teacher_id = r.teacher_id
+          LEFT JOIN teachers t ON t.teacher_id = r.teacher_id
                JOIN devices  d ON d.id = r.device_row_id
           LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
-              WHERE r.request_id = :id',
+              WHERE r.request_id = :id",
             ['id' => $requestId]
         );
     }
@@ -421,7 +659,10 @@ final class FingerprintEnrollmentService
      */
     public static function expireStale(): int
     {
-        return Database::instance()->execute(
+        $db  = Database::instance();
+        $now = Clock::nowString();
+
+        $expired = $db->execute(
             "UPDATE fingerprint_enrollment_requests
                 SET status = 'expired',
                     message = 'Timed out — the terminal did not complete the scan.',
@@ -429,8 +670,26 @@ final class FingerprintEnrollmentService
                     updated_at = :now
               WHERE status IN ('pending','scanning')
                 AND expires_at < :now",
-            ['now' => Clock::nowString()]
+            ['now' => $now]
         );
+
+        // A capture that completed but was never attached to a teacher has a
+        // template sitting in the sensor's flash. Marking it expired would leave
+        // that print in place occupying a slot nothing owns; 'abandoned' puts it
+        // on the terminal's delete list instead.
+        $abandoned = $db->execute(
+            "UPDATE fingerprint_enrollment_requests
+                SET status = 'abandoned',
+                    message = 'Registration was not completed; the template is being removed from the sensor.',
+                    updated_at = :now
+              WHERE status = 'completed'
+                AND teacher_id IS NULL
+                AND bound_at IS NULL
+                AND expires_at < :now",
+            ['now' => $now]
+        );
+
+        return $expired + $abandoned;
     }
 
     // ------------------------------------------------------------ helpers --

@@ -165,12 +165,85 @@ $editing = $teacher !== null;
         </div>
     <?php endif; ?>
 
+    <?php if (!$editing): ?>
+        <div class="card">
+            <div class="card__header">
+                <h2 class="card__title"><i class="fa-solid fa-fingerprint"></i> Fingerprint</h2>
+                <span class="badge badge-warning" id="fp-badge">Required</span>
+            </div>
+            <div class="card__body">
+                <p class="text-sm text-muted">
+                    Taken before the record is created, because a teacher without one cannot open a
+                    single attendance session — registering first would produce an account that
+                    exists and does nothing. The teacher needs to be at the terminal now.
+                </p>
+
+                <?php if ($devices === []): ?>
+                    <div class="alert alert-danger mt-2">
+                        <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+                        <div class="alert__body">
+                            <strong>No terminal is available to scan with, so no teacher can be registered.</strong>
+                            A terminal has to have completed first-boot activation and be reachable.
+                            <a href="/admin/devices">Set one up</a>, then come back.
+                        </div>
+                    </div>
+                <?php else: ?>
+                    <div class="form-grid mt-2">
+                        <div class="form-group">
+                            <label for="fp-device" class="required">Terminal</label>
+                            <select id="fp-device">
+                                <option value="">Select the terminal they are standing at…</option>
+                                <?php foreach ($devices as $device): ?>
+                                    <option value="<?= e($device['id']) ?>">
+                                        <?= e($device['device_id']) ?><?= $device['room_number'] ? ' — Room ' . e($device['room_number']) : '' ?><?php
+                                            ?> (<?= e(device_health_label($device['health'] ?? '')) ?>)
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group" style="align-self:end">
+                            <button type="button" class="btn btn-primary" id="fp-start">
+                                <i class="fa-solid fa-fingerprint"></i> Scan fingerprint
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="enrol-scan hidden" id="fp-scan">
+                        <div class="enrol-scan__icon" id="fp-icon"><i class="fa-solid fa-fingerprint"></i></div>
+                        <div class="enrol-scan__stage" id="fp-stage">Waiting for the terminal…</div>
+                        <div class="enrol-scan__detail text-sm text-muted" id="fp-detail"></div>
+
+                        <ol class="enrol-scan__steps" id="fp-steps">
+                            <li data-stage="waiting_for_device">Terminal picks up the request</li>
+                            <li data-stage="place_finger">Teacher places their finger</li>
+                            <li data-stage="remove_finger">Teacher lifts their finger</li>
+                            <li data-stage="place_again">Teacher places the same finger again</li>
+                            <li data-stage="storing">Sensor stores the template</li>
+                        </ol>
+
+                        <button type="button" class="btn btn-ghost btn-sm mt-2 hidden" id="fp-restart">
+                            <i class="fa-solid fa-rotate"></i> Scan again
+                        </button>
+                    </div>
+                <?php endif; ?>
+
+                <input type="hidden" name="fingerprint_request_id" id="fp-request-id" value="">
+            </div>
+        </div>
+    <?php endif; ?>
+
     <div class="flex gap-1 mb-3" style="justify-content:flex-end">
         <a class="btn btn-secondary" href="/admin/teachers">Cancel</a>
-        <button type="submit" class="btn btn-primary">
+        <button type="submit" class="btn btn-primary" id="teacher-submit"
+                <?= $editing ? '' : 'disabled' ?>>
             <i class="fa-solid fa-check"></i> <?= $editing ? 'Save changes' : 'Register teacher' ?>
         </button>
     </div>
+    <?php if (!$editing): ?>
+        <p class="text-xs text-muted" style="text-align:right;margin-top:-.6rem" id="submit-hint">
+            Scan the fingerprint to enable this.
+        </p>
+    <?php endif; ?>
 </form>
 
 <div class="modal-backdrop" id="credentials-modal">
@@ -210,6 +283,8 @@ $__view->start('scripts');
     const teacherId = <?= (int) ($teacher['teacher_id'] ?? 0) ?>;
     const preselectedSubjects = <?= json_js($subjectIds) ?>;
     const preselectedSections = <?= json_js($sectionIds) ?>;
+
+    let submitted = false;
 
     const department = document.getElementById('department_id');
     const subjects   = document.getElementById('subject_ids');
@@ -317,6 +392,144 @@ $__view->start('scripts');
         box.addEventListener('change', loadSections);
     });
 
+    /* ---- fingerprint, captured before the record exists --------------------- */
+    const fpStart   = document.getElementById('fp-start');
+    const submitBtn = document.getElementById('teacher-submit');
+
+    if (fpStart) {
+        const FP_STAGES = ['waiting_for_device', 'ready', 'place_finger', 'remove_finger',
+                           'place_again', 'storing', 'done'];
+
+        const fpScan    = document.getElementById('fp-scan');
+        const fpRestart = document.getElementById('fp-restart');
+        const fpBadge   = document.getElementById('fp-badge');
+        const fpHidden  = document.getElementById('fp-request-id');
+        const hint      = document.getElementById('submit-hint');
+
+        let fpRequestId = null;
+        let fpTimer     = null;
+
+        function fpPaint(data) {
+            document.getElementById('fp-stage').textContent =
+                data.status === 'completed' ? 'Fingerprint captured'
+                : data.status === 'failed'    ? 'Scan failed'
+                : data.status === 'expired'   ? 'Timed out'
+                : data.status === 'cancelled' || data.status === 'abandoned' ? 'Cancelled'
+                : (data.stage === 'waiting_for_device' ? 'Waiting for the terminal…' : 'Scanning');
+
+            document.getElementById('fp-detail').textContent = data.message || '';
+
+            const reached = FP_STAGES.indexOf(data.stage);
+
+            document.querySelectorAll('#fp-steps li').forEach((item) => {
+                const at = FP_STAGES.indexOf(item.dataset.stage);
+                item.classList.toggle('is-done', data.status === 'completed' || (reached > -1 && at < reached));
+                item.classList.toggle('is-current', data.status === 'scanning' && at === reached);
+            });
+
+            document.getElementById('fp-icon').className = 'enrol-scan__icon'
+                + (data.status === 'completed' ? ' is-success' : (data.finished ? ' is-error' : ' is-waiting'));
+        }
+
+        function fpStop() {
+            if (fpTimer) { clearInterval(fpTimer); fpTimer = null; }
+        }
+
+        /* The capture is what makes the record usable, so the form stays shut
+           until one exists. The server refuses without it either way; this is
+           only so nobody fills in twenty fields to be told at the end. */
+        function fpSetCaptured(requestId) {
+            fpHidden.value = requestId || '';
+            submitBtn.disabled = !requestId;
+
+            fpBadge.textContent = requestId ? 'Captured' : 'Required';
+            fpBadge.className   = 'badge ' + (requestId ? 'badge-success' : 'badge-warning');
+
+            if (hint) hint.textContent = requestId
+                ? 'Fingerprint captured — it is attached when you save.'
+                : 'Scan the fingerprint to enable this.';
+        }
+
+        async function fpPoll() {
+            if (!fpRequestId) return;
+
+            try {
+                const response = await LS.http.get('/admin/fingerprints/scan/' + fpRequestId, null, { passive: true });
+                const data = response.data;
+
+                fpPaint(data);
+
+                if (!data.finished) return;
+
+                fpStop();
+
+                if (data.status === 'completed') {
+                    fpSetCaptured(fpRequestId);
+                    fpRestart.classList.remove('hidden');
+                    LS.toast.success('Fingerprint captured. Finish the form to save it.');
+                } else {
+                    fpRequestId = null;
+                    fpSetCaptured(null);
+                    fpRestart.classList.remove('hidden');
+                    LS.toast.warning(data.message || 'The scan did not complete.');
+                }
+            } catch (error) {
+                fpStop();
+                fpRequestId = null;
+                fpSetCaptured(null);
+                LS.toast.fromError(error);
+            }
+        }
+
+        async function fpBegin() {
+            const deviceId = document.getElementById('fp-device').value;
+
+            if (!deviceId) {
+                LS.toast.warning('Choose the terminal the teacher is standing at.');
+                return;
+            }
+
+            LS.util.setBusy(fpStart, true, 'Asking the terminal…');
+            fpRestart.classList.add('hidden');
+            fpSetCaptured(null);
+
+            const name = (document.getElementById('first_name').value + ' '
+                        + document.getElementById('last_name').value).trim();
+
+            try {
+                const response = await LS.http.post('/admin/fingerprints/scan/registration', {
+                    name: name,
+                    device_row_id: deviceId,
+                });
+
+                fpRequestId = response.data.request_id;
+                fpScan.classList.remove('hidden');
+                fpPaint(response.data);
+                LS.toast.info(response.message);
+
+                fpStop();
+                fpTimer = setInterval(fpPoll, 1500);
+            } catch (error) {
+                LS.toast.fromError(error);
+            } finally {
+                LS.util.setBusy(fpStart, false);
+            }
+        }
+
+        fpStart.addEventListener('click', fpBegin);
+        fpRestart.addEventListener('click', fpBegin);
+
+        /* Leaving without saving means the template sits in the sensor holding
+           a slot nothing owns, so the server is told to reclaim it. */
+        window.addEventListener('beforeunload', () => {
+            if (fpRequestId && !submitted && navigator.sendBeacon) {
+                const body = new FormData();
+                body.append('_csrf', LS.config.csrfToken);
+                navigator.sendBeacon('/admin/fingerprints/scan/' + fpRequestId + '/cancel', body);
+            }
+        });
+    }
+
     const generate = document.getElementById('generate-password');
 
     if (generate) {
@@ -345,6 +558,7 @@ $__view->start('scripts');
                 ? await LS.http.put('/admin/teachers/' + teacherId, data)
                 : await LS.http.post('/admin/teachers', data);
 
+            submitted = true;
             LS.drafts.clear(form);
 
             if (!editing && response.data.password) {

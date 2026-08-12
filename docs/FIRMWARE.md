@@ -219,8 +219,15 @@ session has nothing to belong to.
 Enrolment is started in the browser and performed by the terminal. Nobody types
 a slot number anywhere.
 
+There are two entry points. Registering a teacher takes the fingerprint
+**before** the record is created — a teacher without one can open no session, so
+registering first would produce an account that exists and does nothing. The
+Fingerprints page handles the other cases: re-enrolment, a replaced sensor, a
+finger that stopped reading.
+
 ```
-Admin: Fingerprints → Enrol Fingerprint → pick teacher + terminal → Start
+Admin: Teachers → Register Teacher → fill in → Scan fingerprint
+  or:  Fingerprints → Enrol Fingerprint → pick teacher + terminal → Start
    │
    ├─ server allocates the next free sensor slot and opens a request
    │
@@ -262,6 +269,37 @@ quality score.
 Only one enrolment can be open per terminal at a time, and a request expires
 after three minutes without contact — the clock restarts on each step, so it is
 the gap between steps rather than a budget for the whole capture.
+
+### Reclaiming an abandoned capture
+
+A print taken during registration exists in the sensor before any teacher does.
+If the form is then abandoned — the browser closed, the tab left to time out —
+that print sits in the flash occupying a slot nothing owns, and the next person
+allocated it would be enrolled straight over the top.
+
+The server cannot reach into the sensor, so it asks:
+
+```
+Terminal: GET /api/fingerprint/enrollment
+   │      → { "discard_slots": [9], "enrollment": … }
+   │
+   ├─ finger.deleteModel(9)
+   │
+   └─ POST …/discarded { "sensor_template_id": 9 }
+          │
+          └─ only now is slot 9 handed out again
+```
+
+The slot stays reserved between the abandonment and the confirmation. Freeing it
+on the instruction rather than the confirmation would let the delete land after
+the next person had been enrolled into it, wiping the print just taken. A slot
+that is already empty when the delete runs is the expected outcome of a lost
+confirmation, not an error, so the terminal reports success either way.
+
+Captures wait 30 minutes for their form to be finished
+(`attendance.fingerprint.enrollment_hold_seconds`) before they are reclaimed —
+longer than the capture timeout, because the person is typing a department in
+rather than standing at a sensor.
 
 ---
 

@@ -130,6 +130,34 @@ final class FingerprintController extends Controller
         );
     }
 
+    /**
+     * Ask a terminal to capture a fingerprint for somebody not yet registered.
+     *
+     * The registration form calls this before it has a teacher to point at. The
+     * slot the sensor allocates is held against the returned request until the
+     * form is saved, at which point the two are bound together.
+     */
+    public function startRegistrationScan(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'name'          => 'nullable|string|max:120|no_html',
+            'device_row_id' => 'required|int',
+        ], [
+            'device_row_id' => 'Terminal',
+        ]);
+
+        $enrolment = FingerprintEnrollmentService::openForRegistration(
+            (string) ($data['name'] ?? ''),
+            (int) $data['device_row_id'],
+            $this->requireUserId()
+        );
+
+        return $this->json(
+            $this->scanPayload($enrolment),
+            'Go to the terminal — it is waiting for the fingerprint.'
+        );
+    }
+
     /** Polled by the enrolment wizard while the teacher is at the sensor. */
     public function scanStatus(Request $request): Response
     {
@@ -152,7 +180,10 @@ final class FingerprintController extends Controller
 
     public function cancelScan(Request $request): Response
     {
-        FingerprintEnrollmentService::cancel($request->routeInt('id'), $this->requireUserId());
+        // abandon() rather than cancel(): a capture that already completed has
+        // written a template to the sensor, and simply marking the row would
+        // leave that print occupying a slot nothing owns.
+        FingerprintEnrollmentService::abandon($request->routeInt('id'), $this->requireUserId());
 
         return $this->json([], 'Enrolment cancelled.');
     }
@@ -171,7 +202,7 @@ final class FingerprintController extends Controller
             'sensor_template_id' => (int) $enrolment['sensor_template_id'],
             'quality_score'      => $enrolment['quality_score'] === null ? null : (int) $enrolment['quality_score'],
             'sample_count'       => (int) $enrolment['sample_count'],
-            'teacher_name'       => trim($enrolment['first_name'] . ' ' . $enrolment['last_name']),
+            'teacher_name'       => (string) ($enrolment['display_name'] ?? 'this teacher'),
             'device_id'          => (string) $enrolment['device_id'],
             'room_number'        => $enrolment['room_number'],
             'finished'           => !in_array((string) $enrolment['status'], ['pending', 'scanning'], true),

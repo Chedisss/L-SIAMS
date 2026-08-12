@@ -110,6 +110,7 @@
 #define EP_ENROLL_PROGRESS     "/api/fingerprint/enrollment/progress"
 #define EP_ENROLL_COMPLETE     "/api/fingerprint/enrollment/complete"
 #define EP_ENROLL_FAILED       "/api/fingerprint/enrollment/failed"
+#define EP_ENROLL_DISCARDED    "/api/fingerprint/enrollment/discarded"
 #define EP_ATTENDANCE_START    "/api/attendance/start"
 #define EP_ATTENDANCE_TAP      "/api/attendance/tap"
 #define EP_ATTENDANCE_END      "/api/attendance/end"

@@ -1011,6 +1011,40 @@ void runEnrollment(int requestId, int slot, const String &teacherName) {
   showIdle();
 }
 
+/**
+ * Delete templates the server says nothing owns.
+ *
+ * A registration captured here and then abandoned leaves a print in the flash
+ * occupying a slot. The server cannot reach into the sensor, so it asks; and it
+ * only frees the slot once this board confirms, because handing out a slot that
+ * still holds a print would enrol the next person over somebody else's finger.
+ */
+void discardSlots(JsonArrayConst slots) {
+  for (JsonVariantConst entry : slots) {
+    int slot = entry.as<int>();
+    if (slot <= 0) continue;
+
+    uint8_t result = finger.deleteModel(slot);
+
+    /* An already-empty slot is the outcome we want, not a failure — that is
+     * what a lost confirmation looks like on the retry. */
+    if (result != FINGERPRINT_OK && result != FINGERPRINT_DELETEFAIL) {
+      LOG("Could not clear sensor slot %d (%d)\n", slot, result);
+      continue;
+    }
+
+    JsonDocument request;
+    request["sensor_template_id"] = slot;
+
+    String body;
+    serializeJson(request, body);
+
+    if (apiRequest(EP_ENROLL_DISCARDED, body) == 200) {
+      LOG("Sensor slot %d cleared and released\n", slot);
+    }
+  }
+}
+
 /** Ask whether the Fingerprints page has queued somebody for this terminal. */
 void pollEnrollment() {
   if (millis() - lastEnrollPoll < ENROLL_POLL_INTERVAL_MS) return;
@@ -1020,6 +1054,9 @@ void pollEnrollment() {
   int status = apiRequest(EP_ENROLL_PENDING, "", &response, "", "GET");
 
   if (status != 200) return;
+
+  JsonArrayConst discard = response["data"]["discard_slots"];
+  if (!discard.isNull() && discard.size() > 0) discardSlots(discard);
 
   JsonObject enrolment = response["data"]["enrollment"];
   if (enrolment.isNull()) return;

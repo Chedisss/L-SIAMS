@@ -242,6 +242,20 @@ Fingerprints page has queued for *this* terminal, if any.
 the request from `pending` to `scanning`, which is how the browser knows the
 terminal has heard.
 
+`discard_slots` lists templates the sensor is holding that nothing owns — a
+registration captured and then abandoned. Delete each, then confirm.
+
+#### `POST /api/fingerprint/enrollment/discarded`
+
+```json
+{ "sensor_template_id": 9 }
+```
+
+The slot is only returned to circulation on this confirmation, never on the
+instruction alone: freeing it earlier would let the delete land after the next
+person had been enrolled into it. A slot already empty when the delete runs is
+the expected result of a lost confirmation — report it as success.
+
 #### `POST /api/fingerprint/enrollment/progress`
 
 ```json

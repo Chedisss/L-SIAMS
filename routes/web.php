@@ -163,6 +163,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     // the capture, the browser watches. Declared before the {id} routes so
     // "scan" is never mistaken for a teacher id.
     $router->post('/fingerprints/scan', FingerprintController::class . '@startScan');
+    $router->post('/fingerprints/scan/registration', FingerprintController::class . '@startRegistrationScan');
     $router->get('/fingerprints/scan/{id:\d+}', FingerprintController::class . '@scanStatus');
     $router->post('/fingerprints/scan/{id:\d+}/cancel', FingerprintController::class . '@cancelScan');
     $router->get('/fingerprints/{id:\d+}', FingerprintController::class . '@detail');

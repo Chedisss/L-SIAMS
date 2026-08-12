@@ -25,32 +25,42 @@ use App\Services\FingerprintEnrollmentService;
 final class FingerprintEnrollmentApiController extends Controller
 {
     /** GET /api/fingerprint/enrollment — is there anything to do? */
-    public function pending(Request $request): Response
+    public function pending(Request $httpRequest): Response
     {
         $device  = Auth::device();
         $request = FingerprintEnrollmentService::claimForDevice($device);
 
+        // Slots holding a template that nothing owns — a registration that was
+        // captured and then abandoned. The terminal deletes them and confirms,
+        // which is the only way the slot becomes genuinely free again: the
+        // server cannot reach into the sensor's flash by itself.
+        $discard = FingerprintEnrollmentService::discardSlotsFor((int) $device['id']);
+
         if ($request === null) {
             return $this->json([
-                'enrollment'   => null,
-                'poll_seconds' => (int) Config::get('attendance.fingerprint.enrollment_poll_seconds', 2),
+                'enrollment'    => null,
+                'discard_slots' => $discard,
+                'poll_seconds'  => (int) Config::get('attendance.fingerprint.enrollment_poll_seconds', 2),
             ], 'Nothing to enrol.');
         }
+
+        $name = (string) ($request['display_name'] ?? 'teacher');
 
         return $this->json([
             'enrollment' => [
                 'request_id'         => (int) $request['request_id'],
                 'sensor_template_id' => (int) $request['sensor_template_id'],
-                'teacher_name'       => trim($request['first_name'] . ' ' . $request['last_name']),
-                'employee_number'    => (string) $request['employee_number'],
+                'teacher_name'       => $name,
+                'employee_number'    => (string) ($request['employee_number'] ?? ''),
                 'stage'              => (string) $request['stage'],
             ],
-            'poll_seconds' => (int) Config::get('attendance.fingerprint.enrollment_poll_seconds', 2),
+            'discard_slots' => $discard,
+            'poll_seconds'  => (int) Config::get('attendance.fingerprint.enrollment_poll_seconds', 2),
             // What the terminal should put on its display while it waits for a
             // finger. Sent from here so the wording stays in one place rather
             // than being duplicated into every firmware build.
             'display_line_1' => 'ENROLL FINGER',
-            'display_line_2' => mb_substr((string) $request['last_name'], 0, 20),
+            'display_line_2' => mb_substr($name, 0, 20),
         ], 'Enrolment pending.');
     }
 
@@ -100,10 +110,36 @@ final class FingerprintEnrollmentApiController extends Controller
         return $this->json([
             'status'         => $result['status'],
             'display_line_1' => 'ENROLLED',
-            'display_line_2' => mb_substr((string) $result['last_name'], 0, 20),
+            'display_line_2' => mb_substr((string) ($result['display_name'] ?? ''), 0, 20),
             'led'            => 'green',
             'buzzer'         => 'short',
         ], 'Fingerprint enrolled.');
+    }
+
+    /**
+     * POST /api/fingerprint/enrollment/discarded
+     *
+     * The terminal confirming it has deleted a template it was told to drop.
+     * Only then is the slot handed out again — trusting the instruction rather
+     * than the confirmation would allocate a slot that still holds somebody's
+     * print, and the next enrolment would silently overwrite it.
+     */
+    public function discarded(Request $httpRequest): Response
+    {
+        $device = Auth::device();
+
+        $data = $this->validate($httpRequest, [
+            'sensor_template_id' => 'required|int|between:1,999',
+        ], [
+            'sensor_template_id' => 'Sensor slot',
+        ]);
+
+        FingerprintEnrollmentService::confirmDiscarded(
+            (int) $device['id'],
+            (int) $data['sensor_template_id']
+        );
+
+        return $this->json([], 'Slot released.');
     }
 
     /** POST /api/fingerprint/enrollment/failed */

@@ -645,6 +645,44 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
   enrolling = false;
 }
 
+/**
+ * Delete templates the server says nothing owns.
+ *
+ * A registration captured at this sensor and then abandoned leaves a print in
+ * the flash occupying a slot. The server cannot reach into the sensor, so it
+ * asks; and it only frees the slot once this board confirms the delete, because
+ * handing out a slot that still holds a print would enrol the next person right
+ * over the top of somebody else's finger.
+ */
+static void discardSlots(JsonArrayConst slots) {
+  for (JsonVariantConst entry : slots) {
+    int slot = entry.as<int>();
+    if (slot <= 0) continue;
+
+    uint8_t result = finger.deleteModel(slot);
+
+    /* A slot that is already empty is the outcome we want, not a failure —
+     * it happens whenever a confirmation was lost on the way back. */
+    if (result != FINGERPRINT_OK && result != FINGERPRINT_DELETEFAIL) {
+      Serial.printf("Enrol: could not clear slot %d (sensor said %d)\n", slot, result);
+      continue;
+    }
+
+    JsonDocument request;
+    request["sensor_template_id"] = slot;
+
+    String body;
+    serializeJson(request, body);
+
+    JsonDocument response;
+    int status = signedRequest("POST", "/api/fingerprint/enrollment/discarded", body, &response);
+
+    if (status == 200 || status == 201) {
+      Serial.printf("Enrol: slot %d cleared and released.\n", slot);
+    }
+  }
+}
+
 /** Ask whether the Fingerprints page has queued somebody for this terminal. */
 static void pollEnrollment() {
   if (!fingerReady || !clockSet || enrolling) return;
@@ -660,6 +698,9 @@ static void pollEnrollment() {
   int status = signedRequest("GET", "/api/fingerprint/enrollment", "", &response);
 
   if (status != 200) return;
+
+  JsonArrayConst discard = response["data"]["discard_slots"];
+  if (!discard.isNull() && discard.size() > 0) discardSlots(discard);
 
   JsonObject enrolment = response["data"]["enrollment"];
   if (enrolment.isNull()) return;

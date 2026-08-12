@@ -112,6 +112,7 @@ $router->group('/api/fingerprint/enrollment', $deviceChain, static function ($ro
     $router->post('/progress', FingerprintEnrollmentApiController::class . '@progress');
     $router->post('/complete', FingerprintEnrollmentApiController::class . '@complete');
     $router->post('/failed', FingerprintEnrollmentApiController::class . '@failed');
+    $router->post('/discarded', FingerprintEnrollmentApiController::class . '@discarded');
 });
 
 $router->post('/api/rfid/scan', AttendanceApiController::class . '@tap', $deviceChain);

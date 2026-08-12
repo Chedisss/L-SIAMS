@@ -75,11 +75,20 @@ final class UserRegistrationService
         ): array {
             $hash = Hash::make($password);
 
-            // A teacher account starts inactive until fingerprint enrolment
-            // completes (Part 19.2) — an account that cannot open a session is
-            // better represented as inactive than as active-but-useless.
-            $requiresFingerprint = $roleSlug === 'teacher' && empty($data['skip_fingerprint_requirement']);
-            $status              = $requiresFingerprint ? 'inactive' : 'active';
+            // Registration captures the fingerprint before the record exists,
+            // so an account created through the form arrives already enrolled
+            // and is active from the start. The inactive path remains for the
+            // account created without one — an account that cannot open a
+            // session is better represented as inactive than active-but-useless.
+            $fingerprintRequestId = isset($data['fingerprint_request_id'])
+                ? (int) $data['fingerprint_request_id']
+                : 0;
+
+            $requiresFingerprint = $roleSlug === 'teacher'
+                && $fingerprintRequestId <= 0
+                && empty($data['skip_fingerprint_requirement']);
+
+            $status = $requiresFingerprint ? 'inactive' : 'active';
 
             try {
                 $userId = (int) $db->insert('users', [
@@ -137,6 +146,13 @@ final class UserRegistrationService
                     'subject_ids'     => $data['subject_ids'] ?? [],
                     'section_ids'     => $data['section_ids'] ?? [],
                 ], $createdBy);
+            }
+
+            // Inside the transaction on purpose: a registration that fails after
+            // this point must not leave the slot marked as belonging to a
+            // teacher who was rolled back out of existence.
+            if ($teacherId !== null && $fingerprintRequestId > 0) {
+                FingerprintEnrollmentService::bind($fingerprintRequestId, $teacherId, $createdBy);
             }
 
             AuditService::log(
