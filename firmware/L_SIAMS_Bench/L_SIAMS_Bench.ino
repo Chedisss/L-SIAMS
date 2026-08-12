@@ -52,11 +52,21 @@ static const char *DEVICE_ID   = "DEV-2026-0001";
 static const char *API_KEY     = "lsk_xxxxxxxx.yyyyyyyy";
 static const char *HMAC_SECRET = "zzzzzzzzzzzzzzzz";
 
-/* Leave CLAIM_TOKEN empty once the device is claimed. The MAC must match the
- * one registered — the server treats a mismatch as a leaked provisioning
- * file. This sketch prints the board's real MAC at boot. */
+/* Leave CLAIM_TOKEN empty once the device is claimed. */
 static const char *CLAIM_TOKEN = "";
-static const char *DEVICE_MAC  = "80:F3:DA:63:1B:40";
+
+/* The MAC is NOT configured here. The claim sends WiFi.macAddress() — the
+ * address this board actually has — and the server checks it against the one
+ * registered, refusing the claim if they differ.
+ *
+ * Reading it from the radio rather than from a constant is deliberate. A
+ * constant is a second place for the same value to be wrong, and the resulting
+ * CLAIM_IDENTITY_MISMATCH says nothing about which of the two copies is the
+ * mistaken one. It is also the weaker check: the point of comparing MACs is to
+ * prove a leaked provisioning file is being presented by the hardware it was
+ * issued for, and a value the flasher types in proves nothing at all.
+ *
+ * The MAC to register is printed at boot, right below the IP. */
 
 /* ------------------------------------------------------------------ pins -- */
 
@@ -322,7 +332,7 @@ static bool claimDevice() {
   JsonDocument request;
   request["claim_token"] = CLAIM_TOKEN;
   request["device_id"]   = DEVICE_ID;
-  request["mac_address"] = DEVICE_MAC;
+  request["mac_address"] = WiFi.macAddress();
 
   String body;
   serializeJson(request, body);
@@ -345,7 +355,12 @@ static bool claimDevice() {
                 status, code, (const char *) (response["message"] | ""));
 
   if (strcmp(code, "CLAIM_IDENTITY_MISMATCH") == 0) {
-    Serial.println("  -> DEVICE_MAC or DEVICE_ID does not match the registration");
+    Serial.println("  -> the registration does not match this board. Compare both:");
+    Serial.printf("       DEVICE_ID in this sketch : %s\n", DEVICE_ID);
+    Serial.printf("       this board's MAC         : %s\n", WiFi.macAddress().c_str());
+    Serial.println("     against the device page in L-SIAMS, or run: console.bat doctor");
+    Serial.println("     A terminal that has never claimed can have its MAC corrected");
+    Serial.println("     there; one that has already claimed cannot, by design.");
   }
 
   return false;

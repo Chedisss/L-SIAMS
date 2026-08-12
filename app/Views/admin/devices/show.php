@@ -360,6 +360,26 @@ $rotateDays = (int) config('security.api_key.rotation_days', 90);
                 </div>
 
                 <div class="form-group">
+                    <label for="de-mac">MAC address</label>
+                    <input type="text" id="de-mac" name="mac_address" maxlength="17"
+                           style="font-family:var(--mono)"
+                           value="<?= e($device['mac_address']) ?>"
+                           <?= $device['claim_status'] === 'claimed' ? 'readonly' : '' ?>>
+                    <span class="field-help">
+                        <?php if ($device['claim_status'] === 'claimed'): ?>
+                            Fixed: this terminal has already claimed its key with this address. Changing
+                            it now would let a leaked provisioning file be pointed at other hardware,
+                            which is exactly what the check prevents. Register the new board instead.
+                        <?php else: ?>
+                            The claim is refused unless this matches the board exactly, so a typo here
+                            is what <span class="mono">CLAIM_IDENTITY_MISMATCH</span> means. The sketch
+                            prints the board's real address at boot, right under its IP. Editable only
+                            until the terminal claims for the first time.
+                        <?php endif; ?>
+                    </span>
+                </div>
+
+                <div class="form-group">
                     <label for="de-allowlist">IP allowlist</label>
                     <input type="text" id="de-allowlist" name="ip_allowlist" maxlength="255"
                            value="<?= e($device['ip_allowlist'] ?? '') ?>" style="font-family:var(--mono)"

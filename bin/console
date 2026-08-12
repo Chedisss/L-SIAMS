@@ -692,7 +692,7 @@ function commandDoctor(): void
     heading('Terminals');
 
     $devices = $db->select(
-        'SELECT device_id, status, claim_status, last_heartbeat_at, classroom_id
+        'SELECT device_id, mac_address, status, claim_status, last_heartbeat_at, classroom_id
            FROM devices WHERE deleted_at IS NULL ORDER BY device_id'
     );
 
@@ -714,6 +714,12 @@ function commandDoctor(): void
 
         if ($device['claim_status'] !== 'claimed') {
             $warn((string) $device['device_id'], $detail . ' — the board has not claimed its API key yet');
+
+            // Both halves of what the claim checks, printed together, because
+            // CLAIM_IDENTITY_MISMATCH does not say which of the two is wrong
+            // and the answer is always "compare these against the board".
+            $note('registered MAC: ' . $device['mac_address'] . ' — this must match the address the');
+            $note('sketch prints at boot, exactly, or the claim is refused.');
         } elseif ($device['classroom_id'] === null) {
             $warn((string) $device['device_id'], $detail . ' — no classroom assigned, so no schedule can match');
         } elseif ($device['last_heartbeat_at'] === null || $stale) {
