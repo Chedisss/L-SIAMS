@@ -103,6 +103,126 @@ $rotateDays = (int) config('security.api_key.rotation_days', 90);
             </button>
         </div>
     </div>
+
+    <?php if ($claimAttempts !== []): ?>
+        <?php $latest = $claimAttempts[0]; ?>
+        <div class="card">
+            <div class="card__header">
+                <h2 class="card__title"><i class="fa-solid fa-triangle-exclamation text-danger"></i> The board tried and was refused</h2>
+                <span class="badge badge-danger"><?= e(count($claimAttempts)) ?></span>
+            </div>
+            <div class="card__body">
+                <p class="text-sm text-muted">
+                    So the board is reaching the server, and the network is fine. It was turned away
+                    because what it presented does not match this registration.
+                </p>
+
+                <?php if ($latest['reason'] === 'identity_mismatch'): ?>
+                    <div class="table-wrap mt-2">
+                        <table class="data">
+                            <thead><tr><th></th><th>Registered here</th><th>Sent by the board</th><th></th></tr></thead>
+                            <tbody>
+                                <tr>
+                                    <td class="cell-primary">Device ID</td>
+                                    <td class="mono text-sm"><?= e($device['device_id']) ?></td>
+                                    <td class="mono text-sm"><?= e($latest['presented_device_id'] ?? '—') ?></td>
+                                    <td>
+                                        <?php if ($latest['device_id_matches']): ?>
+                                            <span class="badge badge-success">matches</span>
+                                        <?php else: ?>
+                                            <span class="badge badge-danger">differs</span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-primary">MAC address</td>
+                                    <td class="mono text-sm"><?= e($device['mac_address']) ?></td>
+                                    <td class="mono text-sm"><?= e($latest['presented_mac'] ?? '—') ?></td>
+                                    <td>
+                                        <?php if ($latest['mac_matches']): ?>
+                                            <span class="badge badge-success">matches</span>
+                                        <?php else: ?>
+                                            <span class="badge badge-danger">differs</span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <?php if (!$latest['mac_matches'] && $latest['presented_mac'] !== null): ?>
+                        <div class="alert alert-warning mt-2">
+                            <span class="alert__icon"><i class="fa-solid fa-circle-question"></i></span>
+                            <div class="alert__body">
+                                <strong>Is <span class="mono"><?= e($latest['presented_mac']) ?></span> the board you mean to use?</strong>
+                                If it is, the MAC typed in at registration was wrong and correcting it
+                                here is all that is needed. If it is <em>not</em>, some other board is
+                                holding this terminal's provisioning file — revoke the key instead.
+                                <div class="flex gap-1 mt-2">
+                                    <button class="btn btn-primary btn-sm" id="adopt-mac"
+                                            data-mac="<?= e($latest['presented_mac']) ?>">
+                                        <i class="fa-solid fa-check"></i>
+                                        Use <?= e($latest['presented_mac']) ?>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    <?php elseif (!$latest['device_id_matches']): ?>
+                        <p class="text-sm mt-2">
+                            The Device ID is fixed once registered. Change <span class="mono">DEVICE_ID</span>
+                            in the sketch to <span class="mono"><?= e($device['device_id']) ?></span> and flash again.
+                        </p>
+                    <?php endif; ?>
+
+                <?php elseif ($latest['reason'] === 'token_expired'): ?>
+                    <div class="alert alert-warning mt-2">
+                        <span class="alert__icon"><i class="fa-solid fa-clock"></i></span>
+                        <div class="alert__body">
+                            The claim token had expired — they last 24 hours. Download a fresh
+                            provisioning file above and flash the new values.
+                        </div>
+                    </div>
+
+                <?php else: ?>
+                    <div class="alert alert-warning mt-2">
+                        <span class="alert__icon"><i class="fa-solid fa-key"></i></span>
+                        <div class="alert__body">
+                            The claim token was not recognised. Each download supersedes the last, so
+                            this happens when the sketch carries a token from an older file. Download
+                            once, and copy all four values out of that same file.
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <details class="mt-2">
+                    <summary class="text-sm text-muted" style="cursor:pointer">
+                        All <?= e(count($claimAttempts)) ?> attempt(s)
+                    </summary>
+                    <div class="table-wrap mt-1">
+                        <table class="data">
+                            <thead><tr><th>When</th><th>From</th><th>Device ID sent</th><th>MAC sent</th><th>Refused because</th></tr></thead>
+                            <tbody>
+                            <?php foreach ($claimAttempts as $attempt): ?>
+                                <tr>
+                                    <td class="nowrap text-xs"><?= e(format_datetime($attempt['created_at'], 'M j, H:i:s')) ?></td>
+                                    <td class="mono text-xs"><?= e($attempt['source_ip'] ?? '—') ?></td>
+                                    <td class="mono text-xs"><?= e($attempt['presented_device_id'] ?? '—') ?></td>
+                                    <td class="mono text-xs"><?= e($attempt['presented_mac'] ?? '—') ?></td>
+                                    <td class="text-xs"><?= e(match ($attempt['reason']) {
+                                        'identity_mismatch' => 'Device ID or MAC did not match',
+                                        'token_expired'     => 'Claim token had expired',
+                                        'unknown_token'     => 'Claim token not recognised',
+                                        default             => 'Refused',
+                                    }) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            </div>
+        </div>
+    <?php endif; ?>
 <?php endif; ?>
 
 <?php if ($device['active_session_code']): ?>
@@ -653,6 +773,42 @@ $__view->start('scripts');
         document.body.appendChild(form);
         form.submit();
         setTimeout(() => { form.remove(); window.location.reload(); }, 2500);
+    }
+
+    /* Adopting the MAC the board actually presented. Editable only while the
+       terminal has never claimed, which is exactly the state this panel
+       appears in — so this cannot re-point an already-activated terminal. */
+    const adopt = document.getElementById('adopt-mac');
+
+    if (adopt) {
+        adopt.addEventListener('click', async function () {
+            const mac = this.dataset.mac;
+
+            const confirmed = await LS.modal.confirm({
+                title:   'Register this terminal as ' + mac + '?',
+                message: 'The board presenting this address becomes the one allowed to activate '
+                       + 'this terminal.\n\nOnly do this if it is the board you mean to install '
+                       + 'here. If it is not, some other board is holding this terminal\'s '
+                       + 'provisioning file, and the key should be revoked instead.',
+                confirmLabel: 'Yes, that is my board',
+            });
+
+            if (!confirmed) return;
+
+            LS.util.setBusy(this, true, 'Saving…');
+
+            try {
+                const response = await LS.http.put('/admin/devices/' + ID, {
+                    device_name: <?= json_js($device['device_name']) ?>,
+                    mac_address: mac,
+                });
+                LS.toast.success(response.message + ' Power-cycle the board — it will claim itself.');
+                setTimeout(() => window.location.reload(), 1200);
+            } catch (error) {
+                LS.toast.fromError(error);
+                LS.util.setBusy(this, false);
+            }
+        });
     }
 
     ['provisioning-file', 'provisioning-file-top'].forEach((id) => {

@@ -61,6 +61,12 @@ final class DeviceController extends Controller
             'logs'       => DeviceService::logs($deviceRowId, 50),
             'heartbeats' => DeviceService::heartbeatHistory($deviceRowId, 24),
             'keyHistory' => ApiKeyService::historyForDevice($deviceRowId),
+            // Only meaningful while the terminal has never activated, and that
+            // is exactly when somebody is staring at "Pending" wondering what
+            // to do next.
+            'claimAttempts' => $device['claim_status'] === 'claimed'
+                ? []
+                : DeviceService::claimAttempts($deviceRowId, 10),
         ];
 
         if ($request->wantsJson()) {

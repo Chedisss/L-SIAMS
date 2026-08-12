@@ -173,9 +173,14 @@ $editing = $teacher !== null;
             </div>
             <div class="card__body">
                 <p class="text-sm text-muted">
-                    Taken before the record is created, because a teacher without one cannot open a
-                    single attendance session — registering first would produce an account that
-                    exists and does nothing. The teacher needs to be at the terminal now.
+                    <strong>Last step.</strong> Fill in everything above first, then have the teacher
+                    scan. Their print is saved with the record, and from then on placing that finger
+                    on a terminal opens their attendance session.
+                </p>
+                <p class="text-sm text-muted">
+                    It is taken before the record is created because a teacher without one cannot open
+                    a single session — registering first would produce an account that exists and does
+                    nothing.
                 </p>
 
                 <?php if ($devices === []): ?>
@@ -202,9 +207,10 @@ $editing = $teacher !== null;
                             </select>
                         </div>
                         <div class="form-group" style="align-self:end">
-                            <button type="button" class="btn btn-primary" id="fp-start">
+                            <button type="button" class="btn btn-primary" id="fp-start" disabled>
                                 <i class="fa-solid fa-fingerprint"></i> Scan fingerprint
                             </button>
+                            <span class="field-help text-warning" id="fp-gate"></span>
                         </div>
                     </div>
 
@@ -481,7 +487,63 @@ $__view->start('scripts');
             }
         }
 
+        /* The details come first, then the finger. A capture taken before the
+           form is filled in holds a sensor slot for half an hour and names the
+           person "New teacher"; worse, it invites someone to scan, wander off
+           filling in the rest, and find the capture timed out. */
+        const REQUIRED = ['employee_number', 'first_name', 'last_name', 'email', 'department_id'];
+
+        function missingDetails() {
+            const missing = REQUIRED.filter((id) => {
+                const field = document.getElementById(id);
+                return !field || field.value.trim() === '';
+            });
+
+            if (document.querySelectorAll('[name="grade_level_ids[]"]:checked').length === 0) {
+                missing.push('grade_level_ids');
+            }
+
+            return missing;
+        }
+
+        function labelFor(id) {
+            const field = document.getElementById(id);
+            const label = field && field.closest('.form-group')
+                ? field.closest('.form-group').querySelector('label')
+                : null;
+
+            return label ? label.textContent.replace('*', '').trim() : id;
+        }
+
+        function refreshScanGate() {
+            const missing = missingDetails();
+
+            fpStart.disabled = missing.length > 0;
+
+            const gate = document.getElementById('fp-gate');
+
+            if (!gate) return;
+
+            gate.textContent = missing.length === 0
+                ? ''
+                : 'Fill in ' + (missing.includes('grade_level_ids')
+                    ? missing.filter((m) => m !== 'grade_level_ids').map(labelFor).concat('at least one grade level').join(', ')
+                    : missing.map(labelFor).join(', '))
+                  + ' before scanning.';
+        }
+
+        form.addEventListener('input', refreshScanGate);
+        form.addEventListener('change', refreshScanGate);
+        refreshScanGate();
+
         async function fpBegin() {
+            const missing = missingDetails();
+
+            if (missing.length > 0) {
+                LS.toast.warning('Fill in the teacher\'s details first — the fingerprint is the last step.');
+                return;
+            }
+
             const deviceId = document.getElementById('fp-device').value;
 
             if (!deviceId) {
