@@ -182,6 +182,15 @@ final class AcademicStructureService
         );
     }
 
+    /** @return array<string,mixed>|null */
+    public static function department(int $departmentId): ?array
+    {
+        return Database::instance()->selectOne(
+            'SELECT * FROM departments WHERE department_id = :id AND deleted_at IS NULL',
+            ['id' => $departmentId]
+        );
+    }
+
     /** @return list<array<string,mixed>> */
     public static function departments(bool $activeOnly = false): array
     {
@@ -246,6 +255,37 @@ final class AcademicStructureService
 
         // numeric_level, never the code — "G10" sorts before "G7" as a string.
         return Database::instance()->select($sql . ' ORDER BY gl.numeric_level');
+    }
+
+    /**
+     * @param  list<int> $gradeLevelIds
+     * @return list<array<string,mixed>>
+     */
+    public static function gradeLevelsByIds(array $gradeLevelIds): array
+    {
+        $ids = array_values(array_unique(array_filter(
+            array_map('intval', $gradeLevelIds),
+            static fn (int $id): bool => $id > 0
+        )));
+
+        if ($ids === []) {
+            return [];
+        }
+
+        $placeholders = [];
+        $bindings     = [];
+
+        foreach ($ids as $index => $id) {
+            $placeholders[]             = ':grade' . $index;
+            $bindings['grade' . $index] = $id;
+        }
+
+        return Database::instance()->select(
+            'SELECT * FROM grade_levels
+              WHERE grade_level_id IN (' . implode(',', $placeholders) . ')
+              ORDER BY numeric_level',
+            $bindings
+        );
     }
 
     /** @param array<string,mixed> $data */

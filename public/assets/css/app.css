@@ -559,6 +559,11 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 .modal__title { font-size: 16px; font-weight: 600; margin: 0; }
 .modal__close { background: none; border: 0; font-size: 20px; line-height: 1; color: var(--text-subtle); cursor: pointer; }
 .modal__body { padding: 1.25rem; max-height: 70vh; overflow-y: auto; }
+
+/* Confirmation text is set with textContent, never innerHTML — the names and
+   reasons interpolated into it come from user input. pre-line is what lets that
+   stay true while a long explanation can still be broken into paragraphs. */
+.confirm-message { white-space: pre-line; }
 .modal__footer {
     display: flex; justify-content: flex-end; gap: .55rem;
     padding: .9rem 1.25rem; border-top: 1px solid var(--border);
@@ -956,3 +961,54 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
     .card { border: 1px solid #ccc; box-shadow: none; break-inside: avoid; }
     body { background: #fff; }
 }
+
+/* ---------------------------------------------------------------------------
+   Fingerprint enrolment wizard
+
+   The administrator is looking at this screen while someone else is looking at
+   the sensor, so the current step has to be readable from across a desk.
+   --------------------------------------------------------------------------- */
+
+.enrol-scan { text-align: center; padding: .5rem 0 .25rem; }
+
+.enrol-scan__icon {
+    width: 76px; height: 76px; margin: 0 auto .75rem;
+    display: grid; place-items: center;
+    border-radius: 50%; font-size: 34px;
+    background: var(--surface-alt); color: var(--text-muted);
+}
+.enrol-scan__icon.is-waiting { background: var(--primary-light); color: var(--primary); }
+.enrol-scan__icon.is-success { background: var(--success-light); color: #15803D; }
+.enrol-scan__icon.is-error   { background: var(--danger-light);  color: #B91C1C; }
+
+/* The pulse is the signal that the system is still waiting on a human, rather
+   than stuck. It stops the moment the outcome is known. */
+.enrol-scan__icon.is-waiting { animation: enrol-pulse 1.6s ease-in-out infinite; }
+
+@keyframes enrol-pulse {
+    0%, 100% { transform: scale(1);    opacity: 1; }
+    50%      { transform: scale(1.07); opacity: .82; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .enrol-scan__icon.is-waiting { animation: none; }
+}
+
+.enrol-scan__stage  { font-size: 17px; font-weight: 600; }
+.enrol-scan__detail { margin-top: .3rem; min-height: 2.4em; }
+
+.enrol-scan__steps {
+    list-style: none; margin: 1.1rem auto 0; padding: 0;
+    max-width: 330px; text-align: left;
+}
+.enrol-scan__steps li {
+    position: relative; padding: .3rem 0 .3rem 1.75rem;
+    font-size: 13px; color: var(--text-muted);
+}
+.enrol-scan__steps li::before {
+    content: '○'; position: absolute; left: .2rem; font-size: 13px;
+}
+.enrol-scan__steps li.is-done            { color: var(--text); }
+.enrol-scan__steps li.is-done::before    { content: '✓'; color: var(--success); font-weight: 700; }
+.enrol-scan__steps li.is-current         { color: var(--primary); font-weight: 600; }
+.enrol-scan__steps li.is-current::before { content: '●'; color: var(--primary); }

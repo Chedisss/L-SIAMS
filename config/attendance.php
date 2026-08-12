@@ -26,6 +26,17 @@ return [
         'max_failures_before_lock' => 5,
         'device_lock_minutes'      => 5,
         'alert_after_failures'     => 3,
+
+        // How long an open enrolment request waits before it gives up. The
+        // clock restarts on every progress report from the sensor, so this is
+        // the gap between steps, not the budget for the whole capture — three
+        // minutes of no contact means nobody is standing at the terminal.
+        'enrollment_ttl_seconds'   => 180,
+
+        // How often an idle terminal asks whether it has been asked to enrol
+        // somebody. Two seconds is what makes "Start" feel immediate; an idle
+        // ESP32 has nothing else to do, and the request is a few hundred bytes.
+        'enrollment_poll_seconds'  => 2,
     ],
 
     'device' => [

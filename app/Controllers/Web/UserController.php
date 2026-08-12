@@ -136,6 +136,15 @@ final class UserController extends Controller
         return $this->json([], 'Account archived and all its sessions terminated.');
     }
 
+    public function restore(Request $request): Response
+    {
+        $this->requirePasswordConfirmation($request);
+
+        UserRegistrationService::restore($request->routeInt('id'), $this->requireUserId());
+
+        return $this->json([], 'Account restored. It is inactive until you set it active.');
+    }
+
     /** Live username availability for the registration wizard. */
     public function checkUsername(Request $request): Response
     {

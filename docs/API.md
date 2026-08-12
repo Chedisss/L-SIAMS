@@ -215,6 +215,64 @@ The `display_line_*` and `feedback` fields exist so the terminal renders what
 the server decided rather than composing its own interpretation. The firmware
 does not know what "Late" means; it just prints line 1.
 
+#### `GET /api/fingerprint/enrollment`
+
+Asked every two seconds by an idle terminal. Answers with the enrolment the
+Fingerprints page has queued for *this* terminal, if any.
+
+```json
+{
+  "success": true,
+  "data": {
+    "enrollment": {
+      "request_id": 42,
+      "sensor_template_id": 7,
+      "teacher_name": "Grace Villanueva",
+      "employee_number": "EMP-0007",
+      "stage": "ready"
+    },
+    "poll_seconds": 2,
+    "display_line_1": "ENROLL FINGER",
+    "display_line_2": "Villanueva"
+  }
+}
+```
+
+`enrollment` is `null` when there is nothing to do. Reading this endpoint moves
+the request from `pending` to `scanning`, which is how the browser knows the
+terminal has heard.
+
+#### `POST /api/fingerprint/enrollment/progress`
+
+```json
+{ "request_id": 42, "stage": "place_finger" }
+```
+
+`stage` is one of `waiting_for_device`, `ready`, `place_finger`, `remove_finger`,
+`place_again`, `storing`, `done`. Each report restarts the request's expiry
+clock, so the timeout measures the gap between steps rather than the whole
+capture.
+
+#### `POST /api/fingerprint/enrollment/complete`
+
+```json
+{ "request_id": 42, "sensor_template_id": 7, "quality_score": 168, "sample_count": 2 }
+```
+
+`sensor_template_id` is the slot the sensor **actually** wrote, not the slot that
+was requested. If the two differ the enrolment is discarded and the request is
+marked failed — binding a teacher to a slot the sensor did not use would point
+at whatever finger already occupied it.
+
+#### `POST /api/fingerprint/enrollment/failed`
+
+```json
+{ "request_id": 42, "reason": "The two scans did not match." }
+```
+
+The reason is shown verbatim in the enrolment wizard, so it is written for the
+administrator standing at the screen rather than for a log.
+
 ### Error codes
 
 Rejections are business outcomes, not failures. Each returns HTTP 200 with
@@ -238,6 +296,10 @@ Rejections are business outcomes, not failures. Each returns HTTP 200 with
 | `MINIMUM_DWELL_NOT_MET` | Tapping out before the minimum stay has elapsed. |
 | `ALREADY_COMPLETE` | Both taps already recorded. |
 | `DEVICE_CLASSROOM_MISMATCH` | Terminal is not the one assigned to this session. |
+| `ENROLLMENT_IN_PROGRESS` | That terminal is already enrolling somebody. One at a time. |
+| `ENROLLMENT_NOT_OPEN` | The request was cancelled, completed or expired before the report arrived. |
+| `SLOT_MISMATCH` | The sensor wrote a different slot than the one allocated; the enrolment was discarded. |
+| `WRONG_DEVICE` | The request belongs to another terminal. |
 | `DUPLICATE_REQUEST` | Idempotency hit — the original response is replayed. |
 | `TIMESTAMP_EXPIRED` | Outside the ±30 s window. Check the clock. |
 | `REPLAY_DETECTED` | Nonce reused. |

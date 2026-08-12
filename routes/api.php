@@ -21,6 +21,7 @@ use App\Controllers\Api\AttendanceApiController;
 use App\Controllers\Api\ConstraintApiController;
 use App\Controllers\Api\DashboardApiController;
 use App\Controllers\Api\DeviceApiController;
+use App\Controllers\Api\FingerprintEnrollmentApiController;
 use App\Controllers\Api\RealtimeApiController;
 use App\Controllers\Web\AttendanceController;
 use App\Controllers\Web\ScheduleController;
@@ -101,6 +102,17 @@ $router->group('/api/attendance', $deviceChain, static function ($router): void 
 $router->post('/api/attendance/record', AttendanceApiController::class . '@tap', $deviceChain);
 
 $router->post('/api/fingerprint/verify', AttendanceApiController::class . '@start', $deviceChain);
+
+// Enrolment, driven from the browser and executed by the sensor. The terminal
+// polls `enrollment` while idle and reports its way through the capture cycle;
+// the slot the sensor allocates comes back here rather than being typed into a
+// form by whoever is standing at the terminal.
+$router->group('/api/fingerprint/enrollment', $deviceChain, static function ($router): void {
+    $router->get('', FingerprintEnrollmentApiController::class . '@pending');
+    $router->post('/progress', FingerprintEnrollmentApiController::class . '@progress');
+    $router->post('/complete', FingerprintEnrollmentApiController::class . '@complete');
+    $router->post('/failed', FingerprintEnrollmentApiController::class . '@failed');
+});
 
 $router->post('/api/rfid/scan', AttendanceApiController::class . '@tap', $deviceChain);
 

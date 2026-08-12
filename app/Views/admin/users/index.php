@@ -103,8 +103,14 @@ $__view->start('content');
                                     <i class="fa-solid fa-key"></i>
                                 </button>
 
-                                <?php if ($user['status'] !== 'archived'): ?>
-                                    <button class="btn btn-ghost btn-sm text-danger" title="Archive account"
+                                <?php if ($user['status'] === 'archived'): ?>
+                                    <button class="btn btn-ghost btn-sm" title="Restore account"
+                                            data-restore="<?= e($user['user_id']) ?>" data-name="<?= e($user['full_name']) ?>">
+                                        <i class="fa-solid fa-rotate-left"></i>
+                                    </button>
+                                <?php else: ?>
+                                    <button class="btn btn-ghost btn-sm text-danger"
+                                            title="Remove from the system (archive — the record is kept)"
                                             data-archive="<?= e($user['user_id']) ?>" data-name="<?= e($user['full_name']) ?>">
                                         <i class="fa-solid fa-box-archive"></i>
                                     </button>
@@ -446,11 +452,14 @@ $__view->start('scripts');
 
         if (archive) {
             const confirmed = await LS.modal.confirm({
-                title:        'Archive account?',
-                message:      archive.dataset.name + ' will no longer be able to sign in and every '
-                              + 'active session will be terminated. Their history is kept — accounts '
-                              + 'are never deleted, because audit and attendance records reference them.',
-                confirmLabel: 'Archive',
+                title:        'Remove this account from the system?',
+                message:      archive.dataset.name + ' disappears from every list, can no longer sign '
+                              + 'in, and every active session is terminated immediately.\n\n'
+                              + 'The record itself is kept in the database and nothing that points at '
+                              + 'it is broken — attendance, audit entries and login history all still '
+                              + 'resolve. Tick "Include archived" on this page to see it again, and '
+                              + 'restore it from there at any time.',
+                confirmLabel: 'Remove from the system',
                 danger:        true,
                 requirePassword: true,
             });
@@ -459,6 +468,35 @@ $__view->start('scripts');
 
             try {
                 const response = await LS.http.post('/admin/users/' + archive.dataset.archive + '/archive', {
+                    confirm_password: confirmed.password,
+                });
+                LS.toast.success(response.message);
+                setTimeout(() => window.location.reload(), 700);
+            } catch (error) {
+                LS.toast.fromError(error);
+            }
+
+            return;
+        }
+
+        const restore = event.target.closest('[data-restore]');
+
+        if (restore) {
+            const confirmed = await LS.modal.confirm({
+                title:        'Restore this account?',
+                message:      restore.dataset.name + ' comes back into every list with their password '
+                              + 'and history unchanged.\n\nIt returns inactive, not active — the '
+                              + 'account has been unusable for as long as it was archived, so signing '
+                              + 'in is a second, deliberate step. Edit it and set the status to active '
+                              + 'when you are ready.',
+                confirmLabel: 'Restore account',
+                requirePassword: true,
+            });
+
+            if (!confirmed) return;
+
+            try {
+                const response = await LS.http.post('/admin/users/' + restore.dataset.restore + '/restore', {
                     confirm_password: confirmed.password,
                 });
                 LS.toast.success(response.message);

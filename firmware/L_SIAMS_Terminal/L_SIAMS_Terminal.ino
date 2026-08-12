@@ -60,6 +60,7 @@ enum TerminalState {
   STATE_CLAIMING,
   STATE_AUTHENTICATING,
   STATE_READY,
+  STATE_ENROLLING,
   STATE_SESSION_OPEN,
   STATE_OFFLINE,
   STATE_LOCKED,
@@ -115,6 +116,7 @@ static uint32_t lastWifiRetry  = 0;
 static uint32_t displayUntil   = 0;
 static uint32_t lockUntil      = 0;
 static uint32_t bootMillis     = 0;
+static uint32_t lastEnrollPoll = 0;
 
 static String   lastCardUid    = "";
 static uint32_t lastCardAt     = 0;
@@ -446,7 +448,7 @@ void dequeueFront(uint16_t count) {
  * @return HTTP status, or a negative value on transport failure
  */
 int apiRequest(const String &path, const String &body, JsonDocument *responseOut = nullptr,
-               const String &requestId = "") {
+               const String &requestId = "", const char *method = "POST") {
   if (WiFi.status() != WL_CONNECTED) return -1;
 
   WiFiClientSecure client;
@@ -480,7 +482,7 @@ int apiRequest(const String &path, const String &body, JsonDocument *responseOut
 
   /* Canonical string, exactly as the server rebuilds it (Part 19.4):
    *   METHOD \n path \n device_id \n timestamp \n nonce \n sha256(body) */
-  String canonical = "POST\n" + path + "\n" + cfg.deviceId + "\n"
+  String canonical = String(method) + "\n" + path + "\n" + cfg.deviceId + "\n"
                    + timestamp + "\n" + nonce + "\n" + sha256Hex(body);
 
   http.addHeader(API_HEADER_DEVICE_ID, cfg.deviceId);
@@ -493,7 +495,10 @@ int apiRequest(const String &path, const String &body, JsonDocument *responseOut
     http.addHeader(API_HEADER_REQUEST_ID, requestId);
   }
 
-  int status = http.POST(body);
+  /* A GET carries no body, and the canonical string above already hashes the
+   * empty string for it — sending one anyway would sign something the server
+   * never sees. */
+  int status = (strcmp(method, "GET") == 0) ? http.GET() : http.POST(body);
 
   if (status > 0 && responseOut != nullptr) {
     DeserializationError error = deserializeJson(*responseOut, http.getString());
@@ -505,7 +510,7 @@ int apiRequest(const String &path, const String &body, JsonDocument *responseOut
 
   http.end();
 
-  LOG("POST %s -> %d\n", path.c_str(), status);
+  LOG("%s %s -> %d\n", method, path.c_str(), status);
   return status;
 }
 
@@ -850,6 +855,181 @@ void syncQueue() {
   showLines("SYNC COMPLETE", String(accepted) + " uploaded",
             queueCount > 0 ? String(queueCount) + " remaining" : "", 2500);
   feedback("blue-blink", "triple_short");
+}
+
+/* =========================================================================
+ * Fingerprint enrolment — driven from the Fingerprints page
+ * =========================================================================
+ * The administrator picks a teacher and this terminal in the browser; the
+ * server allocates a sensor slot and this board performs the capture, writes
+ * the template to that slot and reports which slot it actually used.
+ *
+ * The slot is allocated server-side because only the server can see which slots
+ * are free across every terminal in the school, and it is echoed back because a
+ * sensor that stored the template somewhere else would otherwise leave a teacher
+ * bound to whatever finger already occupied the slot we asked for. The server
+ * discards the enrolment when the two disagree.
+ *
+ * No template crosses the network. It is built inside the R307 from two images
+ * and lives in the sensor's own flash; what travels is a slot number.
+ * ========================================================================= */
+
+void reportEnrollStage(int requestId, const char *stage) {
+  JsonDocument request;
+  request["request_id"] = requestId;
+  request["stage"]      = stage;
+
+  String body;
+  serializeJson(request, body);
+
+  apiRequest(EP_ENROLL_PROGRESS, body);
+}
+
+void reportEnrollFailed(int requestId, const char *reason) {
+  LOG("Enrolment failed: %s\n", reason);
+
+  JsonDocument request;
+  request["request_id"] = requestId;
+  request["reason"]     = reason;
+
+  String body;
+  serializeJson(request, body);
+
+  apiRequest(EP_ENROLL_FAILED, body);
+
+  showLines("ENROLL FAILED", "", "", DISPLAY_HOLD_MS);
+  feedback("red", "rapid");
+}
+
+/**
+ * Wait for a usable image, or give up.
+ *
+ * Imaging errors are retried inside the window because they are ordinary — a
+ * smudge, a partial contact, a finger placed at an angle. The timeout exists
+ * for the other case: whoever was standing here has walked away, and holding
+ * the slot open would stop the next teacher being enrolled at this terminal.
+ */
+bool waitForEnrollImage(int requestId, const char *stage, const char *prompt, uint8_t buffer) {
+  reportEnrollStage(requestId, stage);
+  showLines("ENROLL", prompt, "", 0);
+
+  uint32_t startedAt = millis();
+
+  while (millis() - startedAt < ENROLL_STEP_TIMEOUT_MS) {
+    uint8_t result = finger.getImage();
+
+    if (result == FINGERPRINT_NOFINGER) { delay(60); continue; }
+
+    if (result != FINGERPRINT_OK) { delay(120); continue; }
+
+    if (finger.image2Tz(buffer) != FINGERPRINT_OK) {
+      showLines("ENROLL", "Press flatter", "and hold still", 900);
+      delay(400);
+      showLines("ENROLL", prompt, "", 0);
+      continue;
+    }
+
+    return true;
+  }
+
+  reportEnrollFailed(requestId, "No finger was presented within the time allowed.");
+  return false;
+}
+
+void runEnrollment(int requestId, int slot, const String &teacherName) {
+  LOG("Enrolment: %s -> slot %d\n", teacherName.c_str(), slot);
+
+  state = STATE_ENROLLING;
+  feedback("blue-blink", "short");
+
+  if (!waitForEnrollImage(requestId, "place_finger", "Place finger", 1)) {
+    state = STATE_READY;
+    showIdle();
+    return;
+  }
+
+  reportEnrollStage(requestId, "remove_finger");
+  showLines("ENROLL", "Lift finger", "", 0);
+
+  uint32_t startedAt = millis();
+  while (millis() - startedAt < ENROLL_STEP_TIMEOUT_MS) {
+    if (finger.getImage() == FINGERPRINT_NOFINGER) break;
+    delay(80);
+  }
+
+  if (!waitForEnrollImage(requestId, "place_again", "Same finger again", 2)) {
+    state = STATE_READY;
+    showIdle();
+    return;
+  }
+
+  reportEnrollStage(requestId, "storing");
+  showLines("ENROLL", "Saving...", "", 0);
+
+  if (finger.createModel() != FINGERPRINT_OK) {
+    /* Two images that do not agree: almost always a different finger the
+     * second time, or the same finger at a very different angle. */
+    reportEnrollFailed(requestId, "The two scans did not match. Use the same finger, placed the same way.");
+    state = STATE_READY;
+    showIdle();
+    return;
+  }
+
+  if (finger.storeModel(slot) != FINGERPRINT_OK) {
+    reportEnrollFailed(requestId, "The sensor refused to store the template in that slot.");
+    state = STATE_READY;
+    showIdle();
+    return;
+  }
+
+  JsonDocument request;
+  request["request_id"]         = requestId;
+  request["sensor_template_id"] = slot;
+  request["sample_count"]       = 2;
+
+  String body;
+  serializeJson(request, body);
+
+  JsonDocument response;
+  int status = apiRequest(EP_ENROLL_COMPLETE, body, &response);
+
+  if (status == 200 || status == 201) {
+    showLines("ENROLLED", teacherName, "", DISPLAY_HOLD_MS);
+    feedback("green", "short");
+    LOGLN("Enrolment complete");
+  } else {
+    /* The template is in the sensor but the server did not record it, so the
+     * slot is now occupied by a finger nobody owns. Removing it keeps the two
+     * in step; the administrator simply starts the enrolment again. */
+    finger.deleteModel(slot);
+    showLines("ENROLL FAILED", "Server refused", "", DISPLAY_HOLD_MS);
+    feedback("red", "rapid");
+    LOG("Server refused the enrolment (HTTP %d)\n", status);
+  }
+
+  state = STATE_READY;
+  showIdle();
+}
+
+/** Ask whether the Fingerprints page has queued somebody for this terminal. */
+void pollEnrollment() {
+  if (millis() - lastEnrollPoll < ENROLL_POLL_INTERVAL_MS) return;
+  lastEnrollPoll = millis();
+
+  JsonDocument response;
+  int status = apiRequest(EP_ENROLL_PENDING, "", &response, "", "GET");
+
+  if (status != 200) return;
+
+  JsonObject enrolment = response["data"]["enrollment"];
+  if (enrolment.isNull()) return;
+
+  int requestId = enrolment["request_id"] | 0;
+  int slot      = enrolment["sensor_template_id"] | 0;
+
+  if (requestId <= 0 || slot <= 0) return;
+
+  runEnrollment(requestId, slot, String((const char *) (enrolment["teacher_name"] | "teacher")));
 }
 
 /* =========================================================================
@@ -1265,6 +1445,10 @@ void loop() {
 
   /* Card and finger are only read when the terminal is in a state that can
    * act on them. */
+  if (state == STATE_READY) {
+    pollEnrollment();
+  }
+
   if (state == STATE_READY || state == STATE_OFFLINE) {
     handleFingerprint();
   }

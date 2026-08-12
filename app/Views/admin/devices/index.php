@@ -64,7 +64,8 @@ $__view->start('content');
                         <div class="device-card__name"><?= e($device['device_name']) ?></div>
                         <div class="device-card__id"><?= e($device['device_id']) ?></div>
                     </div>
-                    <span class="badge badge-<?= e($tone) ?> badge-dot"><?= e(ucfirst($health)) ?></span>
+                    <span class="badge badge-<?= e($tone) ?> badge-dot"
+                          title="<?= e(device_health_hint($health)) ?>"><?= e(device_health_label($health)) ?></span>
                 </div>
 
                 <div class="text-sm text-muted">

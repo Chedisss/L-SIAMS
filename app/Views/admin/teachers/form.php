@@ -219,54 +219,67 @@ $__view->start('scripts');
     /* Subjects follow the department; sections follow the grade levels. Both
        lists come from the server, which is also what re-validates them. */
     async function loadSubjects() {
-        if (!editing) {
-            const departmentId = department.value;
-            if (!departmentId) {
-                subjects.innerHTML = '<option disabled>Select a department first</option>';
-                return;
-            }
+        const departmentId = department.value;
+
+        // An unsaved teacher has no id, so ask by department instead. Both
+        // forms of the question are answered by the same endpoint, and the
+        // server re-validates whatever comes back on submit either way.
+        const query = teacherId
+            ? { teacher_id: teacherId }
+            : (departmentId ? { department_id: departmentId } : null);
+
+        if (!query) {
+            subjects.innerHTML = '<option disabled>Select a department first</option>';
+            document.getElementById('subject-help').textContent =
+                'Subjects follow the department — choose one above.';
+            return;
         }
 
         subjects.innerHTML = '<option disabled>Loading…</option>';
 
         try {
-            const url = editing || teacherId
-                ? '/api/subjects/assignable?teacher_id=' + teacherId
-                : null;
-
-            if (!url) {
-                // A new teacher has no id yet, so filter the full subject list
-                // by the chosen department locally; the server still enforces it.
-                subjects.innerHTML = '<option disabled>Save the teacher to assign subjects</option>';
-                document.getElementById('subject-help').textContent =
-                    'Subjects can be assigned once the teacher exists — their department decides which are available.';
-                return;
-            }
-
-            const response = await LS.http.get(url);
+            const response = await LS.http.get('/api/subjects/assignable', query);
             renderGrouped(subjects, response.data.grouped, 'subject_id', 'subject_code', 'subject_name', preselectedSubjects);
             document.getElementById('subject-help').textContent = response.data.helper_text;
         } catch (error) {
             subjects.innerHTML = '<option disabled>Could not load</option>';
+            document.getElementById('subject-help').textContent =
+                (error && error.message) || 'Could not load the subject list.';
         }
     }
 
+    function checkedGradeLevels() {
+        return Array.from(document.querySelectorAll('[name="grade_level_ids[]"]:checked'))
+            .map((box) => box.value);
+    }
+
     async function loadSections() {
-        if (!teacherId) {
-            sections.innerHTML = '<option disabled>Save the teacher to assign sections</option>';
+        const grades = checkedGradeLevels();
+
+        // Editing reads the saved grade levels through the teacher; creating
+        // reads the boxes that are ticked right now, so the list keeps up as
+        // they are ticked.
+        const query = teacherId
+            ? { teacher_id: teacherId }
+            : (grades.length ? { grade_level_ids: grades } : null);
+
+        if (!query) {
+            sections.innerHTML = '<option disabled>Select grade level(s) first</option>';
             document.getElementById('section-help').textContent =
-                'Sections can be assigned once the teacher exists — their grade levels decide which are available.';
+                'Sections follow the grade levels — tick at least one above.';
             return;
         }
 
         sections.innerHTML = '<option disabled>Loading…</option>';
 
         try {
-            const response = await LS.http.get('/api/sections/assignable', { teacher_id: teacherId });
+            const response = await LS.http.get('/api/sections/assignable', query);
             renderGrouped(sections, response.data.grouped, 'section_id', 'section_code', 'section_name', preselectedSections);
             document.getElementById('section-help').textContent = response.data.helper_text;
         } catch (error) {
             sections.innerHTML = '<option disabled>Could not load</option>';
+            document.getElementById('section-help').textContent =
+                (error && error.message) || 'Could not load the section list.';
         }
     }
 
@@ -301,7 +314,7 @@ $__view->start('scripts');
     loadSections();
 
     document.querySelectorAll('[name="grade_level_ids[]"]').forEach((box) => {
-        box.addEventListener('change', () => { if (teacherId) loadSections(); });
+        box.addEventListener('change', loadSections);
     });
 
     const generate = document.getElementById('generate-password');

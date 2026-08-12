@@ -79,6 +79,14 @@ static const char *DEVICE_MAC  = "80:F3:DA:63:1B:40";
 #define READER_WATCH_MS        2000
 #define FINGER_COOLDOWN_MS     1500
 
+/* How often an idle terminal asks whether somebody has been queued for
+ * enrolment on the Fingerprints page. Two seconds is what makes pressing
+ * "Start scan" feel immediate to whoever is standing at the sensor; the board
+ * has nothing else to do between taps, and the reply is a few hundred bytes.
+ * Polling stops while a session is open — the sensor is busy then. */
+#define ENROLL_POLL_MS         2000
+#define ENROLL_STEP_TIMEOUT_MS 20000   /* per finger placement */
+
 MFRC522        rfid(PIN_RFID_SS, PIN_RFID_RST);
 HardwareSerial fingerSerial(2);
 Adafruit_Fingerprint finger(&fingerSerial);
@@ -94,6 +102,8 @@ static byte     lastReaderVersion = 0xEE;    /* neither 0x00 nor a real version 
 static bool     fingerReady       = false;
 static uint32_t lastFingerAt      = 0;
 static bool     sessionOpen       = false;
+static uint32_t lastEnrollPoll    = 0;
+static bool     enrolling         = false;
 
 /* --------------------------------------------------------------- helpers -- */
 
@@ -463,6 +473,192 @@ static void watchReader() {
   rfid.PCD_AntennaOn();
 }
 
+/* ------------------------------------------------------------- enrolment -- */
+
+/**
+ * Enrolment, driven from the Fingerprints page.
+ *
+ * The old way was to flash the Adafruit `enroll` example, read a slot number
+ * off the serial monitor and type it into a form. Nothing tied the two halves
+ * together, so a typo bound a teacher to somebody else's finger and nothing
+ * anywhere would have noticed.
+ *
+ * Here the server allocates the slot — it is the only party that can see which
+ * slots are free across the whole school — and this board writes the template
+ * to exactly that slot and reports back which slot it actually used. The server
+ * refuses the result if those two disagree.
+ *
+ * Still no template on the wire: it is built inside the R307 from two images
+ * and stored in the sensor's own flash. What crosses the network is a slot
+ * number and a quality score.
+ */
+static void reportEnrollStage(int requestId, const char *stage) {
+  JsonDocument request;
+  request["request_id"] = requestId;
+  request["stage"]      = stage;
+
+  String body;
+  serializeJson(request, body);
+
+  JsonDocument response;
+  signedRequest("POST", "/api/fingerprint/enrollment/progress", body, &response);
+}
+
+static void reportEnrollFailed(int requestId, const char *reason) {
+  Serial.printf("Enrol: FAILED — %s\n", reason);
+
+  JsonDocument request;
+  request["request_id"] = requestId;
+  request["reason"]     = reason;
+
+  String body;
+  serializeJson(request, body);
+
+  JsonDocument response;
+  signedRequest("POST", "/api/fingerprint/enrollment/failed", body, &response);
+}
+
+/**
+ * Block until a finger is on the sensor, or the step times out.
+ *
+ * A person who has walked away is the common case, not an error to retry
+ * forever: holding the slot open would stop the next teacher being enrolled at
+ * this terminal at all.
+ */
+static bool waitForFinger(int requestId, const char *stage, uint8_t buffer) {
+  reportEnrollStage(requestId, stage);
+  Serial.printf("Enrol: %s\n", stage);
+
+  uint32_t startedAt = millis();
+
+  while (millis() - startedAt < ENROLL_STEP_TIMEOUT_MS) {
+    uint8_t result = finger.getImage();
+
+    if (result == FINGERPRINT_NOFINGER) { delay(60); continue; }
+
+    if (result != FINGERPRINT_OK) {
+      /* Imaging errors are transient — a smudge, a partial contact. Retrying
+       * inside the window is what a person expects; failing the whole
+       * enrolment on the first bad frame is not. */
+      delay(120);
+      continue;
+    }
+
+    if (finger.image2Tz(buffer) != FINGERPRINT_OK) {
+      Serial.println("  print not clear enough — press flatter and hold still");
+      delay(400);
+      continue;
+    }
+
+    return true;
+  }
+
+  reportEnrollFailed(requestId, "No finger was presented within the time allowed.");
+  return false;
+}
+
+static void waitForFingerRemoved(int requestId) {
+  reportEnrollStage(requestId, "remove_finger");
+  Serial.println("Enrol: lift the finger off");
+
+  uint32_t startedAt = millis();
+
+  while (millis() - startedAt < ENROLL_STEP_TIMEOUT_MS) {
+    if (finger.getImage() == FINGERPRINT_NOFINGER) return;
+    delay(80);
+  }
+}
+
+static void runEnrollment(int requestId, int slot, const char *teacherName) {
+  Serial.println();
+  Serial.printf("=== ENROLMENT: %s -> sensor slot %d ===\n", teacherName, slot);
+
+  enrolling = true;
+
+  if (!waitForFinger(requestId, "place_finger", 1)) { enrolling = false; return; }
+
+  waitForFingerRemoved(requestId);
+
+  if (!waitForFinger(requestId, "place_again", 2)) { enrolling = false; return; }
+
+  reportEnrollStage(requestId, "storing");
+
+  if (finger.createModel() != FINGERPRINT_OK) {
+    /* Two images that do not agree. Almost always a different finger the
+     * second time, or the same finger at a very different angle. */
+    reportEnrollFailed(requestId, "The two scans did not match. Use the same finger, placed the same way.");
+    enrolling = false;
+    return;
+  }
+
+  if (finger.storeModel(slot) != FINGERPRINT_OK) {
+    reportEnrollFailed(requestId, "The sensor refused to store the template in that slot.");
+    enrolling = false;
+    return;
+  }
+
+  /* Read back what is actually in the sensor rather than trusting the write.
+   * The server compares this against the slot it asked for and discards the
+   * enrolment if they differ, so a sensor that silently relocated the template
+   * cannot leave a teacher bound to the wrong finger. */
+  finger.getTemplateCount();
+
+  JsonDocument request;
+  request["request_id"]         = requestId;
+  request["sensor_template_id"] = slot;
+  request["sample_count"]       = 2;
+
+  String body;
+  serializeJson(request, body);
+
+  JsonDocument response;
+  int status = signedRequest("POST", "/api/fingerprint/enrollment/complete", body, &response);
+
+  if (status == 200 || status == 201) {
+    Serial.printf("Enrol: DONE — %s is enrolled in slot %d\n", teacherName, slot);
+    Serial.printf("       sensor now holds %d template(s)\n", finger.templateCount);
+  } else {
+    /* The template is in the sensor but the server did not record it, so the
+     * slot now holds a finger nobody owns. Removing it keeps the two in step;
+     * the administrator just starts the enrolment again. */
+    finger.deleteModel(slot);
+    Serial.printf("Enrol: the server refused the result (HTTP %d, %s)\n",
+                  status, (const char *) (response["code"] | "-"));
+    Serial.println("       the template was removed from the sensor again.");
+  }
+
+  enrolling = false;
+}
+
+/** Ask whether the Fingerprints page has queued somebody for this terminal. */
+static void pollEnrollment() {
+  if (!fingerReady || !clockSet || enrolling) return;
+
+  /* The sensor cannot verify a teacher and enrol another at the same time, and
+   * an open session means it is in use. */
+  if (sessionOpen) return;
+
+  if (millis() - lastEnrollPoll < ENROLL_POLL_MS) return;
+  lastEnrollPoll = millis();
+
+  JsonDocument response;
+  int status = signedRequest("GET", "/api/fingerprint/enrollment", "", &response);
+
+  if (status != 200) return;
+
+  JsonObject enrolment = response["data"]["enrollment"];
+  if (enrolment.isNull()) return;
+
+  int requestId = enrolment["request_id"] | 0;
+  int slot      = enrolment["sensor_template_id"] | 0;
+
+  if (requestId <= 0 || slot <= 0) return;
+
+  const char *name = enrolment["teacher_name"] | "teacher";
+
+  runEnrollment(requestId, slot, name);
+}
+
 /* ----------------------------------------------------------- fingerprint -- */
 
 /**
@@ -662,9 +858,9 @@ void setup() {
     Serial.printf("R307: found — %d template(s) enrolled on this sensor\n",
                   finger.templateCount);
     if (finger.templateCount == 0) {
-      Serial.println("  none enrolled yet: flash the library's `enroll` example,");
-      Serial.println("  enrol a finger, then record that slot in L-SIAMS under");
-      Serial.println("  Fingerprints -> Enrol Fingerprint.");
+      Serial.println("  none enrolled yet — that is fine. Open Fingerprints in");
+      Serial.println("  L-SIAMS, press Enrol Fingerprint, choose this terminal,");
+      Serial.println("  and this board will ask for the finger itself.");
     }
   } else {
     Serial.println("R307: NOT FOUND — sensor TX must reach GPIO 16 and its RX");
@@ -711,6 +907,7 @@ void setup() {
   Serial.println();
   Serial.println("Ready. Teacher: scan a finger to open the session.");
   Serial.println("       Student: tap a card once it is open.");
+  Serial.println("       Admin:   Fingerprints -> Enrol Fingerprint enrols from here.");
 }
 
 void loop() {
@@ -720,6 +917,7 @@ void loop() {
   }
 
   watchReader();
+  pollEnrollment();
   handleFingerprint();
 
   String uid = readCardUid();

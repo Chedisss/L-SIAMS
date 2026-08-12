@@ -773,6 +773,21 @@ final class DeviceService
             throw new ValidationException(['device' => ['Device not found.']]);
         }
 
+        // A terminal takes itself active by claiming its key on first boot, and
+        // v_device_status reports "pending" for anything unclaimed regardless of
+        // this column. Letting the button through would write 'active' to a row
+        // whose badge cannot move, report success, and leave the administrator
+        // clicking it again — so say plainly what actually activates a terminal.
+        if ($status === 'active' && (string) $device['claim_status'] !== 'claimed') {
+            throw new ValidationException([
+                'status' => [
+                    'This terminal has not completed first-boot activation, so it cannot be set active '
+                    . 'from here. Download its provisioning file, flash it to the board and power it on — '
+                    . 'it claims its key and becomes active by itself.',
+                ],
+            ]);
+        }
+
         if (in_array($status, ['disabled', 'decommissioned'], true)) {
             $openSession = $db->scalar(
                 "SELECT session_id FROM attendance_sessions WHERE device_row_id = :id AND status = 'open'",

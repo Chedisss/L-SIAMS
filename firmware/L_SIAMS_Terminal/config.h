@@ -98,6 +98,18 @@
 #define EP_DEVICE_SYNC         "/api/device/sync"
 #define EP_DEVICE_LOG          "/api/device/log"
 #define EP_DEVICE_TIME         "/api/device/time"
+/* Enrolment. The poll is what makes "Start scan" in the browser feel
+ * immediate; an idle terminal has nothing else to do, and the reply is a few
+ * hundred bytes. The step timeout is per finger placement — long enough for
+ * someone to be fetched from a classroom, short enough that a terminal is not
+ * held open by a person who walked away. */
+#define ENROLL_POLL_INTERVAL_MS  2000
+#define ENROLL_STEP_TIMEOUT_MS   20000
+
+#define EP_ENROLL_PENDING      "/api/fingerprint/enrollment"
+#define EP_ENROLL_PROGRESS     "/api/fingerprint/enrollment/progress"
+#define EP_ENROLL_COMPLETE     "/api/fingerprint/enrollment/complete"
+#define EP_ENROLL_FAILED       "/api/fingerprint/enrollment/failed"
 #define EP_ATTENDANCE_START    "/api/attendance/start"
 #define EP_ATTENDANCE_TAP      "/api/attendance/tap"
 #define EP_ATTENDANCE_END      "/api/attendance/end"

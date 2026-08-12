@@ -152,7 +152,24 @@ final class TeacherSectionAssignmentValidator
      */
     public static function assignableSections(int $teacherId): array
     {
-        $grades = self::allowedGradeLevelIds($teacherId);
+        return self::sectionsInGradeLevels(self::allowedGradeLevelIds($teacherId));
+    }
+
+    /**
+     * The same list, for a teacher who does not exist yet — see the note on
+     * TeacherSubjectAssignmentValidator::subjectsInDepartments(). Grade levels
+     * are the only input the query needs, and the registration form collects
+     * them on the same screen.
+     *
+     * @param  list<int> $gradeLevelIds
+     * @return list<array<string,mixed>>
+     */
+    public static function sectionsInGradeLevels(array $gradeLevelIds): array
+    {
+        $grades = array_values(array_unique(array_filter(
+            array_map('intval', $gradeLevelIds),
+            static fn (int $id): bool => $id > 0
+        )));
 
         if ($grades === []) {
             return [];

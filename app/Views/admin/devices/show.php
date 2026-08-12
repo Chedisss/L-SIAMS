@@ -33,7 +33,8 @@ $rotateDays = (int) config('security.api_key.rotation_days', 90);
         <div>
             <div class="stat__label">Health</div>
             <div class="stat__value" style="font-size:19px">
-                <span class="badge <?= e($healthBadge) ?>" id="health-badge"><?= e(ucfirst($health)) ?></span>
+                <span class="badge <?= e($healthBadge) ?>" id="health-badge"
+                      title="<?= e(device_health_hint($health)) ?>"><?= e(device_health_label($health)) ?></span>
             </div>
             <div class="stat__meta" id="health-meta">
                 <?= $device['last_heartbeat_at']
@@ -87,9 +88,19 @@ $rotateDays = (int) config('security.api_key.rotation_days', 90);
     <div class="alert alert-warning">
         <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
         <div class="alert__body">
-            <strong>This terminal has not completed first-boot activation.</strong>
-            Its credentials exist but are inert until it presents its single-use claim token.
-            Flash the provisioning file, power the terminal on, and it will claim itself.
+            <strong>This terminal has not completed first-boot activation, so it shows as Pending.</strong>
+            Its credentials exist but are inert until the board itself presents its single-use claim
+            token. There is no button here that changes that — a terminal activates itself, which is
+            the point: it proves the board holding the key is the board you registered.
+            <ol class="mt-1" style="padding-left:1.1rem;line-height:1.8">
+                <li>Download the provisioning file below.</li>
+                <li>Copy the four values from it into the sketch and flash the board.</li>
+                <li>Power it on within Wi-Fi range. It claims its key on first boot and turns
+                    <span class="badge badge-success badge-dot">Online</span> here by itself.</li>
+            </ol>
+            <button class="btn btn-secondary btn-sm mt-1" id="provisioning-file-top">
+                <i class="fa-solid fa-download"></i> Download provisioning file
+            </button>
         </div>
     </div>
 <?php endif; ?>
@@ -290,10 +301,27 @@ $rotateDays = (int) config('security.api_key.rotation_days', 90);
                         'disabled'       => ['Disable', 'btn-danger'],
                         'decommissioned' => ['Decommission', 'btn-danger'],
                     ] as $status => [$label, $class]): ?>
-                        <?php if ($status !== $device['configured_status']): ?>
-                            <button class="btn <?= e($class) ?> btn-sm" data-status="<?= e($status) ?>"><?= e($label) ?></button>
-                        <?php endif; ?>
+                        <?php
+                        if ($status === $device['configured_status']) {
+                            continue;
+                        }
+
+                        // "Set active" on an unclaimed terminal writes a column
+                        // the badge does not read, so it looks like a button
+                        // that does nothing. The board activates itself.
+                        if ($status === 'active' && $device['claim_status'] !== 'claimed') {
+                            continue;
+                        }
+                        ?>
+                        <button class="btn <?= e($class) ?> btn-sm" data-status="<?= e($status) ?>"><?= e($label) ?></button>
                     <?php endforeach; ?>
+
+                    <?php if ($device['claim_status'] !== 'claimed'): ?>
+                        <p class="text-xs text-muted">
+                            There is no “set active” here while the terminal is Pending — it becomes
+                            active by claiming its key on first boot, not by an action on this page.
+                        </p>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -452,7 +480,15 @@ $__view->start('scripts');
             const data = response.data;
 
             const badge = document.getElementById('health-badge');
-            badge.textContent = data.health.charAt(0).toUpperCase() + data.health.slice(1);
+
+            // Same wording as the server-rendered badge — a test that renamed
+            // "Awaiting setup" back to "Pending" would undo the explanation
+            // exactly when the administrator is looking for one.
+            badge.textContent = ({
+                online: 'Online', warning: 'Slow', offline: 'Offline',
+                pending: 'Awaiting setup', disabled: 'Disabled',
+            }[data.health]) || (data.health.charAt(0).toUpperCase() + data.health.slice(1));
+
             badge.className = 'badge ' + ({
                 online: 'badge-success', warning: 'badge-warning',
                 pending: 'badge-info', disabled: 'badge-neutral',
@@ -564,7 +600,10 @@ $__view->start('scripts');
         }
     });
 
-    document.getElementById('provisioning-file').addEventListener('click', async function () {
+    // Two buttons, one behaviour: the banner at the top is where an
+    // administrator looking at a Pending terminal actually is, and sending
+    // them hunting for the one further down is how it gets missed.
+    async function downloadProvisioning(button) {
         const confirmed = await LS.modal.confirm({
             title:   'Download a provisioning file?',
             message: 'This issues a fresh key pair and claim token — the previous key enters its grace '
@@ -594,6 +633,13 @@ $__view->start('scripts');
         document.body.appendChild(form);
         form.submit();
         setTimeout(() => { form.remove(); window.location.reload(); }, 2500);
+    }
+
+    ['provisioning-file', 'provisioning-file-top'].forEach((id) => {
+        const button = document.getElementById(id);
+
+        // The banner copy only exists while the terminal is unclaimed.
+        if (button) button.addEventListener('click', () => downloadProvisioning(button));
     });
 
     /* ---- status ------------------------------------------------------------- */

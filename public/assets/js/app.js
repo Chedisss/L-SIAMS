@@ -57,9 +57,7 @@
             // working instead of failing in a way that points at the network.
             if (opts.body && ['GET', 'HEAD'].includes(opts.method.toUpperCase())) {
                 if (!(opts.body instanceof FormData) && typeof opts.body === 'object') {
-                    const query = new URLSearchParams(
-                        Object.entries(opts.body).filter(([, v]) => v !== null && v !== undefined && v !== '')
-                    ).toString();
+                    const query = this.query(opts.body);
 
                     if (query !== '') url += (url.includes('?') ? '&' : '?') + query;
                 }
@@ -117,12 +115,44 @@
             return payload;
         },
 
-        get(url, params, options = {}) {
-            const query = params ? '?' + new URLSearchParams(
-                Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
-            ).toString() : '';
+        /**
+         * Query-string encoding that survives arrays.
+         *
+         * URLSearchParams stringifies an array value into one comma-joined
+         * field, which arrives server-side as the string "3,4" rather than as
+         * two values — so a multi-select filter silently matches nothing.
+         * Repeating the key with PHP's `[]` suffix is what the request layer
+         * already parses into an array.
+         */
+        query(params) {
+            const search = new URLSearchParams();
 
-            return this.request(url + query, Object.assign({ method: 'GET' }, options));
+            Object.entries(params || {}).forEach(([key, value]) => {
+                if (value === null || value === undefined || value === '') return;
+
+                if (Array.isArray(value)) {
+                    value.forEach((item) => {
+                        if (item !== null && item !== undefined && item !== '') {
+                            search.append(key + '[]', String(item));
+                        }
+                    });
+
+                    return;
+                }
+
+                search.append(key, String(value));
+            });
+
+            return search.toString();
+        },
+
+        get(url, params, options = {}) {
+            const query = params ? this.query(params) : '';
+
+            return this.request(
+                url + (query === '' ? '' : (url.includes('?') ? '&' : '?') + query),
+                Object.assign({ method: 'GET' }, options)
+            );
         },
 
         post(url, body, options = {}) {

@@ -32,6 +32,7 @@ final class AuditService
     public const USER_REGISTERED             = 'USER_REGISTERED';
     public const USER_UPDATED                = 'USER_UPDATED';
     public const USER_ARCHIVED               = 'USER_ARCHIVED';
+    public const USER_RESTORED               = 'USER_RESTORED';
     public const STUDENT_CREATED             = 'STUDENT_CREATED';
     public const STUDENT_UPDATED             = 'STUDENT_UPDATED';
     public const STUDENT_ARCHIVED            = 'STUDENT_ARCHIVED';
