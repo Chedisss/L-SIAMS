@@ -14,6 +14,7 @@ declare(strict_types=1);
  *   php bin/console worker               Maintenance worker (sessions, heartbeats, auto-close)
  *   php bin/console backup               Create an encrypted backup now
  *   php bin/console security:audit-keys  Static check that no weak RNG is in the key path
+ *   php bin/console doctor               Diagnose a running installation
  *   php bin/console user:create-admin    Create an administrator interactively
  */
 
@@ -29,6 +30,7 @@ use App\Core\Clock;
 use App\Core\Config;
 use App\Core\Crypto;
 use App\Core\Database;
+use App\Core\Env;
 use App\Core\Hash;
 use App\Services\ApiKeyService;
 use App\Services\AttendanceSessionService;
@@ -103,6 +105,7 @@ try {
         'worker'              => commandWorker($arguments),
         'backup'              => commandBackup(),
         'security:audit-keys' => commandAuditKeys(),
+        'doctor'              => commandDoctor(),
         'schema:dump'         => commandSchemaDump(),
         'user:create-admin'   => commandCreateAdmin(),
         default               => commandHelp(),
@@ -133,6 +136,7 @@ function commandHelp(): void
     out('    worker [--once]         Maintenance loop: sessions, heartbeats, retention');
     out('    backup                  Create an encrypted database backup');
     out('    security:audit-keys     Verify no weak RNG exists in the key path');
+    out('    doctor                  Diagnose this installation and report problems');
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
     out('');
 }
@@ -536,6 +540,269 @@ function commandBackup(): void
         $result['filename'], $result['tables'], BackupService::humanSize($result['size'])));
     out('  SHA-256: ' . $result['checksum'], 'grey');
     out('  Duration: ' . $result['duration'] . 's', 'grey');
+}
+
+/**
+ * Diagnose a running installation.
+ *
+ * Written for the situation where a page "does not work" and nobody can see
+ * why: it reports what the system actually contains and which of its moving
+ * parts are running, rather than asking anyone to read a log. Every check is
+ * read-only, so it is safe to run against a live school installation.
+ */
+function commandDoctor(): void
+{
+    $problems = [];
+    $warnings = [];
+
+    $note = static function (string $message): void { out('    ' . $message, 'grey'); };
+
+    $check = static function (bool $healthy, string $label, string $detail = '') use (&$problems): void {
+        out(sprintf('  %s %-42s %s', $healthy ? '✓' : '✗', $label, $detail), $healthy ? 'green' : 'red');
+
+        if (!$healthy) {
+            $problems[] = $label . ($detail === '' ? '' : ' — ' . $detail);
+        }
+    };
+
+    $warn = static function (string $label, string $detail = '') use (&$warnings): void {
+        out(sprintf('  ! %-42s %s', $label, $detail), 'yellow');
+        $warnings[] = $label . ($detail === '' ? '' : ' — ' . $detail);
+    };
+
+    // ------------------------------------------------------------ runtime --
+    heading('Runtime');
+
+    $check(PHP_VERSION_ID >= 80100, 'PHP 8.1 or newer', PHP_VERSION);
+
+    foreach (['pdo_mysql', 'openssl', 'mbstring', 'json'] as $extension) {
+        $check(extension_loaded($extension), 'Extension ' . $extension, extension_loaded($extension) ? '' : 'not loaded');
+    }
+
+    foreach (['zip' => 'Excel export and device bundles', 'gd' => 'profile photo uploads'] as $extension => $used) {
+        if (!extension_loaded($extension)) {
+            $warn('Extension ' . $extension . ' off', 'only affects ' . $used);
+        }
+    }
+
+    // ------------------------------------------------------ configuration --
+    heading('Configuration');
+
+    $check(is_file(BASE_PATH . '/.env'), '.env exists');
+
+    foreach (['APP_KEY', 'API_KEY_PEPPER', 'REALTIME_TICKET_SECRET'] as $key) {
+        $value = (string) Env::get($key, '');
+        $check($value !== '', $key, $value === '' ? 'not set — run key:generate' : 'set');
+    }
+
+    $appUrl = (string) Env::get('APP_URL', '');
+    if ($appUrl === '') {
+        $note('APP_URL is blank; the base URL is derived from the request host. That is fine on a LAN.');
+    } else {
+        $note('APP_URL is ' . $appUrl);
+    }
+
+    // --------------------------------------------------------------- data --
+    heading('Database');
+
+    try {
+        $db = Database::instance();
+        $db->scalar('SELECT 1');
+        ok('Connected to ' . Config::get('database.database', '?') . ' on '
+            . Config::get('database.host', '?') . ':' . Config::get('database.port', '?'));
+    } catch (Throwable $e) {
+        $check(false, 'Database connection', $e->getMessage());
+        doctorSummary($problems, $warnings);
+
+        return;
+    }
+
+    ensureMigrationsTable($db);
+
+    $applied = array_column($db->select('SELECT migration FROM schema_migrations'), 'migration');
+    $pending = array_values(array_filter(
+        array_column(discoverMigrations(), 'name'),
+        static fn (string $name): bool => !in_array($name, $applied, true)
+    ));
+
+    $check($pending === [], 'All migrations applied', $pending === [] ? count($applied) . ' applied' : implode(', ', $pending));
+
+    $counts = [
+        'departments'  => "SELECT COUNT(*) FROM departments WHERE deleted_at IS NULL",
+        'teachers'     => "SELECT COUNT(*) FROM teachers WHERE deleted_at IS NULL AND status = 'active'",
+        'students'     => "SELECT COUNT(*) FROM students WHERE deleted_at IS NULL AND status = 'active'",
+        'sections'     => "SELECT COUNT(*) FROM sections WHERE deleted_at IS NULL",
+        'schedules'    => "SELECT COUNT(*) FROM schedules WHERE deleted_at IS NULL AND status = 'active'",
+        'devices'      => "SELECT COUNT(*) FROM devices WHERE deleted_at IS NULL",
+        'user accounts' => "SELECT COUNT(*) FROM users WHERE deleted_at IS NULL",
+    ];
+
+    heading('What this system contains');
+
+    foreach ($counts as $label => $sql) {
+        out(sprintf('  %-16s %d', $label, (int) $db->scalar($sql)), 'grey');
+    }
+
+    // -------------------------------------------------------- fingerprints --
+    heading('Fingerprints');
+
+    $teachers = (int) $db->scalar("SELECT COUNT(*) FROM teachers WHERE deleted_at IS NULL AND status = 'active'");
+    $enrolled = (int) $db->scalar(
+        'SELECT COUNT(*) FROM fingerprint_templates fp
+           JOIN teachers t ON t.teacher_id = fp.teacher_id
+          WHERE t.deleted_at IS NULL'
+    );
+
+    if ($teachers === 0) {
+        $warn('No teacher records', 'nothing can be enrolled; add one under Teachers');
+        $note('A user account with the teacher role is not a teacher record. Schedules,');
+        $note('sections and fingerprints all attach to the teacher record, not the account.');
+    } else {
+        out(sprintf('  %-16s %d of %d active teachers', 'enrolled', $enrolled, $teachers), 'grey');
+    }
+
+    // The page lists "awaiting enrolment" from the template table and the
+    // teacher's own status column. When those two disagree a teacher can be
+    // shown twice, or vanish from both lists — worth naming explicitly.
+    $drift = $db->select(
+        "SELECT t.teacher_id, t.employee_number, t.last_name, t.fingerprint_status,
+                (fp.fingerprint_id IS NOT NULL) AS has_template
+           FROM teachers t
+      LEFT JOIN fingerprint_templates fp ON fp.teacher_id = t.teacher_id
+          WHERE t.deleted_at IS NULL
+            AND ((t.fingerprint_status = 'enrolled' AND fp.fingerprint_id IS NULL)
+              OR (t.fingerprint_status = 'not_enrolled' AND fp.fingerprint_id IS NOT NULL))"
+    );
+
+    if ($drift === []) {
+        ok('Teacher status and template records agree');
+    } else {
+        foreach ($drift as $row) {
+            $warn(
+                'Inconsistent: ' . $row['last_name'] . ' (' . $row['employee_number'] . ')',
+                'status says ' . $row['fingerprint_status'] . ', template '
+                    . ($row['has_template'] ? 'exists' : 'missing')
+            );
+        }
+
+        $note('Re-enrol or delete the enrolment on the Fingerprints page to resolve.');
+    }
+
+    // ------------------------------------------------------------ devices --
+    heading('Terminals');
+
+    $devices = $db->select(
+        'SELECT device_id, status, claim_status, last_heartbeat_at, classroom_id
+           FROM devices WHERE deleted_at IS NULL ORDER BY device_id'
+    );
+
+    if ($devices === []) {
+        $warn('No terminals registered', 'add one under Devices before flashing an ESP32');
+    }
+
+    $heartbeatWindow = (int) Config::get('attendance.device.offline_after_sec', 90);
+
+    foreach ($devices as $device) {
+        $seen = $device['last_heartbeat_at'] === null
+            ? 'never seen'
+            : 'last seen ' . $device['last_heartbeat_at'];
+
+        $stale = $device['last_heartbeat_at'] !== null
+            && (Clock::timestamp() - strtotime((string) $device['last_heartbeat_at'])) > $heartbeatWindow;
+
+        $detail = $device['status'] . ', ' . $device['claim_status'] . ', ' . $seen;
+
+        if ($device['claim_status'] !== 'claimed') {
+            $warn((string) $device['device_id'], $detail . ' — the board has not claimed its API key yet');
+        } elseif ($device['classroom_id'] === null) {
+            $warn((string) $device['device_id'], $detail . ' — no classroom assigned, so no schedule can match');
+        } elseif ($device['last_heartbeat_at'] === null || $stale) {
+            $warn((string) $device['device_id'], $detail . ' — not currently reporting');
+        } else {
+            ok(sprintf('%-20s %s', $device['device_id'], $detail));
+        }
+    }
+
+    // ----------------------------------------------------------- realtime --
+    heading('Live updates');
+
+    $realtimeEnabled = (bool) Config::get('realtime.enabled', true);
+    $sseEnabled      = (bool) Config::get('realtime.fallback.sse_enabled', true);
+    $wsHost          = (string) Config::get('realtime.ws_host', '127.0.0.1');
+    $wsPort          = (int) Config::get('realtime.ws_port', 8443);
+
+    if (!$realtimeEnabled) {
+        $note('Realtime is switched off; every page falls back to short polling.');
+    } else {
+        // 0.0.0.0 is a bind address, not something to connect to.
+        $probeHost = in_array($wsHost, ['0.0.0.0', '::'], true) ? '127.0.0.1' : $wsHost;
+        $socket    = @fsockopen($probeHost, $wsPort, $errno, $errstr, 1.5);
+
+        if (is_resource($socket)) {
+            fclose($socket);
+            ok('Realtime server is listening on ' . $probeHost . ':' . $wsPort);
+        } else {
+            $warn(
+                'Realtime server not reachable',
+                $probeHost . ':' . $wsPort . ' — ' . ($errstr ?: 'connection refused')
+            );
+            $note('The pill in the top bar will read "Polling" instead of "Live". Every page');
+            $note('still works; updates arrive on a few-second refresh rather than instantly.');
+            $note('start.bat opens it in its own window — check that window is still open.');
+        }
+    }
+
+    $note('Server-Sent Events are ' . ($sseEnabled ? 'on' : 'off (correct for start.bat)') . '.');
+
+    // ------------------------------------------------------------ storage --
+    heading('Storage');
+
+    foreach (['storage/logs', 'storage/reports', 'storage/backups', 'public/uploads'] as $relative) {
+        $path = BASE_PATH . '/' . $relative;
+
+        if (!is_dir($path)) {
+            $warn($relative, 'missing — it is created on first use');
+            continue;
+        }
+
+        $check(is_writable($path), $relative . ' writable');
+    }
+
+    doctorSummary($problems, $warnings);
+}
+
+/**
+ * @param list<string> $problems
+ * @param list<string> $warnings
+ */
+function doctorSummary(array $problems, array $warnings): void
+{
+    heading('Summary');
+
+    if ($problems === [] && $warnings === []) {
+        out('  Nothing to report. Everything checked is healthy.', 'green');
+        out('');
+
+        return;
+    }
+
+    if ($problems !== []) {
+        out('  ' . count($problems) . ' problem(s) that will stop something from working:', 'red');
+
+        foreach ($problems as $problem) {
+            out('    - ' . $problem, 'red');
+        }
+    }
+
+    if ($warnings !== []) {
+        out('  ' . count($warnings) . ' thing(s) worth knowing about:', 'yellow');
+
+        foreach ($warnings as $warning) {
+            out('    - ' . $warning, 'yellow');
+        }
+    }
+
+    out('');
 }
 
 /**

@@ -254,6 +254,7 @@ code, kbd, .mono { font-family: var(--mono); font-size: .875em; }
     background: var(--success-light); color: #15803D;
 }
 .connection-pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.connection-pill[data-state="connecting"]   { background: var(--surface-alt);  color: var(--text-muted); }
 .connection-pill[data-state="reconnecting"] { background: var(--warning-light); color: #B45309; }
 .connection-pill[data-state="polling"]      { background: var(--surface-alt);  color: var(--text-muted); }
 .connection-pill[data-state="offline"]      { background: var(--danger-light);  color: #B91C1C; }

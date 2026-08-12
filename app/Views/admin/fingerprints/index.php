@@ -20,6 +20,22 @@ $__view->start('content');
     </div>
 </div>
 
+<?php if ($teacherCount === 0): ?>
+    <div class="card">
+        <div class="card__body">
+            <?php $__view->include('partials.empty-state', [
+                'icon'  => 'fa-user-tie',
+                'title' => 'No teachers registered yet',
+                'text'  => 'A fingerprint belongs to a teacher record, so there is nothing to enrol until at '
+                         . 'least one exists. A user account with the teacher role is not the same thing — the '
+                         . 'teacher record is what schedules, sections and fingerprints all attach to.',
+                'action' => '<a class="btn btn-primary" href="/admin/teachers">'
+                          . '<i class="fa-solid fa-user-plus"></i> Register a teacher</a>',
+            ]); ?>
+        </div>
+    </div>
+<?php endif; ?>
+
 <?php if ($pending !== []): ?>
     <div class="card">
         <div class="card__header">
@@ -117,15 +133,33 @@ $__view->start('content');
                 <div class="form-grid mt-2">
                     <div class="form-group form-group--full">
                         <label for="e-teacher" class="required">Teacher</label>
-                        <select id="e-teacher" name="teacher_id" required>
+                        <?php
+                        // Keyed by teacher so a record that somehow appears in
+                        // both lists is offered once, and sorted the way both
+                        // tables above are, so the order is never a surprise.
+                        $selectable = [];
+
+                        foreach (array_merge($pending, $enrolments) as $candidate) {
+                            $selectable[(int) $candidate['teacher_id']] = $candidate;
+                        }
+
+                        uasort($selectable, static fn (array $a, array $b): int
+                            => [$a['last_name'], $a['first_name']] <=> [$b['last_name'], $b['first_name']]);
+                        ?>
+                        <select id="e-teacher" name="teacher_id" required <?= $selectable === [] ? 'disabled' : '' ?>>
                             <option value="">Select a teacher…</option>
-                            <?php foreach (array_merge($pending, $enrolments) as $teacher): ?>
+                            <?php foreach ($selectable as $teacher): ?>
                                 <option value="<?= e($teacher['teacher_id']) ?>">
-                                    <?= e($teacher['last_name']) ?>, <?= e($teacher['first_name']) ?>
-                                    (<?= e($teacher['employee_number']) ?>)
+                                    <?= e($teacher['last_name']) ?>, <?= e($teacher['first_name']) ?> (<?= e($teacher['employee_number']) ?>)
                                 </option>
                             <?php endforeach; ?>
                         </select>
+                        <?php if ($selectable === []): ?>
+                            <span class="field-help text-danger">
+                                There are no active teacher records to enrol.
+                                <a href="/admin/teachers">Register a teacher</a> first.
+                            </span>
+                        <?php endif; ?>
                     </div>
                     <div class="form-group">
                         <label for="e-device">Terminal</label>

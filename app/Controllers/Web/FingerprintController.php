@@ -27,18 +27,32 @@ final class FingerprintController extends Controller
             return $this->json(['rows' => $enrolments]);
         }
 
+        // "Awaiting enrolment" means no template row exists — not merely that
+        // teachers.fingerprint_status says so. The two can disagree: disabling
+        // an enrolment sets the column to 'disabled' while the template stays,
+        // and a row edited outside the application can drift either way. Keying
+        // off the template table is what makes the two lists on this page
+        // mutually exclusive, so nobody is ever listed twice or, worse, missing
+        // from both.
         $pending = Database::instance()->select(
             "SELECT t.teacher_id, t.employee_number, t.first_name, t.last_name, d.department_name
                FROM teachers t
                JOIN departments d ON d.department_id = t.department_id
-              WHERE t.deleted_at IS NULL AND t.status = 'active' AND t.fingerprint_status <> 'enrolled'
-              ORDER BY t.last_name"
+          LEFT JOIN fingerprint_templates fp ON fp.teacher_id = t.teacher_id
+              WHERE t.deleted_at IS NULL AND t.status = 'active' AND fp.fingerprint_id IS NULL
+              ORDER BY t.last_name, t.first_name"
         );
 
         return $this->view('admin.fingerprints.index', [
             'pageTitle'   => 'Fingerprints',
             'enrolments'  => $enrolments,
             'pending'     => $pending,
+            // Counted separately so the page can tell "no teacher has been
+            // registered yet" apart from "every teacher is already enrolled".
+            // Both leave the two tables empty, and they need opposite actions.
+            'teacherCount' => (int) Database::instance()->scalar(
+                "SELECT COUNT(*) FROM teachers WHERE deleted_at IS NULL AND status = 'active'"
+            ),
             'devices'     => Database::instance()->select(
                 "SELECT d.id, d.device_id, c.room_number
                    FROM devices d

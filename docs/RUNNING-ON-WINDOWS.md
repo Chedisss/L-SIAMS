@@ -216,6 +216,7 @@ Open a Command Prompt in the project folder (Shift + right-click the folder →
 
 | Command | What it does |
 |---|---|
+| `console.bat doctor` | check the whole installation and list what is wrong |
 | `console.bat seed --demo` | fill the system with sample data |
 | `console.bat user:create-admin` | add another administrator |
 | `console.bat backup` | take an encrypted backup right now |
@@ -226,6 +227,38 @@ Open a Command Prompt in the project folder (Shift + right-click the folder →
 ---
 
 ## When something goes wrong
+
+### Start here
+
+```
+console.bat doctor
+```
+
+It checks the whole installation and prints what it finds: PHP and its
+extensions, the keys in `.env`, the database connection and migrations, how many
+teachers/students/terminals actually exist, whether any fingerprint record
+contradicts itself, which terminals have claimed their key and when each last
+reported in, and whether the realtime server is running. It changes nothing, so
+it is safe to run at any time, including on a live installation.
+
+It ends with a summary in two parts: problems that will stop something working,
+and things merely worth knowing about. Most questions of the form "why does this
+page show nothing?" are answered in that summary.
+
+**A page shows no teachers**
+A *user account* with the teacher role is not a *teacher record*. Fingerprints,
+schedules and sections all attach to the teacher record, which is created under
+**Teachers**, not under Users. `doctor` prints the count of each, so if it says
+`teachers 0` while you have teacher logins, that is the explanation.
+
+**The pill in the top bar says "Polling" instead of "Live"**
+Not an error. It means the realtime server is not reachable, so the pages
+refresh every few seconds instead of receiving updates instantly. Everything
+still works — attendance, enrolment, reports. Usually the **L-SIAMS realtime**
+window was closed; run `start.bat` again, or `console.bat doctor` to confirm.
+
+"Connecting" for a second or two on a fresh page load is normal — it is choosing
+a transport. "Reconnecting" means a connection that was working has dropped.
 
 **"PHP is missing: ..." and it refuses to start**
 Only four extensions are genuinely required — `pdo_mysql`, `openssl`,
