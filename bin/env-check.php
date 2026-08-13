@@ -56,15 +56,80 @@ switch ($command) {
         exit(0);
 
     case 'database':
+        // Probed at the socket before PDO is allowed near it.
+        //
+        // PDO::ATTR_TIMEOUT bounds the TCP connect and nothing after it, so a
+        // port that accepts the connection and then never sends MySQL's
+        // greeting leaves PDO blocked on a read with no timeout at all. That
+        // is not hypothetical: it is exactly what "Checking the database..."
+        // sitting there forever looks like, and it survives minutes of waiting
+        // because nothing in the stack has agreed to give up.
+        //
+        // A raw socket with an explicit read timeout can give up, and can tell
+        // the three failures apart — nothing listening, something listening
+        // that is not MySQL, and MySQL answering but refusing us.
+        $host    = null;
+        $port    = 3306;
+        $timeout = 5;
+
+        require __DIR__ . '/../bootstrap.php';
+
+        $host    = (string) App\Core\Config::get('database.host', '127.0.0.1');
+        $port    = (int) App\Core\Config::get('database.port', 3306);
+        $timeout = max(1, (int) App\Core\Config::get('database.connect_timeout', 5));
+
+        $socket = @fsockopen($host, $port, $errno, $errstr, $timeout);
+
+        if (!is_resource($socket)) {
+            fwrite(STDERR, sprintf(
+                "Nothing is listening on %s:%d — %s\n",
+                $host,
+                $port,
+                $errstr !== '' ? $errstr : 'connection refused'
+            ));
+            fwrite(STDERR, "  Start MySQL in the XAMPP Control Panel, or correct DB_HOST/DB_PORT in .env.\n");
+            exit(2);
+        }
+
+        // MySQL speaks first. If nothing arrives inside the window, whatever is
+        // on that port is not a database, and connecting would hang.
+        stream_set_timeout($socket, $timeout);
+        $greeting = fread($socket, 1);
+        $timedOut = stream_get_meta_data($socket)['timed_out'] ?? false;
+        fclose($socket);
+
+        if ($timedOut || $greeting === '' || $greeting === false) {
+            fwrite(STDERR, sprintf(
+                "Something is listening on %s:%d but it is not MySQL — it never sent a greeting.\n",
+                $host,
+                $port
+            ));
+            fwrite(STDERR, "  Check DB_PORT in .env. XAMPP's MySQL is normally 3306.\n");
+            exit(2);
+        }
+
         try {
-            require __DIR__ . '/../bootstrap.php';
 
             App\Core\Database::instance()->scalar('SELECT 1');
             exit(0);
         } catch (Throwable $e) {
-            // The message goes nowhere by design — start.bat prints its own
-            // guidance, and a raw PDO error naming the host and user is not
-            // what somebody double-clicking a launcher needs to read.
+            // STDERR rather than STDOUT: start.bat sends both to nul and
+            // prints its own guidance, so this stays out of the launcher. But
+            // when the same command is run by hand — which is what start.bat
+            // now tells people to do when it cannot connect — the actual
+            // reason is the whole point, and hiding it left them guessing at a
+            // failure the server had already explained.
+            $reason = $e->getPrevious() !== null ? $e->getPrevious()->getMessage() : $e->getMessage();
+
+            fwrite(STDERR, 'Database connection failed: ' . $reason . PHP_EOL);
+            fwrite(STDERR, sprintf(
+                '  host=%s port=%s database=%s user=%s' . PHP_EOL,
+                (string) App\Core\Config::get('database.host', '?'),
+                (string) App\Core\Config::get('database.port', '?'),
+                (string) App\Core\Config::get('database.database', '?'),
+                (string) App\Core\Config::get('database.username', '?')
+            ));
+
             exit(2);
         }
 

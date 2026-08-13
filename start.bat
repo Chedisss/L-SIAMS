@@ -155,12 +155,21 @@ if errorlevel 1 (
         echo.
         echo   [X] Cannot connect to MySQL.
         echo.
-        echo       1. Open the XAMPP Control Panel
-        echo       2. Press Start next to MySQL
-        echo       3. Run this file again
+        REM Re-run without the redirect. The check knows exactly which of the
+        REM three failures this is - nothing listening, something listening
+        REM that is not MySQL, or MySQL refusing the credentials - and the
+        REM launcher guessing "start MySQL" at all three sent people to the
+        REM Control Panel to look at a service that was already running.
+        "%PHP%" bin\env-check.php database
         echo.
-        echo       If MySQL is running but this still fails, check DB_USER
-        echo       and DB_PASS in the .env file in this folder.
+        echo       Most often this is simply MySQL not started:
+        echo         1. Open the XAMPP Control Panel
+        echo         2. Press Start next to MySQL
+        echo         3. Run this file again
+        echo.
+        echo       If MySQL is running and the message above says otherwise,
+        echo       check DB_HOST, DB_PORT, DB_USER and DB_PASS in the .env
+        echo       file in this folder.
         echo.
         pause
         exit /b 1
