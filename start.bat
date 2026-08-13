@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================================================
-REM  L-SIAMS — start everything
+REM  L-SIAMS - start everything
 REM
 REM  Double-click this file. On the first run it sets itself up: copies the
 REM  local configuration, generates the cryptographic keys, creates the
@@ -46,17 +46,32 @@ if not defined PHP (
     exit /b 1
 )
 
-REM The extra outer quotes are not a typo. FOR /F hands this to `cmd /c`,
-REM which strips the first and last quote it sees. Without the spare pair it
-REM would eat the ones around the php.exe path and the -r script.
-for /f "tokens=2 delims= " %%V in ('""%PHP%" -r "echo 'PHP ' . PHP_VERSION;""') do set "PHPVER=%%V"
+REM Every question below is asked by bin\env-check.php rather than by an
+REM inline -r snippet. PHP source passed through a FOR /F goes through two
+REM rounds of cmd.exe quote-stripping, and a machine that strips it differently
+REM produced a parse error from the probe and then printed the second word of
+REM that error as the PHP version. A file has no quoting to get wrong.
+for /f "delims=" %%V in ('"%PHP%" bin\env-check.php version 2^>nul') do set "PHPVER=%%V"
+
+if not defined PHPVER (
+    echo   [X] PHP was found but would not run.
+    echo.
+    echo       %PHP%
+    echo.
+    echo       Run this by hand to see why:
+    echo         "%PHP%" bin\env-check.php version
+    echo.
+    pause
+    exit /b 1
+)
+
 echo   [ok] PHP %PHPVER%
 echo        %PHP%
 
 REM Refuse rather than fail obscurely later. The codebase needs 8.1 features.
-"%PHP%" -r "exit(PHP_VERSION_ID >= 80100 ? 0 : 1);"
+"%PHP%" bin\env-check.php version >nul 2>&1
 if errorlevel 1 (
-    echo   [X] PHP 8.1 or newer is required. Please update XAMPP.
+    echo   [X] PHP 8.1 or newer is required ^(found %PHPVER%^). Please update XAMPP.
     pause
     exit /b 1
 )
@@ -64,12 +79,9 @@ if errorlevel 1 (
 REM --------------------------------------------------------- extensions ----
 REM Nothing runs without these.
 set "MISSING="
-for %%X in (pdo_mysql openssl mbstring json) do (
-    "%PHP%" -r "exit(extension_loaded('%%X') ? 0 : 1);"
-    if errorlevel 1 set "MISSING=!MISSING! %%X"
-)
+for /f "delims=" %%X in ('"%PHP%" bin\env-check.php required 2^>nul') do set "MISSING=%%X"
 if defined MISSING (
-    echo   [X] PHP is missing:!MISSING!
+    echo   [X] PHP is missing: !MISSING!
     echo.
     echo       Open C:\xampp\php\php.ini, remove the ';' in front of the
     echo       matching 'extension=' lines, save, and run this again.
@@ -81,12 +93,9 @@ if defined MISSING (
 REM These only break individual features, so warn and carry on rather than
 REM stopping someone from using the rest of the system.
 set "OPTMISSING="
-for %%X in (zip gd) do (
-    "%PHP%" -r "exit(extension_loaded('%%X') ? 0 : 1);"
-    if errorlevel 1 set "OPTMISSING=!OPTMISSING! %%X"
-)
+for /f "delims=" %%X in ('"%PHP%" bin\env-check.php optional 2^>nul') do set "OPTMISSING=%%X"
 if defined OPTMISSING (
-    echo   [warn] PHP is missing:!OPTMISSING!
+    echo   [warn] PHP is missing: !OPTMISSING!
     echo.
     echo       Everything still runs, but these stay broken until you add them:
     echo         zip  -  Excel exports, firmware downloads
@@ -127,7 +136,7 @@ REM --------------------------------------------------------- database ------
 REM Start MySQL yourself in the XAMPP Control Panel; this only checks it.
 echo.
 echo   Checking the database...
-"%PHP%" -r "require 'bootstrap.php'; try { App\Core\Database::instance()->scalar('SELECT 1'); exit(0); } catch (Throwable $e) { exit(2); }" >nul 2>&1
+"%PHP%" bin\env-check.php database >nul 2>&1
 
 if errorlevel 1 (
     REM Reachable server but missing database is the common first-run case,
@@ -141,7 +150,7 @@ if errorlevel 1 (
         "!MYSQL!" -u root -e "CREATE DATABASE IF NOT EXISTS lsiams_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" >nul 2>&1
     )
 
-    "%PHP%" -r "require 'bootstrap.php'; try { App\Core\Database::instance()->scalar('SELECT 1'); exit(0); } catch (Throwable $e) { exit(2); }" >nul 2>&1
+    "%PHP%" bin\env-check.php database >nul 2>&1
     if errorlevel 1 (
         echo.
         echo   [X] Cannot connect to MySQL.
