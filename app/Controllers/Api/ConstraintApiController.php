@@ -23,32 +23,48 @@ final class ConstraintApiController extends Controller
 {
     /**
      * GET /api/subjects/assignable?teacher_id=
+     * GET /api/subjects/assignable?department_id=
      *
      * Subjects in the teacher's department(s), grouped so the UI can render
      * "── English Department ──" option-group headers.
+     *
+     * The department form works for a teacher who does not exist yet: the
+     * registration screen has a department chosen but no teacher_id to quote,
+     * and it still has to show what can be picked.
      */
     public function assignableSubjects(Request $request): Response
     {
-        $teacherId = $request->int('teacher_id');
+        $teacherId    = $request->int('teacher_id');
+        $departmentId = $request->int('department_id');
 
-        if ($teacherId <= 0) {
-            return $this->fail('TEACHER_REQUIRED', 'Select a teacher first.', 422);
+        if ($teacherId <= 0 && $departmentId <= 0) {
+            return $this->fail('TEACHER_REQUIRED', 'Select a teacher or a department first.', 422);
         }
 
-        $subjects    = TeacherSubjectAssignmentValidator::assignableSubjects($teacherId);
-        $constraints = TeacherService::constraints($teacherId);
-        $grouped     = [];
+        if ($teacherId > 0) {
+            $subjects   = TeacherSubjectAssignmentValidator::assignableSubjects($teacherId);
+            $department = TeacherService::constraints($teacherId)['department'];
+        } else {
+            $subjects   = TeacherSubjectAssignmentValidator::subjectsInDepartments([$departmentId], $departmentId);
+            $department = AcademicStructureService::department($departmentId);
+
+            if ($department === null) {
+                return $this->fail('DEPARTMENT_NOT_FOUND', 'That department does not exist.', 404);
+            }
+        }
+
+        $grouped = [];
 
         foreach ($subjects as $subject) {
             $grouped[(string) $subject['department_name']][] = $subject;
         }
 
-        $departmentName = $constraints['department']['department_name'];
+        $departmentName = $department['department_name'];
 
         return $this->json([
             'subjects'   => $subjects,
             'grouped'    => $grouped,
-            'department' => $constraints['department'],
+            'department' => $department,
             'helper_text' => $subjects === []
                 ? sprintf('No subjects are configured for the %s. Add subjects before creating schedules.', $departmentName)
                 : sprintf('Showing subjects for the %s only.', $departmentName),
@@ -66,28 +82,43 @@ final class ConstraintApiController extends Controller
     {
         $teacherId = $request->int('teacher_id');
 
-        if ($teacherId <= 0) {
-            return $this->fail('TEACHER_REQUIRED', 'Select a teacher first.', 422);
+        // Same reasoning as assignableSubjects: the registration form knows the
+        // grade levels before it knows the teacher, and must be able to ask.
+        $gradeLevelIds = array_values(array_filter(
+            array_map('intval', (array) $request->input('grade_level_ids', [])),
+            static fn (int $id): bool => $id > 0
+        ));
+
+        if ($teacherId <= 0 && $gradeLevelIds === []) {
+            return $this->fail('TEACHER_REQUIRED', 'Select a teacher or at least one grade level first.', 422);
         }
 
-        $sections    = TeacherSectionAssignmentValidator::assignableSections($teacherId);
-        $constraints = TeacherService::constraints($teacherId);
-        $grouped     = [];
+        if ($teacherId > 0) {
+            $constraints    = TeacherService::constraints($teacherId);
+            $sections       = TeacherSectionAssignmentValidator::assignableSections($teacherId);
+            $gradeLevels    = $constraints['grade_levels'];
+            $hasGradeLevel  = (bool) $constraints['has_grade_level'];
+            $gradeLevelIds  = array_map(static fn (array $g): int => (int) $g['grade_level_id'], $gradeLevels);
+        } else {
+            $sections      = TeacherSectionAssignmentValidator::sectionsInGradeLevels($gradeLevelIds);
+            $gradeLevels   = AcademicStructureService::gradeLevelsByIds($gradeLevelIds);
+            $hasGradeLevel = $gradeLevels !== [];
+        }
+
+        $grouped = [];
 
         foreach ($sections as $section) {
             $grouped[(string) $section['grade_level_name']][] = $section;
         }
 
-        $gradeLabels = TeacherSectionAssignmentValidator::gradeLabels(
-            array_map(static fn (array $g): int => (int) $g['grade_level_id'], $constraints['grade_levels'])
-        );
+        $gradeLabels = TeacherSectionAssignmentValidator::gradeLabels($gradeLevelIds);
 
         return $this->json([
             'sections'     => $sections,
             'grouped'      => $grouped,
-            'grade_levels' => $constraints['grade_levels'],
-            'helper_text'  => !$constraints['has_grade_level']
-                ? 'Assign a grade level to this teacher first.'
+            'grade_levels' => $gradeLevels,
+            'helper_text'  => !$hasGradeLevel
+                ? 'Choose at least one grade level first — sections follow from it.'
                 : ($sections === []
                     ? sprintf('No active %s sections exist. Create a section before scheduling.', $gradeLabels)
                     : sprintf('Showing %s sections only.', $gradeLabels)),

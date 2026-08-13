@@ -75,11 +75,20 @@ final class UserRegistrationService
         ): array {
             $hash = Hash::make($password);
 
-            // A teacher account starts inactive until fingerprint enrolment
-            // completes (Part 19.2) — an account that cannot open a session is
-            // better represented as inactive than as active-but-useless.
-            $requiresFingerprint = $roleSlug === 'teacher' && empty($data['skip_fingerprint_requirement']);
-            $status              = $requiresFingerprint ? 'inactive' : 'active';
+            // Registration captures the fingerprint before the record exists,
+            // so an account created through the form arrives already enrolled
+            // and is active from the start. The inactive path remains for the
+            // account created without one — an account that cannot open a
+            // session is better represented as inactive than active-but-useless.
+            $fingerprintRequestId = isset($data['fingerprint_request_id'])
+                ? (int) $data['fingerprint_request_id']
+                : 0;
+
+            $requiresFingerprint = $roleSlug === 'teacher'
+                && $fingerprintRequestId <= 0
+                && empty($data['skip_fingerprint_requirement']);
+
+            $status = $requiresFingerprint ? 'inactive' : 'active';
 
             try {
                 $userId = (int) $db->insert('users', [
@@ -137,6 +146,13 @@ final class UserRegistrationService
                     'subject_ids'     => $data['subject_ids'] ?? [],
                     'section_ids'     => $data['section_ids'] ?? [],
                 ], $createdBy);
+            }
+
+            // Inside the transaction on purpose: a registration that fails after
+            // this point must not leave the slot marked as belonging to a
+            // teacher who was rolled back out of existence.
+            if ($teacherId !== null && $fingerprintRequestId > 0) {
+                FingerprintEnrollmentService::bind($fingerprintRequestId, $teacherId, $createdBy);
             }
 
             AuditService::log(
@@ -295,6 +311,60 @@ final class UserRegistrationService
             ['status' => $user['status']],
             ['status' => 'archived'],
             sprintf('Account "%s" archived and all sessions terminated.', $user['username']),
+            'success',
+            $actorId
+        );
+    }
+
+    /**
+     * Undo an archive.
+     *
+     * Archiving is deliberately not a delete — the row, its login history and
+     * every audit entry pointing at it stay exactly where they were, and only
+     * `deleted_at` hides the account from the lists. That makes the reverse a
+     * matter of clearing two columns, and there is no good reason to make an
+     * administrator open the database to do it.
+     *
+     * The account comes back inactive rather than active: it has had no
+     * password check and no session since it was archived, and quietly
+     * restoring sign-in as a side effect of un-hiding a row is not something
+     * anyone asked for. An explicit status change follows.
+     */
+    public static function restore(int $userId, int $actorId): void
+    {
+        $db   = Database::instance();
+        $user = $db->selectOne('SELECT * FROM users WHERE user_id = :id', ['id' => $userId]);
+
+        if ($user === null) {
+            throw new ValidationException(['user_id' => ['User not found.']]);
+        }
+
+        if ($user['deleted_at'] === null && (string) $user['status'] !== 'archived') {
+            throw new ValidationException(['user_id' => ['That account is not archived.']]);
+        }
+
+        // The username and email are unique across the whole table, archived
+        // rows included, so a restore cannot collide — but a *replacement*
+        // account created in the meantime would have been refused those values,
+        // which means checking here would be checking something impossible.
+        $db->update('users', [
+            'status'     => 'inactive',
+            'deleted_at' => null,
+            'updated_at' => Clock::nowString(),
+        ], ['user_id' => $userId]);
+
+        AuditService::log(
+            AuditService::USER_RESTORED,
+            'user_management',
+            'user',
+            $userId,
+            ['status' => $user['status'], 'deleted_at' => $user['deleted_at']],
+            ['status' => 'inactive', 'deleted_at' => null],
+            sprintf(
+                'Account "%s" restored from the archive. It is inactive until an administrator '
+                . 'sets it active, and its password is unchanged.',
+                $user['username']
+            ),
             'success',
             $actorId
         );

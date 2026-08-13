@@ -83,11 +83,17 @@ final class DeviceService
             }
         }
 
-        $classroomId = isset($data['classroom_id']) && (int) $data['classroom_id'] > 0
+        // A desk-side scanner records no attendance, so it takes no classroom
+        // and its reader role would describe a decision it never makes. Both
+        // are forced rather than merely ignored, so nothing downstream has to
+        // wonder whether a station's classroom means anything.
+        $isStation = (bool) ($data['enrollment_station'] ?? false);
+
+        $classroomId = !$isStation && isset($data['classroom_id']) && (int) $data['classroom_id'] > 0
             ? (int) $data['classroom_id']
             : null;
 
-        $role = in_array((string) ($data['device_role'] ?? 'both'), ['entry', 'exit', 'both'], true)
+        $role = !$isStation && in_array((string) ($data['device_role'] ?? 'both'), ['entry', 'exit', 'both'], true)
             ? (string) $data['device_role']
             : 'both';
 
@@ -95,7 +101,7 @@ final class DeviceService
             self::assertClassroomSlotFree($classroomId, $role, null);
         }
 
-        return $db->transaction(static function (Database $db) use ($data, $userId, $deviceId, $mac, $classroomId, $role): array {
+        return $db->transaction(static function (Database $db) use ($data, $userId, $deviceId, $mac, $classroomId, $role, $isStation): array {
             $deviceRowId = (int) $db->insert('devices', [
                 'device_id'     => $deviceId,
                 'device_name'   => mb_substr((string) $data['device_name'], 0, 120),
@@ -103,6 +109,7 @@ final class DeviceService
                 'serial_number' => $data['serial_number'] ?? null,
                 'classroom_id'  => $classroomId,
                 'device_role'   => $role,
+                'enrollment_station' => $isStation ? 1 : 0,
                 'firmware_version' => (string) ($data['firmware_version'] ?? '1.0.0'),
                 'ip_allowlist'  => $data['ip_allowlist'] ?? null,
                 'timezone'      => (string) ($data['timezone'] ?? Config::get('app.timezone', 'Asia/Manila')),
@@ -136,8 +143,14 @@ final class DeviceService
                 'device',
                 $deviceRowId,
                 null,
-                ['device_id' => $deviceId, 'mac_address' => $mac, 'classroom_id' => $classroomId, 'role' => $role],
-                sprintf('Terminal %s registered.', $deviceId)
+                [
+                    'device_id'          => $deviceId,
+                    'mac_address'        => $mac,
+                    'classroom_id'       => $classroomId,
+                    'role'               => $role,
+                    'enrollment_station' => $isStation,
+                ],
+                sprintf('%s %s registered.', $isStation ? 'Enrolment scanner' : 'Terminal', $deviceId)
             );
 
             return [
@@ -183,6 +196,20 @@ final class DeviceService
         $token    = 'clm_' . Crypto::randomBase62(12);
         $expires  = Clock::now()->modify('+' . $ttlHours . ' hours');
 
+        // Issuing a new file supersedes the old one, and the API key it carries
+        // is rotated to make that true. The claim token has to follow, or every
+        // download leaves another token alive for the rest of its 24 hours —
+        // so a provisioning file handed to a contractor, superseded, and then
+        // kept could still activate the terminal a day later.
+        $db->execute(
+            'UPDATE device_claims
+                SET expires_at = :now
+              WHERE device_row_id = :device
+                AND claimed_at IS NULL
+                AND expires_at > :now',
+            ['now' => Clock::nowString(), 'device' => $deviceRowId]
+        );
+
         $db->insert('device_claims', [
             'device_row_id'    => $deviceRowId,
             'claim_token_hash' => hash('sha256', $token),
@@ -204,7 +231,48 @@ final class DeviceService
     {
         $db = Database::instance();
 
-        return $db->transaction(static function (Database $db) use ($claimToken, $deviceId, $mac, $ip): array {
+        // Refusals are logged after the transaction unwinds, never inside it.
+        // A security log written on the failing path is rolled back with
+        // everything else the moment the exception propagates — so the record
+        // of a refused claim, which is the only evidence a spoofing attempt
+        // happened at all, was being deleted by the act of refusing it.
+        $refusal = null;
+
+        try {
+            return $db->transaction(static function (Database $db) use (
+                $claimToken, $deviceId, $mac, $ip, &$refusal
+            ): array {
+                return self::attemptClaim($db, $claimToken, $deviceId, $mac, $ip, $refusal);
+            });
+        } catch (BusinessRuleException $e) {
+            if ($refusal !== null) {
+                SecurityLogService::log(
+                    $refusal['event'],
+                    $refusal['severity'],
+                    $refusal['description'],
+                    $refusal['context'],
+                    $refusal['device_row_id'],
+                    $refusal['device_id_text']
+                );
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * @param  array<string,mixed>|null $refusal  filled in on the failing paths
+     * @return array<string,mixed>
+     */
+    private static function attemptClaim(
+        Database $db,
+        string $claimToken,
+        string $deviceId,
+        string $mac,
+        string $ip,
+        ?array &$refusal
+    ): array {
+        {
             $claim = $db->selectOne(
                 'SELECT c.*, d.device_id, d.mac_address, d.status
                    FROM device_claims c
@@ -215,29 +283,55 @@ final class DeviceService
             );
 
             if ($claim === null) {
-                SecurityLogService::log(
-                    SecurityLogService::CLAIM_TOKEN_INVALID,
-                    'high',
-                    sprintf('Unknown claim token presented by device "%s" from %s.', $deviceId, $ip),
-                    ['device_id' => $deviceId, 'mac' => $mac]
-                );
+                $refusal = [
+                    'event'          => SecurityLogService::CLAIM_TOKEN_INVALID,
+                    'severity'       => 'high',
+                    'description'    => sprintf('Unknown claim token presented by device "%s" from %s.', $deviceId, $ip),
+                    'context'        => [
+                        'reason'              => 'unknown_token',
+                        'presented_device_id' => $deviceId,
+                        'presented_mac'       => NetworkService::normaliseMac($mac),
+                    ],
+                    'device_row_id'  => null,
+                    'device_id_text' => $deviceId,
+                ];
 
                 throw new BusinessRuleException('CLAIM_TOKEN_INVALID', 'Invalid claim token.', [], 403);
             }
 
             if ($claim['claimed_at'] !== null) {
-                SecurityLogService::log(
-                    SecurityLogService::CLAIM_TOKEN_INVALID,
-                    'high',
-                    sprintf('Claim token for device %s was replayed from %s.', $claim['device_id'], $ip),
-                    ['device_row_id' => (int) $claim['device_row_id']]
-                );
+                $refusal = [
+                    'event'          => SecurityLogService::CLAIM_TOKEN_INVALID,
+                    'severity'       => 'high',
+                    'description'    => sprintf('Claim token for device %s was replayed from %s.', $claim['device_id'], $ip),
+                    'context'        => [
+                        'reason'              => 'token_already_used',
+                        'presented_device_id' => $deviceId,
+                        'presented_mac'       => NetworkService::normaliseMac($mac),
+                    ],
+                    'device_row_id'  => (int) $claim['device_row_id'],
+                    'device_id_text' => (string) $claim['device_id'],
+                ];
 
                 throw new BusinessRuleException('CLAIM_TOKEN_USED', 'This claim token has already been used.', [], 409);
             }
 
             if (Clock::parse((string) $claim['expires_at']) < Clock::now()) {
                 $db->update('devices', ['claim_status' => 'expired'], ['id' => (int) $claim['device_row_id']]);
+
+                $refusal = [
+                    'event'          => SecurityLogService::CLAIM_TOKEN_INVALID,
+                    'severity'       => 'medium',
+                    'description'    => sprintf('Expired claim token presented for %s from %s.', $claim['device_id'], $ip),
+                    'context'        => [
+                        'reason'              => 'token_expired',
+                        'presented_device_id' => $deviceId,
+                        'presented_mac'       => NetworkService::normaliseMac($mac),
+                        'expired_at'          => (string) $claim['expires_at'],
+                    ],
+                    'device_row_id'  => (int) $claim['device_row_id'],
+                    'device_id_text' => (string) $claim['device_id'],
+                ];
 
                 throw new BusinessRuleException('CLAIM_TOKEN_EXPIRED', 'This claim token has expired. Regenerate the provisioning file.', [], 410);
             }
@@ -247,19 +341,33 @@ final class DeviceService
             $presentedMac = NetworkService::normaliseMac($mac);
 
             if ((string) $claim['device_id'] !== $deviceId || (string) $claim['mac_address'] !== $presentedMac) {
-                SecurityLogService::log(
-                    SecurityLogService::DEVICE_SPOOFING,
-                    'critical',
-                    sprintf(
+                // Both sides recorded, not just the expected one. Without the
+                // value the board actually presented there is no way to tell a
+                // typo in the registration from a genuinely wrong board, and
+                // the person holding the board is left guessing at which of two
+                // places to change.
+                $refusal = [
+                    'event'       => SecurityLogService::DEVICE_SPOOFING,
+                    'severity'    => 'critical',
+                    'description' => sprintf(
                         'Claim token for %s presented with mismatched identity (device "%s", MAC %s) from %s.',
                         $claim['device_id'],
                         $deviceId,
                         $presentedMac,
                         $ip
                     ),
-                    ['expected_mac' => $claim['mac_address']],
-                    (int) $claim['device_row_id']
-                );
+                    'context'     => [
+                        'reason'              => 'identity_mismatch',
+                        'presented_device_id' => $deviceId,
+                        'presented_mac'       => $presentedMac,
+                        'expected_device_id'  => (string) $claim['device_id'],
+                        'expected_mac'        => (string) $claim['mac_address'],
+                        'device_id_matches'   => (string) $claim['device_id'] === $deviceId,
+                        'mac_matches'         => (string) $claim['mac_address'] === $presentedMac,
+                    ],
+                    'device_row_id'  => (int) $claim['device_row_id'],
+                    'device_id_text' => (string) $claim['device_id'],
+                ];
 
                 throw new BusinessRuleException('CLAIM_IDENTITY_MISMATCH', 'Device identity does not match the registration.', [], 403);
             }
@@ -313,7 +421,7 @@ final class DeviceService
                 'claim_status' => 'claimed',
                 'server_time'  => Clock::atom(),
             ];
-        });
+        }
     }
 
     /**
@@ -773,6 +881,21 @@ final class DeviceService
             throw new ValidationException(['device' => ['Device not found.']]);
         }
 
+        // A terminal takes itself active by claiming its key on first boot, and
+        // v_device_status reports "pending" for anything unclaimed regardless of
+        // this column. Letting the button through would write 'active' to a row
+        // whose badge cannot move, report success, and leave the administrator
+        // clicking it again — so say plainly what actually activates a terminal.
+        if ($status === 'active' && (string) $device['claim_status'] !== 'claimed') {
+            throw new ValidationException([
+                'status' => [
+                    'This terminal has not completed first-boot activation, so it cannot be set active '
+                    . 'from here. Download its provisioning file, flash it to the board and power it on — '
+                    . 'it claims its key and becomes active by itself.',
+                ],
+            ]);
+        }
+
         if (in_array($status, ['disabled', 'decommissioned'], true)) {
             $openSession = $db->scalar(
                 "SELECT session_id FROM attendance_sessions WHERE device_row_id = :id AND status = 'open'",
@@ -810,6 +933,48 @@ final class DeviceService
             'success',
             $userId
         );
+    }
+
+    /**
+     * Recent refused activation attempts for one terminal.
+     *
+     * Exists because "Pending" on its own is a dead end: the board has been
+     * powered on and has tried, the server knows precisely why it said no, and
+     * none of that reached the person standing there. Reading it back turns
+     * "we do not know how to activate it" into a comparison of two values.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function claimAttempts(int $deviceRowId, int $limit = 10): array
+    {
+        $rows = Database::instance()->select(
+            "SELECT security_id, event, severity, description, context_json, source_ip, created_at
+               FROM security_logs
+              WHERE device_row_id = :device
+                AND event IN (:spoofing, :invalid)
+              ORDER BY security_id DESC
+              LIMIT " . max(1, min($limit, 50)),
+            [
+                'device'   => $deviceRowId,
+                'spoofing' => SecurityLogService::DEVICE_SPOOFING,
+                'invalid'  => SecurityLogService::CLAIM_TOKEN_INVALID,
+            ]
+        );
+
+        foreach ($rows as $index => $row) {
+            $context = $row['context_json'] === null
+                ? []
+                : (array) (json_decode((string) $row['context_json'], true) ?? []);
+
+            $rows[$index]['context']  = $context;
+            $rows[$index]['reason']   = (string) ($context['reason'] ?? 'unknown');
+            $rows[$index]['presented_mac']       = $context['presented_mac'] ?? null;
+            $rows[$index]['presented_device_id'] = $context['presented_device_id'] ?? null;
+            $rows[$index]['mac_matches']         = $context['mac_matches'] ?? null;
+            $rows[$index]['device_id_matches']   = $context['device_id_matches'] ?? null;
+        }
+
+        return $rows;
     }
 
     /** Purge heartbeat history past the retention window (90 days, Part 5). */

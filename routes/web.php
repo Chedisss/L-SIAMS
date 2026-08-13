@@ -158,6 +158,14 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/fingerprints', FingerprintController::class . '@index', [], 'admin.fingerprints');
     $router->post('/fingerprints/enroll', FingerprintController::class . '@enroll');
     $router->get('/fingerprints/next-slot', FingerprintController::class . '@nextSlot');
+
+    // The scan-driven path: the browser opens a request, the terminal performs
+    // the capture, the browser watches. Declared before the {id} routes so
+    // "scan" is never mistaken for a teacher id.
+    $router->post('/fingerprints/scan', FingerprintController::class . '@startScan');
+    $router->post('/fingerprints/scan/registration', FingerprintController::class . '@startRegistrationScan');
+    $router->get('/fingerprints/scan/{id:\d+}', FingerprintController::class . '@scanStatus');
+    $router->post('/fingerprints/scan/{id:\d+}/cancel', FingerprintController::class . '@cancelScan');
     $router->get('/fingerprints/{id:\d+}', FingerprintController::class . '@detail');
     $router->get('/fingerprints/{id:\d+}/logs', FingerprintController::class . '@logs');
     $router->post('/fingerprints/{id:\d+}/status', FingerprintController::class . '@setStatus');
@@ -220,6 +228,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->put('/users/{id:\d+}', UserController::class . '@update');
     $router->post('/users/{id:\d+}/reset-password', UserController::class . '@resetPassword');
     $router->post('/users/{id:\d+}/archive', UserController::class . '@archive');
+    $router->post('/users/{id:\d+}/restore', UserController::class . '@restore');
 
     // --- Settings & backup ---
     $router->get('/settings', SettingsController::class . '@index', [], 'admin.settings');

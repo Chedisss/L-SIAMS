@@ -202,6 +202,7 @@ BOOT ─► PROVISION ─► CONNECTING ─► CLAIMING ─► AUTHENTICATING �
 | `CLAIMING` | Presenting the claim token | "Activating…" |
 | `AUTHENTICATING` | First signed request | "Authenticating…" |
 | `READY` | Online, no session open | clock, room, "Awaiting teacher" |
+| `ENROLLING` | Capturing a fingerprint for the Fingerprints page | the prompt for each step |
 | `SESSION_OPEN` | Accepting card taps | subject, section, live count |
 | `OFFLINE` | Network lost, queueing locally | "OFFLINE", queue depth |
 | `LOCKED` | Fingerprint lockout | "Locked", countdown |
@@ -213,12 +214,117 @@ session has nothing to belong to.
 
 ---
 
+## 4a. Fingerprint enrolment
+
+Enrolment is started in the browser and performed by the terminal. Nobody types
+a slot number anywhere.
+
+### Where the scanning happens
+
+A browser cannot read a finger, so the capture always happens at an R307. It
+does **not** have to be a classroom terminal.
+
+| | |
+|---|---|
+| **Enrolment scanner** | An ESP32 and R307 on the administrator's desk, registered under **IoT Devices → Register Device → Enrolment scanner**. Takes no classroom, records no attendance, exists only so the person being enrolled can put their finger down next to the computer the registration is being typed into. This is the normal answer. |
+| **Classroom terminal** | Works too, and is what you use to re-enrol somebody who is already in the room. The teacher has to walk to it. |
+
+Both appear in every enrolment picker, scanners first. Same firmware, same
+provisioning, same claim — the only difference is the flag set at registration.
+
+There are two entry points. Registering a teacher takes the fingerprint
+**before** the record is created — a teacher without one can open no session, so
+registering first would produce an account that exists and does nothing. The
+Fingerprints page handles the other cases: re-enrolment, a replaced sensor, a
+finger that stopped reading.
+
+```
+Admin: Teachers → Register Teacher → fill in → Scan fingerprint
+  or:  Fingerprints → Enrol Fingerprint → pick teacher + terminal → Start
+   │
+   ├─ server allocates the next free sensor slot and opens a request
+   │
+Terminal: GET /api/fingerprint/enrollment          (every 2 s while idle)
+   │      → { request_id, sensor_template_id, teacher_name }
+   │
+   ├─ "Place finger"        → POST …/progress  place_finger
+   ├─ "Lift finger"         → POST …/progress  remove_finger
+   ├─ "Same finger again"   → POST …/progress  place_again
+   ├─ R307 createModel()    → POST …/progress  storing
+   ├─ R307 storeModel(slot)
+   │
+   └─ POST …/complete { request_id, sensor_template_id }
+          │
+          └─ server records the enrolment; the browser, which has been polling
+             throughout, shows each step and then "Enrolled".
+```
+
+Three properties are worth stating explicitly, because each of them replaces a
+way the old typed-in workflow could go wrong:
+
+**The server allocates the slot, not the device.** Only the server can see which
+slots are in use across every terminal in the school. A terminal choosing for
+itself would eventually collide with another terminal's numbering.
+
+**The device echoes back the slot it actually wrote,** and the server discards
+the enrolment if it differs from the one it asked for. A sensor that relocated
+the template would otherwise leave a teacher bound to whatever finger already
+occupied the requested slot.
+
+**A refusal from the server deletes the template from the sensor.** Otherwise a
+slot would hold a print that nothing on the server owns, and the next enrolment
+allocated to that slot would silently match the wrong person.
+
+Still no template on the network: it is built inside the R307 from two images
+and stays in the sensor's flash. What crosses the wire is a slot number and a
+quality score.
+
+Only one enrolment can be open per terminal at a time, and a request expires
+after three minutes without contact — the clock restarts on each step, so it is
+the gap between steps rather than a budget for the whole capture.
+
+### Reclaiming an abandoned capture
+
+A print taken during registration exists in the sensor before any teacher does.
+If the form is then abandoned — the browser closed, the tab left to time out —
+that print sits in the flash occupying a slot nothing owns, and the next person
+allocated it would be enrolled straight over the top.
+
+The server cannot reach into the sensor, so it asks:
+
+```
+Terminal: GET /api/fingerprint/enrollment
+   │      → { "discard_slots": [9], "enrollment": … }
+   │
+   ├─ finger.deleteModel(9)
+   │
+   └─ POST …/discarded { "sensor_template_id": 9 }
+          │
+          └─ only now is slot 9 handed out again
+```
+
+The slot stays reserved between the abandonment and the confirmation. Freeing it
+on the instruction rather than the confirmation would let the delete land after
+the next person had been enrolled into it, wiping the print just taken. A slot
+that is already empty when the delete runs is the expected outcome of a lost
+confirmation, not an error, so the terminal reports success either way.
+
+Captures wait 30 minutes for their form to be finished
+(`attendance.fingerprint.enrollment_hold_seconds`) before they are reclaimed —
+longer than the capture timeout, because the person is typing a department in
+rather than standing at a sensor.
+
+---
+
 ## 5. What the terminal does, and does not do
 
 ### It does
 
 - Read a card UID and post it, with a UUIDv4 `request_id` and its own timestamp.
 - Read a fingerprint and post the sensor slot number.
+- Capture a *new* fingerprint when the Fingerprints page asks it to, write the
+  template to the slot the server allocated, and report back which slot it
+  actually used.
 - Sign every request with HMAC-SHA256 over the canonical string.
 - Queue taps to NVS when the network is down, and replay them oldest-first with
   their original timestamps and request ids.
@@ -315,6 +421,8 @@ five minutes locally, so a locked-out person cannot hammer the server endpoint.
 | Claim fails with `CLAIM_TOKEN_INVALID` | The token was already used. Generate a new provisioning file. |
 | Cards never read | MFRC522 on 5 V (destroyed), or SPI wiring. Confirm 3.3 V. |
 | Fingerprint never responds | TX/RX swapped, or the baud rate is not 57600. |
+| Enrolment never starts on the terminal | The terminal only polls in `READY`. A session open on it, or a local lockout, will hold it back until that clears. |
+| Enrolment says "the two scans did not match" | A different finger the second time, or the same finger at a very different angle. Start again and place it the same way twice. |
 | Display blank | I²C address — some modules are `0x3D`, not `0x3C`. |
 | Random resets during scans | Underpowered supply. Use 5 V 2 A and add the 470 µF capacitor. |
 | Stuck `OFFLINE` with a good network | TLS failure — usually the certificate fingerprint changed after the server certificate was renewed. Re-provision. |

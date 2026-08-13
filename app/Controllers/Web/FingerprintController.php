@@ -6,7 +6,9 @@ namespace App\Controllers\Web;
 use App\Controllers\Controller;
 use App\Core\Database;
 use App\Core\Request;
+use App\Core\Exceptions\HttpException;
 use App\Core\Response;
+use App\Services\FingerprintEnrollmentService;
 use App\Services\FingerprintService;
 use App\Services\TeacherService;
 
@@ -27,25 +29,36 @@ final class FingerprintController extends Controller
             return $this->json(['rows' => $enrolments]);
         }
 
+        // "Awaiting enrolment" means no template row exists — not merely that
+        // teachers.fingerprint_status says so. The two can disagree: disabling
+        // an enrolment sets the column to 'disabled' while the template stays,
+        // and a row edited outside the application can drift either way. Keying
+        // off the template table is what makes the two lists on this page
+        // mutually exclusive, so nobody is ever listed twice or, worse, missing
+        // from both.
         $pending = Database::instance()->select(
             "SELECT t.teacher_id, t.employee_number, t.first_name, t.last_name, d.department_name
                FROM teachers t
                JOIN departments d ON d.department_id = t.department_id
-              WHERE t.deleted_at IS NULL AND t.status = 'active' AND t.fingerprint_status <> 'enrolled'
-              ORDER BY t.last_name"
+          LEFT JOIN fingerprint_templates fp ON fp.teacher_id = t.teacher_id
+              WHERE t.deleted_at IS NULL AND t.status = 'active' AND fp.fingerprint_id IS NULL
+              ORDER BY t.last_name, t.first_name"
         );
 
         return $this->view('admin.fingerprints.index', [
             'pageTitle'   => 'Fingerprints',
             'enrolments'  => $enrolments,
             'pending'     => $pending,
-            'devices'     => Database::instance()->select(
-                "SELECT d.id, d.device_id, c.room_number
-                   FROM devices d
-                   LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
-                  WHERE d.deleted_at IS NULL AND d.status IN ('active','offline')
-                  ORDER BY c.room_number"
+            // Counted separately so the page can tell "no teacher has been
+            // registered yet" apart from "every teacher is already enrolled".
+            // Both leave the two tables empty, and they need opposite actions.
+            'teacherCount' => (int) Database::instance()->scalar(
+                "SELECT COUNT(*) FROM teachers WHERE deleted_at IS NULL AND status = 'active'"
             ),
+            // Scanners first, then classroom terminals; health comes along so
+            // the wizard can say why one will not answer before somebody walks
+            // to the far end of the building to stand in front of it.
+            'devices'     => FingerprintEnrollmentService::captureDevices(),
             'nextSlot'    => FingerprintService::nextAvailableSlot(),
         ]);
     }
@@ -80,6 +93,113 @@ final class FingerprintController extends Controller
         return $this->json($result, $result['re_enrolled']
             ? 'Fingerprint re-enrolled successfully.'
             : 'Fingerprint enrolled successfully. The teacher can now open attendance sessions.');
+    }
+
+    /**
+     * Ask a terminal to capture a fingerprint.
+     *
+     * Nothing is recorded here — this only opens the request. The terminal
+     * performs the capture and reports the slot back through the device API,
+     * which is what makes the recorded slot the slot the sensor actually used.
+     */
+    public function startScan(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'teacher_id'    => 'required|int|exists:teachers,teacher_id',
+            'device_row_id' => 'required|int',
+        ], [
+            'device_row_id' => 'Terminal',
+        ]);
+
+        $enrolment = FingerprintEnrollmentService::open(
+            (int) $data['teacher_id'],
+            (int) $data['device_row_id'],
+            $this->requireUserId()
+        );
+
+        return $this->json(
+            $this->scanPayload($enrolment),
+            'Go to the terminal — it is waiting for the fingerprint.'
+        );
+    }
+
+    /**
+     * Ask a terminal to capture a fingerprint for somebody not yet registered.
+     *
+     * The registration form calls this before it has a teacher to point at. The
+     * slot the sensor allocates is held against the returned request until the
+     * form is saved, at which point the two are bound together.
+     */
+    public function startRegistrationScan(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'name'          => 'nullable|string|max:120|no_html',
+            'device_row_id' => 'required|int',
+        ], [
+            'device_row_id' => 'Terminal',
+        ]);
+
+        $enrolment = FingerprintEnrollmentService::openForRegistration(
+            (string) ($data['name'] ?? ''),
+            (int) $data['device_row_id'],
+            $this->requireUserId()
+        );
+
+        return $this->json(
+            $this->scanPayload($enrolment),
+            'Go to the terminal — it is waiting for the fingerprint.'
+        );
+    }
+
+    /** Polled by the enrolment wizard while the teacher is at the sensor. */
+    public function scanStatus(Request $request): Response
+    {
+        $enrolment = FingerprintEnrollmentService::find($request->routeInt('id'));
+
+        if ($enrolment === null) {
+            throw new HttpException(404, 'NOT_FOUND', 'Enrolment request not found.');
+        }
+
+        // Expiry is evaluated on read as well as on write, so a wizard left
+        // open on a terminal that was switched off stops saying "waiting" on
+        // its own rather than waiting for the next device poll to notice.
+        if (in_array((string) $enrolment['status'], ['pending', 'scanning'], true)) {
+            FingerprintEnrollmentService::expireStale();
+            $enrolment = FingerprintEnrollmentService::find($request->routeInt('id')) ?? $enrolment;
+        }
+
+        return $this->json($this->scanPayload($enrolment));
+    }
+
+    public function cancelScan(Request $request): Response
+    {
+        // abandon() rather than cancel(): a capture that already completed has
+        // written a template to the sensor, and simply marking the row would
+        // leave that print occupying a slot nothing owns.
+        FingerprintEnrollmentService::abandon($request->routeInt('id'), $this->requireUserId());
+
+        return $this->json([], 'Enrolment cancelled.');
+    }
+
+    /**
+     * @param  array<string,mixed> $enrolment
+     * @return array<string,mixed>
+     */
+    private function scanPayload(array $enrolment): array
+    {
+        return [
+            'request_id'         => (int) $enrolment['request_id'],
+            'status'             => (string) $enrolment['status'],
+            'stage'              => (string) $enrolment['stage'],
+            'message'            => (string) ($enrolment['message'] ?? ''),
+            'sensor_template_id' => (int) $enrolment['sensor_template_id'],
+            'quality_score'      => $enrolment['quality_score'] === null ? null : (int) $enrolment['quality_score'],
+            'sample_count'       => (int) $enrolment['sample_count'],
+            'teacher_name'       => (string) ($enrolment['display_name'] ?? 'this teacher'),
+            'device_id'          => (string) $enrolment['device_id'],
+            'room_number'        => $enrolment['room_number'],
+            'finished'           => !in_array((string) $enrolment['status'], ['pending', 'scanning'], true),
+        ];
     }
 
     public function delete(Request $request): Response

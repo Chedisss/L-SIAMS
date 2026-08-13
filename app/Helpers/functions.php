@@ -273,6 +273,41 @@ if (!function_exists('status_badge')) {
     }
 }
 
+if (!function_exists('device_health_label')) {
+    /**
+     * Wording for the health value v_device_status computes.
+     *
+     * "Pending" was read as "waiting on the server to do something", which sent
+     * administrators looking for a button to press. It is waiting on the board.
+     */
+    function device_health_label(?string $health): string
+    {
+        return match (strtolower((string) $health)) {
+            'online'   => 'Online',
+            'warning'  => 'Slow',
+            'offline'  => 'Offline',
+            'pending'  => 'Awaiting setup',
+            'disabled' => 'Disabled',
+            default    => ucfirst((string) $health),
+        };
+    }
+}
+
+if (!function_exists('device_health_hint')) {
+    function device_health_hint(?string $health): string
+    {
+        return match (strtolower((string) $health)) {
+            'online'   => 'Reporting in normally.',
+            'warning'  => 'Reporting, but its last heartbeat was late.',
+            'offline'  => 'Registered and activated, but not reporting right now — check power and Wi-Fi.',
+            'pending'  => 'Never activated. The board claims its key on first boot; flash the '
+                        . 'provisioning file and power it on.',
+            'disabled' => 'Switched off by an administrator. Authentication is refused.',
+            default    => '',
+        };
+    }
+}
+
 if (!function_exists('initials')) {
     function initials(string $name): string
     {

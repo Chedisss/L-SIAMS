@@ -381,7 +381,8 @@ $riskColour = [
                             </span>
                         </span>
                         <span class="live-row__time">
-                            <span class="badge badge-<?= e($tone) ?>"><?= e(ucfirst($health)) ?></span>
+                            <span class="badge badge-<?= e($tone) ?>"
+                                  title="<?= e(device_health_hint($health)) ?>"><?= e(device_health_label($health)) ?></span>
                             <div class="text-xs text-muted mt-1"><?= e(time_ago($device['last_heartbeat_at'])) ?></div>
                         </span>
                     </a>

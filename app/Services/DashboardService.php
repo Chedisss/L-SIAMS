@@ -183,8 +183,19 @@ final class DashboardService
             ['teacher' => $teacherId, 'day' => $day, 'today' => $today]
         );
 
+        // What the teacher is told here has to match what the sensor will do,
+        // and the sensor matches on the template row. Reporting the cached
+        // column instead would tell a teacher they are ready to open a session
+        // that the terminal then refuses, with nothing on screen to explain it.
         $teacher = $db->selectOne(
-            'SELECT fingerprint_status FROM teachers WHERE teacher_id = :id',
+            "SELECT CASE
+                        WHEN fp.fingerprint_id IS NULL THEN 'not_enrolled'
+                        WHEN fp.status <> 'active'     THEN 'disabled'
+                        ELSE 'enrolled'
+                    END AS fingerprint_status
+               FROM teachers t
+          LEFT JOIN fingerprint_templates fp ON fp.teacher_id = t.teacher_id
+              WHERE t.teacher_id = :id",
             ['id' => $teacherId]
         ) ?? [];
 
@@ -279,9 +290,14 @@ final class DashboardService
             ];
         }
 
+        // Counted from the template table rather than teachers.fingerprint_status,
+        // for the same reason the Fingerprints page lists from it: the column is
+        // a cache of that table, and a dashboard warning that disagrees with the
+        // page it links to sends people looking for a teacher who is not there.
         $noFingerprint = (int) $db->scalar(
-            "SELECT COUNT(*) FROM teachers
-              WHERE deleted_at IS NULL AND status = 'active' AND fingerprint_status <> 'enrolled'"
+            "SELECT COUNT(*) FROM teachers t
+          LEFT JOIN fingerprint_templates fp ON fp.teacher_id = t.teacher_id
+              WHERE t.deleted_at IS NULL AND t.status = 'active' AND fp.fingerprint_id IS NULL"
         );
 
         if ($noFingerprint > 0) {

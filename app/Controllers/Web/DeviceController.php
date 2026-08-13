@@ -6,6 +6,7 @@ namespace App\Controllers\Web;
 use App\Controllers\Controller;
 use App\Core\Database;
 use App\Core\Exceptions\HttpException;
+use App\Core\Exceptions\ValidationException;
 use App\Core\Request;
 use App\Core\Response;
 use App\Services\AcademicStructureService;
@@ -13,6 +14,7 @@ use App\Services\ApiKeyService;
 use App\Services\AuditService;
 use App\Services\DeviceService;
 use App\Services\ImportService;
+use App\Services\NetworkService;
 
 /**
  * IoT device management (Parts 2, 4 and 19.3/19.6).
@@ -59,6 +61,12 @@ final class DeviceController extends Controller
             'logs'       => DeviceService::logs($deviceRowId, 50),
             'heartbeats' => DeviceService::heartbeatHistory($deviceRowId, 24),
             'keyHistory' => ApiKeyService::historyForDevice($deviceRowId),
+            // Only meaningful while the terminal has never activated, and that
+            // is exactly when somebody is staring at "Pending" wondering what
+            // to do next.
+            'claimAttempts' => $device['claim_status'] === 'claimed'
+                ? []
+                : DeviceService::claimAttempts($deviceRowId, 10),
         ];
 
         if ($request->wantsJson()) {
@@ -91,6 +99,7 @@ final class DeviceController extends Controller
             'offline_queue_limit'    => 'nullable|int|between:10,5000',
             'location_note' => 'nullable|string|max:255|no_html',
             'confirm_mac_reuse' => 'nullable|bool',
+            'enrollment_station' => 'nullable|bool',
         ], [
             'device_name' => 'Device name',
             'mac_address' => 'MAC address',
@@ -124,6 +133,7 @@ final class DeviceController extends Controller
             'device_name'   => 'required|string|max:120|no_html',
             'classroom_id'  => 'nullable|int',
             'device_role'   => 'nullable|in:entry,exit,both',
+            'mac_address'   => 'nullable|mac',
             'ip_allowlist'  => 'nullable|string|max:255',
             'heartbeat_interval_sec' => 'nullable|int|between:10,600',
             'sync_interval_sec'      => 'nullable|int|between:10,3600',
@@ -138,6 +148,28 @@ final class DeviceController extends Controller
             throw new HttpException(404, 'NOT_FOUND', 'Device not found.');
         }
 
+        // The MAC is the hardware identity a claim is checked against, so it is
+        // fixed the moment a board has claimed with it — allowing an edit there
+        // would let a leaked provisioning file be re-pointed at other hardware,
+        // which is the exact thing the check exists to stop.
+        //
+        // Before the first claim there is no hardware bound to the record yet,
+        // and a mistyped MAC at registration is otherwise unfixable: the claim
+        // fails forever and the row cannot be re-registered because the MAC it
+        // should have had is taken by nothing. So it stays editable until then.
+        $macChanged = isset($data['mac_address'])
+            && $data['mac_address'] !== ''
+            && NetworkService::normaliseMac((string) $data['mac_address']) !== (string) $existing['mac_address'];
+
+        if ($macChanged && (string) $existing['claim_status'] === 'claimed') {
+            throw new ValidationException([
+                'mac_address' => [
+                    'This terminal has already claimed its key with the registered MAC, so the '
+                    . 'address cannot be changed. Decommission it and register the new board.',
+                ],
+            ]);
+        }
+
         $update = [
             'device_name'   => (string) $data['device_name'],
             'classroom_id'  => empty($data['classroom_id']) ? null : (int) $data['classroom_id'],
@@ -149,6 +181,10 @@ final class DeviceController extends Controller
             'location_note' => $data['location_note'] ?? null,
             'updated_at'    => \App\Core\Clock::nowString(),
         ];
+
+        if ($macChanged) {
+            $update['mac_address'] = NetworkService::normaliseMac((string) $data['mac_address']);
+        }
 
         $db->update('devices', $update, ['id' => $deviceRowId]);
 

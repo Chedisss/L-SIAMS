@@ -164,7 +164,32 @@ final class TeacherSubjectAssignmentValidator
      */
     public static function assignableSubjects(int $teacherId): array
     {
-        $departments = self::allowedDepartmentIds($teacherId);
+        $primary = self::loadTeacher($teacherId);
+
+        return self::subjectsInDepartments(
+            self::allowedDepartmentIds($teacherId),
+            $primary === null ? 0 : (int) $primary['department_id']
+        );
+    }
+
+    /**
+     * The same list, for a teacher who does not exist yet.
+     *
+     * The registration form has to show subjects before it can save anything —
+     * asking someone to save a teacher, reopen them and only then pick subjects
+     * is the kind of two-pass workflow that gets skipped, leaving teachers with
+     * no subjects and no schedule. Departments are the only input the query
+     * needs, and the form already knows which one was chosen.
+     *
+     * @param  list<int> $departmentIds
+     * @return list<array<string,mixed>>
+     */
+    public static function subjectsInDepartments(array $departmentIds, int $primaryDepartmentId = 0): array
+    {
+        $departments = array_values(array_unique(array_filter(
+            array_map('intval', $departmentIds),
+            static fn (int $id): bool => $id > 0
+        )));
 
         if ($departments === []) {
             return [];
@@ -178,8 +203,7 @@ final class TeacherSubjectAssignmentValidator
             $bindings['dept' . $index] = $departmentId;
         }
 
-        $primary = self::loadTeacher($teacherId);
-        $bindings['primary'] = $primary === null ? 0 : (int) $primary['department_id'];
+        $bindings['primary'] = $primaryDepartmentId;
 
         return Database::instance()->select(
             'SELECT s.subject_id, s.subject_code, s.subject_name, s.units,

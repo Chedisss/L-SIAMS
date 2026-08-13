@@ -5,10 +5,12 @@ namespace App\Controllers\Web;
 
 use App\Controllers\Controller;
 use App\Core\Exceptions\HttpException;
+use App\Core\Database;
 use App\Core\Request;
 use App\Core\Response;
 use App\Services\AcademicStructureService;
 use App\Services\AuthService;
+use App\Services\FingerprintEnrollmentService;
 use App\Services\FingerprintService;
 use App\Services\ScheduleService;
 use App\Services\TeacherService;
@@ -94,6 +96,10 @@ final class TeacherManagementController extends Controller
             'subjectIds'        => [],
             'sectionIds'        => [],
             'gradeLevelIds'     => [],
+            // The fingerprint is taken before the record exists, so the form
+            // needs somewhere to send the person standing at it — a desk-side
+            // scanner if there is one, a classroom terminal otherwise.
+            'devices'           => FingerprintEnrollmentService::captureDevices(),
         ]);
     }
 
@@ -115,6 +121,11 @@ final class TeacherManagementController extends Controller
             'department_id'   => 'required|int|exists:departments,department_id',
             'grade_level_ids' => 'required|array|min:1',
             'subject_ids'     => 'nullable|array',
+            // Required: a teacher is registered by presenting their finger at a
+            // terminal first, and this is the capture that produced. Without it
+            // the record would exist unable to open a single session, which is
+            // the state this ordering exists to make impossible.
+            'fingerprint_request_id' => 'required|int',
             'section_ids'     => 'nullable|array',
             'username'        => 'nullable|string|min:4|max:32|slug',
             'password'        => 'nullable|string|max:200',
@@ -154,6 +165,7 @@ final class TeacherManagementController extends Controller
             'subject_ids'     => $data['subject_ids'] ?? [],
             'section_ids'     => $data['section_ids'] ?? [],
             'force_password_change' => $data['force_password_change'] ?? true,
+            'fingerprint_request_id' => (int) $data['fingerprint_request_id'],
         ], $this->requireUserId());
 
         $slip = UserRegistrationService::credentialSlip(

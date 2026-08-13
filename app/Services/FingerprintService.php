@@ -581,8 +581,14 @@ final class FingerprintService
         );
     }
 
-    /** Lowest free sensor slot on a device — suggested by the enrolment wizard. */
-    public static function nextAvailableSlot(?int $deviceRowId = null): int
+    /**
+     * Lowest free sensor slot on a device.
+     *
+     * @param list<int> $alsoTaken Slots held by an in-flight capture that has
+     *                             not been bound to a teacher yet, and so has
+     *                             no template row here to be seen through.
+     */
+    public static function nextAvailableSlot(?int $deviceRowId = null, array $alsoTaken = []): int
     {
         $rows = Database::instance()->select(
             $deviceRowId === null
@@ -594,6 +600,7 @@ final class FingerprintService
         );
 
         $used = array_map(static fn (array $r): int => (int) $r['sensor_template_id'], $rows);
+        $used = array_merge($used, array_map('intval', $alsoTaken));
 
         for ($slot = 1; $slot <= 999; $slot++) {
             if (!in_array($slot, $used, true)) {

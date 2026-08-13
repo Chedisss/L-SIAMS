@@ -79,6 +79,7 @@ worker and the realtime server. **`stop.bat`** closes all three.
 **`console.bat`** runs any console command without hunting for `php.exe`:
 
 ```
+console.bat doctor             check the installation and report problems
 console.bat seed --demo        fill the system with sample data
 console.bat user:create-admin  add another administrator
 console.bat backup             take an encrypted backup
@@ -165,6 +166,7 @@ php bin/console seed [--demo]           Seed reference data, optionally demo dat
 php bin/console worker [--once]         Background worker: auto-close, retention, alerts
 php bin/console backup                  Take an encrypted backup now
 php bin/console security:audit-keys     Audit the API-key path for weak randomness
+php bin/console doctor                  Diagnose a running installation, read-only
 php bin/console schema:dump             Regenerate database/lsiams_schema.sql
 php bin/console user:create-admin       Create an additional administrator
 ```

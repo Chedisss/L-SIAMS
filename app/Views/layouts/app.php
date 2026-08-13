@@ -48,7 +48,7 @@ $photo    = $authUser['photo_path'] ?? null;
 
             <span class="clock" id="live-clock" aria-live="off"></span>
 
-            <span class="connection-pill" id="connection-indicator" data-state="polling"
+            <span class="connection-pill" id="connection-indicator" data-state="connecting"
                   title="Live update status">
                 <span class="connection-pill__label">Connecting</span>
             </span>
@@ -137,6 +137,7 @@ $photo    = $authUser['photo_path'] ?? null;
         'sessionExpiresIn'   => $sessionExpiresIn ?? null,
         'realtimeUrl'        => $realtimeUrl ?? '',
         'realtimeEnabled'    => (bool) config('realtime.enabled', true),
+        'sseEnabled'         => (bool) config('realtime.fallback.sse_enabled', true),
         'pollIntervalMs'     => $pollInterval ?? 3000,
     ], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 </script>
