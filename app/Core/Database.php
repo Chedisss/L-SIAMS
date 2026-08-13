@@ -75,6 +75,13 @@ final class Database
             PDO::ATTR_EMULATE_PREPARES   => false,
             PDO::ATTR_STRINGIFY_FETCHES  => false,
             PDO::ATTR_PERSISTENT         => (bool) ($this->config['persistent'] ?? false),
+            // Bounded, because the unbounded default is not a timeout at all —
+            // it is the operating system's, and a host that accepts the SYN and
+            // then says nothing leaves the process waiting minutes with no
+            // output. That is what a launcher sitting on "Checking the
+            // database..." forever actually is. Failing in seconds turns it
+            // into a message somebody can act on.
+            PDO::ATTR_TIMEOUT            => max(1, (int) ($this->config['connect_timeout'] ?? 5)),
             // Only assignable system variables belong here. The isolation level
             // is set separately below: `SET SESSION TRANSACTION ISOLATION LEVEL`
             // is its own statement form and cannot be comma-chained with

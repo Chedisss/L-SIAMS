@@ -17,6 +17,11 @@ return [
     // every tap. With pm.max_children ~50 this stays well under max_connections.
     'persistent' => true,
 
+    // Seconds to wait for the server to answer before giving up. Deliberately
+    // short: every caller either has a person waiting on it or is a worker that
+    // will try again shortly, and neither is served by a connect that hangs.
+    'connect_timeout' => (int) Env::get('DB_CONNECT_TIMEOUT', '5'),
+
     'options' => [
         // READ-COMMITTED avoids gap locks that would otherwise serialise taps
         // coming from different devices into the same attendance tables.
