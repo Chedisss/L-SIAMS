@@ -80,6 +80,7 @@ worker and the realtime server. **`stop.bat`** closes all three.
 
 ```
 console.bat doctor             check the installation and report problems
+mysql-doctor.bat               find out why MySQL will not stay started
 console.bat seed --demo        fill the system with sample data
 console.bat user:create-admin  add another administrator
 console.bat backup             take an encrypted backup

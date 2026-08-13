@@ -217,6 +217,7 @@ Open a Command Prompt in the project folder (Shift + right-click the folder →
 | Command | What it does |
 |---|---|
 | `console.bat doctor` | check the whole installation and list what is wrong |
+| `mysql-doctor.bat` | double-click it when MySQL will not stay started |
 | `console.bat seed --demo` | fill the system with sample data |
 | `console.bat user:create-admin` | add another administrator |
 | `console.bat backup` | take an encrypted backup right now |
@@ -292,6 +293,17 @@ To switch them on, same as above: find `;extension=zip` and `;extension=gd` in
 **"Could not find php.exe"**
 XAMPP is not installed, or not on `C:`, `D:` or `E:`. Install it, or add
 `C:\xampp\php` to your PATH.
+
+**MySQL goes green then immediately red in the XAMPP Control Panel**
+Double-click **`mysql-doctor.bat`**. It checks whether another MySQL already
+holds port 3306 — the usual cause — and then runs MySQL in the window, where
+the error can be seen. A process that dies this early often never manages to
+write anything to `mysql_error.log`, which is why that file ends mid-startup
+with no error in it.
+
+Your data is in `C:\xampp\mysql\data\lsiams_db`. Copy that folder somewhere
+safe before any fix that touches the data directory, and never delete
+`ibdata1` — it holds every InnoDB table you have.
 
 **"Cannot connect to MySQL"**
 MySQL is not started. XAMPP Control Panel → Start next to MySQL. If it is green
