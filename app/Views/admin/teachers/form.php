@@ -187,23 +187,29 @@ $editing = $teacher !== null;
                     <div class="alert alert-danger mt-2">
                         <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
                         <div class="alert__body">
-                            <strong>No terminal is available to scan with, so no teacher can be registered.</strong>
-                            A terminal has to have completed first-boot activation and be reachable.
-                            <a href="/admin/devices">Set one up</a>, then come back.
+                            <strong>No scanner is available, so no teacher can be registered.</strong>
+                            A fingerprint has to be read by a fingerprint sensor, and none is activated yet.
+                            The usual answer is an <strong>enrolment scanner</strong> — an ESP32 and R307 on
+                            your desk, registered here as a scanner rather than a classroom terminal, so the
+                            whole job happens at this computer. <a href="/admin/devices">Register one</a>,
+                            then come back.
                         </div>
                     </div>
                 <?php else: ?>
                     <div class="form-grid mt-2">
                         <div class="form-group">
-                            <label for="fp-device" class="required">Terminal</label>
+                            <label for="fp-device" class="required">Scanner</label>
                             <select id="fp-device">
-                                <option value="">Select the terminal they are standing at…</option>
+                                <option value="">Select the scanner…</option>
                                 <?php foreach ($devices as $device): ?>
-                                    <option value="<?= e($device['id']) ?>">
-                                        <?= e($device['device_id']) ?><?= $device['room_number'] ? ' — Room ' . e($device['room_number']) : '' ?><?php
-                                            ?> (<?= e(device_health_label($device['health'] ?? '')) ?>)
-                                    </option>
-                                <?php endforeach; ?>
+                                <option value="<?= e($device['id']) ?>" data-health="<?= e($device['health'] ?? '') ?>">
+                                    <?= $device['enrollment_station'] ? '🖐 ' : '' ?><?= e($device['device_id']) ?><?php
+                                        ?><?= $device['enrollment_station']
+                                            ? ' — enrolment scanner'
+                                            : ($device['room_number'] ? ' — Room ' . e($device['room_number']) : '') ?><?php
+                                        ?> (<?= e(device_health_label($device['health'] ?? '')) ?>)
+                                </option>
+                            <?php endforeach; ?>
                             </select>
                         </div>
                         <div class="form-group" style="align-self:end">

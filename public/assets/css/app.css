@@ -1012,3 +1012,17 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 .enrol-scan__steps li.is-done::before    { content: '✓'; color: var(--success); font-weight: 700; }
 .enrol-scan__steps li.is-current         { color: var(--primary); font-weight: 600; }
 .enrol-scan__steps li.is-current::before { content: '●'; color: var(--primary); }
+
+/* Radio cards for a choice that changes what the rest of a form means, where a
+   plain <select> would bury the consequence in an option label. */
+.choice-card {
+    display: flex; gap: .6rem; align-items: flex-start;
+    padding: .7rem .8rem; margin: 0;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    cursor: pointer; transition: border-color var(--transition), background var(--transition);
+}
+.choice-card:hover { border-color: var(--border-strong); }
+.choice-card input { margin-top: .2rem; flex: none; }
+.choice-card > span { display: flex; flex-direction: column; gap: .15rem; }
+.choice-card strong { font-size: 13.5px; font-weight: 600; }
+.choice-card:has(input:checked) { border-color: var(--primary); background: var(--primary-light); }

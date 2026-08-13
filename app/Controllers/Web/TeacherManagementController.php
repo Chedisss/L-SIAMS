@@ -10,6 +10,7 @@ use App\Core\Request;
 use App\Core\Response;
 use App\Services\AcademicStructureService;
 use App\Services\AuthService;
+use App\Services\FingerprintEnrollmentService;
 use App\Services\FingerprintService;
 use App\Services\ScheduleService;
 use App\Services\TeacherService;
@@ -96,17 +97,9 @@ final class TeacherManagementController extends Controller
             'sectionIds'        => [],
             'gradeLevelIds'     => [],
             // The fingerprint is taken before the record exists, so the form
-            // needs somewhere to send the person standing at it.
-            'devices'           => Database::instance()->select(
-                "SELECT d.id, d.device_id, c.room_number, v.health
-                   FROM devices d
-              LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
-              LEFT JOIN v_device_status v ON v.device_row_id = d.id
-                  WHERE d.deleted_at IS NULL
-                    AND d.claim_status = 'claimed'
-                    AND d.status IN ('active','offline')
-                  ORDER BY c.room_number, d.device_id"
-            ),
+            // needs somewhere to send the person standing at it — a desk-side
+            // scanner if there is one, a classroom terminal otherwise.
+            'devices'           => FingerprintEnrollmentService::captureDevices(),
         ]);
     }
 

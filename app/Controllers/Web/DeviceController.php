@@ -99,6 +99,7 @@ final class DeviceController extends Controller
             'offline_queue_limit'    => 'nullable|int|between:10,5000',
             'location_note' => 'nullable|string|max:255|no_html',
             'confirm_mac_reuse' => 'nullable|bool',
+            'enrollment_station' => 'nullable|bool',
         ], [
             'device_name' => 'Device name',
             'mac_address' => 'MAC address',

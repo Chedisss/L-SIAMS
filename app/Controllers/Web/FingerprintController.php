@@ -55,17 +55,10 @@ final class FingerprintController extends Controller
             'teacherCount' => (int) Database::instance()->scalar(
                 "SELECT COUNT(*) FROM teachers WHERE deleted_at IS NULL AND status = 'active'"
             ),
-            // health comes along so the wizard can say why a terminal will not
-            // answer before somebody walks to the far end of the building to
-            // stand in front of it.
-            'devices'     => Database::instance()->select(
-                "SELECT d.id, d.device_id, d.claim_status, c.room_number, v.health
-                   FROM devices d
-                   LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
-                   LEFT JOIN v_device_status v ON v.device_row_id = d.id
-                  WHERE d.deleted_at IS NULL AND d.status IN ('active','offline','pending')
-                  ORDER BY c.room_number, d.device_id"
-            ),
+            // Scanners first, then classroom terminals; health comes along so
+            // the wizard can say why one will not answer before somebody walks
+            // to the far end of the building to stand in front of it.
+            'devices'     => FingerprintEnrollmentService::captureDevices(),
             'nextSlot'    => FingerprintService::nextAvailableSlot(),
         ]);
     }

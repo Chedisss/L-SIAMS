@@ -630,6 +630,31 @@ final class FingerprintEnrollmentService
         return self::find($requestId) ?? [];
     }
 
+    /**
+     * Terminals that can be asked to capture a fingerprint, best first.
+     *
+     * Enrolment scanners lead because they are the answer to "where do I do
+     * this from" — a scanner on the desk means the whole job happens at the
+     * computer the registration is being typed into, rather than walking
+     * somebody to a classroom. Classroom terminals still work and are still
+     * listed; they are simply the fallback rather than the assumption.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function captureDevices(): array
+    {
+        return Database::instance()->select(
+            "SELECT v.device_row_id AS id, v.device_id, v.device_name, v.room_number,
+                    v.health, v.enrollment_station, v.claim_status
+               FROM v_device_status v
+              WHERE v.claim_status = 'claimed'
+                AND v.configured_status IN ('active','offline')
+              ORDER BY v.enrollment_station DESC,
+                       FIELD(v.health, 'online', 'warning', 'offline'),
+                       v.room_number, v.device_id"
+        );
+    }
+
     /** @return array<string,mixed>|null */
     public static function find(int $requestId): ?array
     {

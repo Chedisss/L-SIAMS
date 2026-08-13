@@ -245,6 +245,14 @@ It ends with a summary in two parts: problems that will stop something working,
 and things merely worth knowing about. Most questions of the form "why does this
 page show nothing?" are answered in that summary.
 
+**"No scanner is available, so no teacher can be registered"**
+A fingerprint has to be read by a fingerprint sensor, and the PC does not have
+one. Register an **enrolment scanner** — an ESP32 and R307 sitting on your desk
+— under **IoT Devices → Register Device**, choosing *Enrolment scanner* rather
+than *Classroom terminal*. It needs no classroom and records no attendance; it
+exists so the whole enrolment happens at this computer instead of walking people
+to a classroom. Flash it exactly like a terminal, and it activates itself.
+
 **A page shows no teachers**
 A *user account* with the teacher role is not a *teacher record*. Fingerprints,
 schedules and sections all attach to the teacher record, which is created under

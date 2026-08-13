@@ -83,11 +83,17 @@ final class DeviceService
             }
         }
 
-        $classroomId = isset($data['classroom_id']) && (int) $data['classroom_id'] > 0
+        // A desk-side scanner records no attendance, so it takes no classroom
+        // and its reader role would describe a decision it never makes. Both
+        // are forced rather than merely ignored, so nothing downstream has to
+        // wonder whether a station's classroom means anything.
+        $isStation = (bool) ($data['enrollment_station'] ?? false);
+
+        $classroomId = !$isStation && isset($data['classroom_id']) && (int) $data['classroom_id'] > 0
             ? (int) $data['classroom_id']
             : null;
 
-        $role = in_array((string) ($data['device_role'] ?? 'both'), ['entry', 'exit', 'both'], true)
+        $role = !$isStation && in_array((string) ($data['device_role'] ?? 'both'), ['entry', 'exit', 'both'], true)
             ? (string) $data['device_role']
             : 'both';
 
@@ -95,7 +101,7 @@ final class DeviceService
             self::assertClassroomSlotFree($classroomId, $role, null);
         }
 
-        return $db->transaction(static function (Database $db) use ($data, $userId, $deviceId, $mac, $classroomId, $role): array {
+        return $db->transaction(static function (Database $db) use ($data, $userId, $deviceId, $mac, $classroomId, $role, $isStation): array {
             $deviceRowId = (int) $db->insert('devices', [
                 'device_id'     => $deviceId,
                 'device_name'   => mb_substr((string) $data['device_name'], 0, 120),
@@ -103,6 +109,7 @@ final class DeviceService
                 'serial_number' => $data['serial_number'] ?? null,
                 'classroom_id'  => $classroomId,
                 'device_role'   => $role,
+                'enrollment_station' => $isStation ? 1 : 0,
                 'firmware_version' => (string) ($data['firmware_version'] ?? '1.0.0'),
                 'ip_allowlist'  => $data['ip_allowlist'] ?? null,
                 'timezone'      => (string) ($data['timezone'] ?? Config::get('app.timezone', 'Asia/Manila')),
@@ -136,8 +143,14 @@ final class DeviceService
                 'device',
                 $deviceRowId,
                 null,
-                ['device_id' => $deviceId, 'mac_address' => $mac, 'classroom_id' => $classroomId, 'role' => $role],
-                sprintf('Terminal %s registered.', $deviceId)
+                [
+                    'device_id'          => $deviceId,
+                    'mac_address'        => $mac,
+                    'classroom_id'       => $classroomId,
+                    'role'               => $role,
+                    'enrollment_station' => $isStation,
+                ],
+                sprintf('%s %s registered.', $isStation ? 'Enrolment scanner' : 'Terminal', $deviceId)
             );
 
             return [

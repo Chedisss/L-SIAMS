@@ -219,6 +219,19 @@ session has nothing to belong to.
 Enrolment is started in the browser and performed by the terminal. Nobody types
 a slot number anywhere.
 
+### Where the scanning happens
+
+A browser cannot read a finger, so the capture always happens at an R307. It
+does **not** have to be a classroom terminal.
+
+| | |
+|---|---|
+| **Enrolment scanner** | An ESP32 and R307 on the administrator's desk, registered under **IoT Devices → Register Device → Enrolment scanner**. Takes no classroom, records no attendance, exists only so the person being enrolled can put their finger down next to the computer the registration is being typed into. This is the normal answer. |
+| **Classroom terminal** | Works too, and is what you use to re-enrol somebody who is already in the room. The teacher has to walk to it. |
+
+Both appear in every enrolment picker, scanners first. Same firmware, same
+provisioning, same claim — the only difference is the flag set at registration.
+
 There are two entry points. Registering a teacher takes the fingerprint
 **before** the record is created — a teacher without one can open no session, so
 registering first would produce an account that exists and does nothing. The

@@ -114,7 +114,12 @@ final class Validator
                 ? true
                 : $this->reject($field, sprintf('%s must be a number.', $label)),
 
-            'bool', 'boolean' => in_array((string) $value, ['0', '1', 'true', 'false', 'on', 'off', 'yes', 'no'], true)
+            // is_bool first: an unchecked checkbox arrives as a real `false`,
+            // and (string) false is the empty string, which is in none of the
+            // accepted spellings. Casting before comparing therefore rejected
+            // the one value the rule most obviously ought to accept.
+            'bool', 'boolean' => is_bool($value)
+                || in_array((string) $value, ['0', '1', 'true', 'false', 'on', 'off', 'yes', 'no'], true)
                 ? true
                 : $this->reject($field, sprintf('%s must be true or false.', $label)),
 
@@ -349,7 +354,9 @@ final class Validator
                 return (float) $value;
             }
             if ($name === 'bool' || $name === 'boolean') {
-                return in_array((string) $value, ['1', 'true', 'on', 'yes'], true);
+                return is_bool($value)
+                    ? $value
+                    : in_array((string) $value, ['1', 'true', 'on', 'yes'], true);
             }
             if ($name === 'array') {
                 return is_array($value) ? $value : [];

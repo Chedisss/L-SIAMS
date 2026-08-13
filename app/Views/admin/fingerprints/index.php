@@ -126,9 +126,9 @@ $__view->start('content');
         <form id="enroll-form">
             <div class="modal__body" id="enroll-step-setup">
                 <p class="text-sm text-muted">
-                    The terminal does the scanning. Choose the teacher and the terminal they are
-                    standing at, press Start, and the sensor will ask them for their finger. The slot
-                    number comes back from the sensor — there is nothing to type in.
+                    Everything is driven from here. Choose the teacher and the scanner, press Start, and
+                    the sensor asks for their finger — the slot number comes back from it, so there is
+                    nothing to type in and nothing to do at the device itself.
                 </p>
 
                 <div class="form-grid mt-2">
@@ -164,31 +164,29 @@ $__view->start('content');
                     </div>
 
                     <div class="form-group form-group--full">
-                        <label for="e-device" class="required">Terminal</label>
-                        <?php
-                        $usableDevices = array_values(array_filter(
-                            $devices,
-                            static fn (array $d): bool => $d['claim_status'] === 'claimed'
-                        ));
-                        ?>
-                        <select id="e-device" name="device_row_id" required <?= $usableDevices === [] ? 'disabled' : '' ?>>
-                            <option value="">Select the terminal you are standing at…</option>
-                            <?php foreach ($usableDevices as $device): ?>
+                        <label for="e-device" class="required">Scanner</label>
+                        <select id="e-device" name="device_row_id" required <?= $devices === [] ? 'disabled' : '' ?>>
+                            <option value="">Select the scanner…</option>
+                            <?php foreach ($devices as $device): ?>
                                 <option value="<?= e($device['id']) ?>" data-health="<?= e($device['health'] ?? '') ?>">
-                                    <?= e($device['device_id']) ?><?= $device['room_number'] ? ' — Room ' . e($device['room_number']) : '' ?><?php
+                                    <?= $device['enrollment_station'] ? '🖐 ' : '' ?><?= e($device['device_id']) ?><?php
+                                        ?><?= $device['enrollment_station']
+                                            ? ' — enrolment scanner'
+                                            : ($device['room_number'] ? ' — Room ' . e($device['room_number']) : '') ?><?php
                                         ?> (<?= e(device_health_label($device['health'] ?? '')) ?>)
                                 </option>
                             <?php endforeach; ?>
                         </select>
-                        <?php if ($usableDevices === []): ?>
+                        <?php if ($devices === []): ?>
                             <span class="field-help text-danger">
-                                No terminal has completed first-boot activation yet, so none can be asked to
-                                scan. <a href="/admin/devices">Set one up</a> first, or record a slot by hand below.
+                                No scanner has completed first-boot activation yet, so none can be asked to
+                                read a finger. <a href="/admin/devices">Register one</a> — an enrolment
+                                scanner on your desk is the usual answer.
                             </span>
                         <?php else: ?>
                             <span class="field-help" id="e-device-help">
-                                It must be powered on and connected. An offline terminal will pick the request
-                                up as soon as it comes back, but nothing happens until it does.
+                                An enrolment scanner sits on your desk; a classroom terminal works too, but
+                                the teacher has to walk to it. Either way it must be powered on.
                             </span>
                         <?php endif; ?>
                     </div>
@@ -244,7 +242,7 @@ $__view->start('content');
             <div class="modal__footer">
                 <button type="button" class="btn btn-secondary" data-modal-close id="enroll-cancel">Cancel</button>
                 <button type="submit" class="btn btn-primary" id="enroll-start">
-                    <i class="fa-solid fa-fingerprint"></i> Start scan at the terminal
+                    <i class="fa-solid fa-fingerprint"></i> Start scan
                 </button>
             </div>
         </form>
