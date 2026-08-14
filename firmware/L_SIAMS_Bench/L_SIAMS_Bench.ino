@@ -878,9 +878,14 @@ static void handleFingerprint() {
 
 /* ------------------------------------------------------------------ card -- */
 
-static String readCardUid() {
-  if (!rfid.PICC_IsNewCardPresent()) return "";
-  if (!rfid.PICC_ReadCardSerial())   return "";
+/**
+ * Serialise whatever card is currently selected.
+ *
+ * Split out because the two callers disagree about which cards count, and only
+ * about that — see cardPresent() and cardPresentOrResting() below.
+ */
+static String selectedCardUid() {
+  if (!rfid.PICC_ReadCardSerial()) return "";
 
   String uid;
   uid.reserve(rfid.uid.size * 2);
@@ -893,6 +898,47 @@ static String readCardUid() {
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
   return uid;
+}
+
+/**
+ * A card that has just arrived in the field.
+ *
+ * PICC_IsNewCardPresent() sends REQA, which only cards in IDLE answer. That is
+ * exactly right for attendance: a card left lying on the reader is halted after
+ * its first read and stays halted until it leaves the field, so one tap is one
+ * record rather than a hundred.
+ */
+static String readCardUid() {
+  if (!rfid.PICC_IsNewCardPresent()) return "";
+
+  return selectedCardUid();
+}
+
+/**
+ * Any card in the field, including one already resting there.
+ *
+ * The same REQA behaviour that makes attendance sane makes enrolment fail. Put
+ * the card down, then press the button in the browser, and the card is already
+ * halted from an earlier read — REQA gets no answer, the wait window runs to
+ * nothing, and the person tapping is told no card was presented while holding
+ * one against the reader.
+ *
+ * WUPA wakes cards in HALT as well as IDLE, which is the question enrolment
+ * actually wants to ask: is there a card here, however it came to be here.
+ */
+static String readCardUidIncludingResting() {
+  if (rfid.PICC_IsNewCardPresent()) {
+    return selectedCardUid();
+  }
+
+  byte atqa[2];
+  byte length = sizeof(atqa);
+
+  if (rfid.PICC_WakeupA(atqa, &length) != MFRC522::STATUS_OK) {
+    return "";
+  }
+
+  return selectedCardUid();
 }
 
 /* ------------------------------------------------- card enrolment (issue) -- */
@@ -947,10 +993,33 @@ static void runCardEnrollment(int requestId, const char *label, int waitSeconds)
   uint32_t windowMs  = (uint32_t) (waitSeconds > 0 ? waitSeconds : 45) * 1000UL;
   String   uid;
 
+  uint32_t lastAntennaReset = millis();
+  uint32_t lastTick         = millis();
+
   while (millis() - startedAt < windowMs) {
-    uid = readCardUid();
+    /* Resting cards included: somebody who puts the card down and then presses
+     * the button in the browser is holding a card the reader must find. */
+    uid = readCardUidIncludingResting();
 
     if (uid.length() > 0) break;
+
+    /* A reader can wedge — a brown-out on the 3.3 V rail, a marginal SPI line —
+     * and once wedged it answers nothing for the rest of the window. Cycling
+     * the antenna every few seconds costs nothing and recovers it. */
+    if (millis() - lastAntennaReset > 5000) {
+      lastAntennaReset = millis();
+      rfid.PCD_AntennaOff();
+      delay(5);
+      rfid.PCD_AntennaOn();
+    }
+
+    /* Somebody standing at a reader that says nothing cannot tell waiting from
+     * broken, which is the whole reason this mode exists. */
+    if (millis() - lastTick > 3000) {
+      lastTick = millis();
+      Serial.printf("CARD: still waiting — %us left. Hold the card flat on the reader.\n",
+                    (unsigned) ((windowMs - (millis() - startedAt)) / 1000UL));
+    }
 
     /* Short enough that a card touched briefly still lands inside a poll, and
      * the reader is the only thing being asked. */
@@ -981,11 +1050,18 @@ static void runCardEnrollment(int requestId, const char *label, int waitSeconds)
                   status, (const char *) (response["code"] | "-"));
   }
 
-  /* A card left sitting on the reader would otherwise be read again the
-   * instant the next request opens. */
+  /* Wait for the card to be taken away. Issuing runs card after card, so
+   * without this the one just read is still in the field when the next request
+   * opens and gets captured a second time — the resting-card wakeup above
+   * makes that certain rather than merely likely.
+   *
+   * Bounded: a card genuinely left behind must not stop the terminal working.
+   */
+  Serial.println("CARD: take the card off the reader.");
+
   uint32_t clearedAt = millis();
-  while (millis() - clearedAt < 1500 && readCardUid().length() > 0) {
-    delay(50);
+  while (millis() - clearedAt < 8000 && readCardUidIncludingResting().length() > 0) {
+    delay(80);
   }
 
   enrollingCard = false;
