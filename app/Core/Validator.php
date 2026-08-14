@@ -82,6 +82,14 @@ final class Validator
             return;
         }
 
+        // Whether min/max/between mean a range or a length is a property of the
+        // field, not of the PHP type that happens to arrive. Everything from a
+        // form arrives as a string, so deciding by type alone made every
+        // numeric bound a length check: `between:10,600` on a heartbeat then
+        // rejected 10 for being two characters, and `between:1,200` on a
+        // capacity accepted 250 for being three.
+        $isNumericField = array_intersect(['int', 'integer', 'numeric'], $ruleList) !== [];
+
         foreach ($ruleList as $rule) {
             if ($rule === 'required' || $rule === 'nullable' || $rule === '') {
                 continue;
@@ -89,7 +97,7 @@ final class Validator
 
             [$name, $parameter] = array_pad(explode(':', $rule, 2), 2, null);
 
-            if (!$this->checkRule($field, (string) $name, $parameter, $value)) {
+            if (!$this->checkRule($field, (string) $name, $parameter, $value, $isNumericField)) {
                 return; // stop at the first failing rule per field — cleaner UI
             }
         }
@@ -97,8 +105,13 @@ final class Validator
         $this->validated[$field] = $this->cast($field, $ruleList, $value);
     }
 
-    private function checkRule(string $field, string $rule, ?string $parameter, mixed $value): bool
-    {
+    private function checkRule(
+        string $field,
+        string $rule,
+        ?string $parameter,
+        mixed $value,
+        bool $isNumericField = false
+    ): bool {
         $label = $this->label($field);
 
         return match ($rule) {
@@ -127,9 +140,9 @@ final class Validator
                 ? true
                 : $this->reject($field, sprintf('%s must be a valid email address.', $label)),
 
-            'min' => $this->checkMin($field, (string) $parameter, $value),
-            'max' => $this->checkMax($field, (string) $parameter, $value),
-            'between' => $this->checkBetween($field, (string) $parameter, $value),
+            'min' => $this->checkMin($field, (string) $parameter, $value, $isNumericField),
+            'max' => $this->checkMax($field, (string) $parameter, $value, $isNumericField),
+            'between' => $this->checkBetween($field, (string) $parameter, $value, $isNumericField),
 
             'in' => in_array((string) $value, explode(',', (string) $parameter), true)
                 ? true
@@ -215,11 +228,11 @@ final class Validator
         };
     }
 
-    private function checkMin(string $field, string $parameter, mixed $value): bool
+    private function checkMin(string $field, string $parameter, mixed $value, bool $isNumericField = false): bool
     {
         $min = (float) $parameter;
 
-        if (is_numeric($value) && !is_string($value)) {
+        if (($isNumericField && is_numeric($value)) || (is_numeric($value) && !is_string($value))) {
             return (float) $value >= $min
                 ? true
                 : $this->reject($field, sprintf('%s must be at least %s.', $this->label($field), $parameter));
@@ -236,11 +249,11 @@ final class Validator
             : $this->reject($field, sprintf('%s must be at least %s characters.', $this->label($field), $parameter));
     }
 
-    private function checkMax(string $field, string $parameter, mixed $value): bool
+    private function checkMax(string $field, string $parameter, mixed $value, bool $isNumericField = false): bool
     {
         $max = (float) $parameter;
 
-        if (is_numeric($value) && !is_string($value)) {
+        if (($isNumericField && is_numeric($value)) || (is_numeric($value) && !is_string($value))) {
             return (float) $value <= $max
                 ? true
                 : $this->reject($field, sprintf('%s may not exceed %s.', $this->label($field), $parameter));
@@ -257,11 +270,12 @@ final class Validator
             : $this->reject($field, sprintf('%s may not exceed %s characters.', $this->label($field), $parameter));
     }
 
-    private function checkBetween(string $field, string $parameter, mixed $value): bool
+    private function checkBetween(string $field, string $parameter, mixed $value, bool $isNumericField = false): bool
     {
         [$min, $max] = array_pad(explode(',', $parameter), 2, '0');
 
-        return $this->checkMin($field, $min, $value) && $this->checkMax($field, $max, $value);
+        return $this->checkMin($field, $min, $value, $isNumericField)
+            && $this->checkMax($field, $max, $value, $isNumericField);
     }
 
     /** @param list<string> $alternates */

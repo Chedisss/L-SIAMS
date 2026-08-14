@@ -194,10 +194,56 @@
             return this.stack;
         },
 
+        /* Re-arm a toast's dismissal, replacing any timer already running. */
+        arm(toast, timeout) {
+            if (toast._lsTimer) {
+                clearTimeout(toast._lsTimer);
+                toast._lsTimer = null;
+            }
+
+            toast.style.opacity = '';
+
+            if (timeout > 0) {
+                toast._lsTimer = setTimeout(() => {
+                    toast.style.opacity = '0';
+                    setTimeout(() => toast.remove(), 200);
+                }, timeout);
+            }
+        },
+
         show(message, type = 'info', title = null, timeout = 5000) {
             const stack = this.ensureStack();
+
+            // Pressing Save on a form that will not validate produces the same
+            // message every time. Six identical toasts stacked down the screen
+            // say nothing the first one did not, and bury the field errors that
+            // actually name the problem. Repeats reset the existing toast and
+            // count up on it instead.
+            const key      = type + ' ' + (title || '') + ' ' + message;
+            const existing = Array.prototype.find.call(
+                stack.children,
+                (node) => node._lsKey === key
+            );
+
+            if (existing) {
+                existing._lsCount = (existing._lsCount || 1) + 1;
+
+                let badge = existing.querySelector('.toast__count');
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'toast__count';
+                    existing.querySelector('.toast__body').appendChild(badge);
+                }
+                badge.textContent = '× ' + existing._lsCount;
+
+                this.arm(existing, timeout);
+                return existing;
+            }
+
             const toast = document.createElement('div');
             toast.className = 'toast toast--' + type;
+            toast._lsKey   = key;
+            toast._lsCount = 1;
 
             const body = document.createElement('div');
             body.className = 'toast__body';
@@ -224,12 +270,12 @@
             toast.appendChild(close);
             stack.appendChild(toast);
 
-            if (timeout > 0) {
-                setTimeout(() => {
-                    toast.style.opacity = '0';
-                    setTimeout(() => toast.remove(), 200);
-                }, timeout);
+            // A burst of distinct messages should not fill the viewport either.
+            while (stack.children.length > 4) {
+                stack.removeChild(stack.firstElementChild);
             }
+
+            this.arm(toast, timeout);
 
             return toast;
         },
