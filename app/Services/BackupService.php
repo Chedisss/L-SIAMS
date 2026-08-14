@@ -187,10 +187,63 @@ final class BackupService
         foreach ($views as $row) {
             $viewName = (string) array_values($row)[0];
             $create   = $db->selectOne(sprintf('SHOW CREATE VIEW `%s`', $viewName));
-            $sql     .= sprintf("DROP VIEW IF EXISTS `%s`;\n%s;\n\n", $viewName, (string) ($create['Create View'] ?? ''));
+            $body     = (string) preg_replace('/\sDEFINER\s*=\s*\S+/i', '', (string) ($create['Create View'] ?? ''));
+            $sql     .= sprintf("DROP VIEW IF EXISTS `%s`;\n%s;\n\n", $viewName, $body);
+        }
+
+        // Triggers come last, after every row is already in place. Created any
+        // earlier and the INSERTs above would fire them, writing audit rows for
+        // a restore that never happened and tripping the guards that stop
+        // attendance being rewritten.
+        //
+        // They are not optional decoration: the guards that make attendance,
+        // audit logs, security logs and login history undeletable are triggers.
+        // A dump without them restores a database that silently permits what
+        // the system is built to refuse.
+        foreach ($db->select('SHOW TRIGGERS') as $row) {
+            $triggerName = (string) ($row['Trigger'] ?? '');
+
+            if ($triggerName === '') {
+                continue;
+            }
+
+            $create = $db->selectOne(sprintf('SHOW CREATE TRIGGER `%s`', $triggerName));
+            $body   = (string) ($create['SQL Original Statement'] ?? '');
+
+            if ($body === '') {
+                continue;
+            }
+
+            // DEFINER names an account that need not exist on the machine the
+            // backup is restored to, and restoring is not the moment to find
+            // that out.
+            $body = (string) preg_replace('/\sDEFINER\s*=\s*\S+/i', '', $body);
+
+            $sql .= sprintf(
+                "DROP TRIGGER IF EXISTS `%s`;\nDELIMITER \$\$\n%s\$\$\nDELIMITER ;\n\n",
+                $triggerName,
+                rtrim($body) . "\n"
+            );
         }
 
         return $sql . "SET FOREIGN_KEY_CHECKS = 1;\n";
+    }
+
+    /**
+     * Read a backup archive off disk and return the plain SQL inside it.
+     *
+     * Restoring through the admin pages needs the `backups` row that describes
+     * the archive — which is itself in the database, so it is gone in exactly
+     * the situation a backup exists for. This path needs nothing but the file
+     * and the APP_KEY it was encrypted with.
+     */
+    public static function decryptFile(string $path): string
+    {
+        if (!is_file($path) || !is_readable($path)) {
+            throw new ValidationException(['file' => ['No readable file at ' . $path . '.']]);
+        }
+
+        return self::unpack((string) file_get_contents($path));
     }
 
     /** gzip, then AES-256-GCM, with a magic header so the format is identifiable. */
@@ -355,13 +408,46 @@ final class BackupService
     }
 
     /**
-     * Split a dump into statements on semicolons that are not inside a quoted
-     * string. A naive explode(';') corrupts any row containing a semicolon —
-     * an address field, for instance.
+     * Split a dump into statements, honouring DELIMITER directives so a
+     * trigger body is not torn apart at the semicolons inside it.
      *
      * @return list<string>
      */
     private static function splitStatements(string $sql): array
+    {
+        $statements = [];
+        $delimiter  = ';';
+        $segment    = '';
+
+        foreach (preg_split('/\r\n|\n|\r/', $sql) ?: [] as $line) {
+            if (preg_match('/^\s*DELIMITER\s+(\S+)\s*$/i', $line, $matches) === 1) {
+                foreach (self::scanStatements($segment, $delimiter) as $statement) {
+                    $statements[] = $statement;
+                }
+
+                $segment   = '';
+                $delimiter = $matches[1];
+                continue;
+            }
+
+            $segment .= $line . "\n";
+        }
+
+        foreach (self::scanStatements($segment, $delimiter) as $statement) {
+            $statements[] = $statement;
+        }
+
+        return $statements;
+    }
+
+    /**
+     * Split one delimiter run into statements, breaking only on a delimiter
+     * that is not inside a quoted string. A naive explode(';') corrupts any
+     * row containing a semicolon — an address field, for instance.
+     *
+     * @return list<string>
+     */
+    private static function scanStatements(string $sql, string $delimiter): array
     {
         $statements = [];
         $current    = '';
@@ -394,9 +480,10 @@ final class BackupService
                 continue;
             }
 
-            if ($char === ';') {
+            if ($char === $delimiter[0] && substr($sql, $i, strlen($delimiter)) === $delimiter) {
                 $statements[] = $current;
                 $current      = '';
+                $i           += strlen($delimiter) - 1;
                 continue;
             }
 

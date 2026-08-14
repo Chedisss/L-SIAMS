@@ -108,6 +108,7 @@ try {
         'security:audit-keys' => commandAuditKeys(),
         'doctor'              => commandDoctor(),
         'db:import'           => commandDbImport($arguments, $flags),
+        'backup:decrypt'      => commandBackupDecrypt($arguments),
         'schema:dump'         => commandSchemaDump(),
         'user:create-admin'   => commandCreateAdmin(),
         default               => commandHelp(),
@@ -141,6 +142,7 @@ function commandHelp(): void
     out('    doctor                  Diagnose this installation and report problems');
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
     out('    db:import <file.sql>    Import a .sql file or phpMyAdmin export (--fresh drops first)');
+    out('    backup:decrypt <file>   Turn a .sql.gz.enc backup back into readable SQL');
     out('');
 }
 
@@ -1060,6 +1062,67 @@ function commandCreateAdmin(): void
  * user accounts and any student, teacher or attendance data: a schema file that
  * shipped a known login would be a backdoor in every installation that used it.
  */
+/**
+ * Turn a .sql.gz.enc backup archive back into readable SQL.
+ *
+ * The admin Backups page can only restore archives it has a database row for,
+ * and that row lives in the database — so it is missing precisely when the
+ * backup is needed. This reads the file directly. It needs the APP_KEY the
+ * archive was written with, which is why .env must be kept alongside the
+ * backups and never regenerated while an archive still matters.
+ *
+ * @param list<string> $arguments
+ */
+function commandBackupDecrypt(array $arguments): void
+{
+    $paths  = array_values(array_filter($arguments, static fn (string $a): bool => !str_starts_with($a, '--')));
+    $source = $paths[0] ?? '';
+
+    if ($source === '') {
+        fail("Usage: php bin/console backup:decrypt <file.sql.gz.enc> [output.sql]\n"
+           . '  Writes the SQL next to the archive when no output path is given.');
+    }
+
+    if (!is_file($source)) {
+        $candidate = BASE_PATH . '/database/backups/' . basename($source);
+
+        if (!is_file($candidate)) {
+            fail('No such file: ' . $source);
+        }
+
+        $source = $candidate;
+    }
+
+    $target = $paths[1] ?? preg_replace('/\.sql\.gz\.enc$/', '.sql', $source);
+
+    if (!is_string($target) || $target === '' || $target === $source) {
+        $target = $source . '.sql';
+    }
+
+    heading('Decrypting ' . basename($source));
+
+    try {
+        $sql = BackupService::decryptFile($source);
+    } catch (Throwable $e) {
+        out('');
+        out('  If the message mentions decryption, the APP_KEY in .env is not the one', 'grey');
+        out('  this archive was written with. There is no way around that.', 'grey');
+        out('');
+        fail($e->getMessage());
+    }
+
+    if (file_put_contents($target, $sql) === false) {
+        fail('Could not write ' . $target);
+    }
+
+    @chmod($target, 0600);
+
+    ok(number_format(strlen($sql)) . ' bytes written to ' . $target);
+    out('');
+    out('  Load it with:  php bin/console db:import ' . escapeshellarg($target), 'cyan');
+    out('  It contains real data — delete it once the import has worked.', 'grey');
+}
+
 /**
  * Import a .sql file — including a phpMyAdmin export — into the configured
  * database.
