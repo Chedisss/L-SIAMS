@@ -925,20 +925,47 @@ static String readCardUid() {
  *
  * WUPA wakes cards in HALT as well as IDLE, which is the question enrolment
  * actually wants to ask: is there a card here, however it came to be here.
+ *
+ * Two counters come back out because "no card was presented" covers two
+ * completely different faults — nothing in the field, and a card that answers
+ * but will not select — and telling them apart from the outside is impossible.
  */
-static String readCardUidIncludingResting() {
-  if (rfid.PICC_IsNewCardPresent()) {
-    return selectedCardUid();
+static String readCardUidIncludingResting(uint16_t *sawCard, uint16_t *selectFailed) {
+  bool present = rfid.PICC_IsNewCardPresent();
+
+  if (!present) {
+    /* PICC_IsNewCardPresent() resets these three before it asks; PICC_WakeupA()
+     * does not, and inherits whatever the last transaction left behind. Asking
+     * WUPA on top of stale baud-rate registers is asking it to fail. */
+    rfid.PCD_WriteRegister(MFRC522::TxModeReg, 0x00);
+    rfid.PCD_WriteRegister(MFRC522::RxModeReg, 0x00);
+    rfid.PCD_WriteRegister(MFRC522::ModWidthReg, 0x26);
+
+    byte atqa[2];
+    byte length = sizeof(atqa);
+    MFRC522::StatusCode status = rfid.PICC_WakeupA(atqa, &length);
+
+    present = (status == MFRC522::STATUS_OK || status == MFRC522::STATUS_COLLISION);
   }
 
-  byte atqa[2];
-  byte length = sizeof(atqa);
+  if (!present) return "";
 
-  if (rfid.PICC_WakeupA(atqa, &length) != MFRC522::STATUS_OK) {
-    return "";
+  if (sawCard != nullptr) (*sawCard)++;
+
+  /* Selecting is anticollision plus a UID read, and it is the step that fails
+   * on a marginal antenna or a card held at an angle. One retry costs nothing
+   * and turns most of those into a successful read. */
+  for (uint8_t attempt = 0; attempt < 3; attempt++) {
+    String uid = selectedCardUid();
+
+    if (uid.length() > 0) return uid;
+
+    delay(15);
   }
 
-  return selectedCardUid();
+  if (selectFailed != nullptr) (*selectFailed)++;
+
+  return "";
 }
 
 /* ------------------------------------------------- card enrolment (issue) -- */
@@ -995,30 +1022,52 @@ static void runCardEnrollment(int requestId, const char *label, int waitSeconds)
 
   uint32_t lastAntennaReset = millis();
   uint32_t lastTick         = millis();
+  uint16_t sawCard          = 0;
+  uint16_t selectFailed     = 0;
+
+  /* Worth one line at the start: a reader answering with a version that is not
+   * a real one is the difference between "hold it flatter" and "check the
+   * wiring", and that is not deducible from a failed read. */
+  byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  Serial.printf("    reader version 0x%02X%s\n", version,
+                (version == 0x91 || version == 0x92 || version == 0x88 || version == 0x90 || version == 0x12)
+                  ? "" : "  <-- not a version any MFRC522 reports; suspect wiring or power");
 
   while (millis() - startedAt < windowMs) {
     /* Resting cards included: somebody who puts the card down and then presses
      * the button in the browser is holding a card the reader must find. */
-    uid = readCardUidIncludingResting();
+    uid = readCardUidIncludingResting(&sawCard, &selectFailed);
 
     if (uid.length() > 0) break;
 
-    /* A reader can wedge — a brown-out on the 3.3 V rail, a marginal SPI line —
-     * and once wedged it answers nothing for the rest of the window. Cycling
-     * the antenna every few seconds costs nothing and recovers it. */
-    if (millis() - lastAntennaReset > 5000) {
+    /* A card held continuously never leaves the field, so it never returns to
+     * IDLE by itself. Dropping the antenna power-cycles it, which is the only
+     * way to get a wedged or stuck card back to a state that answers.
+     *
+     * 50 ms, not 5: a card's onboard capacitor holds it alive across a shorter
+     * gap, so the shorter one looks like a fix and changes nothing. */
+    if (millis() - lastAntennaReset > 4000) {
       lastAntennaReset = millis();
       rfid.PCD_AntennaOff();
-      delay(5);
+      delay(50);
       rfid.PCD_AntennaOn();
+      delay(10);
     }
 
     /* Somebody standing at a reader that says nothing cannot tell waiting from
      * broken, which is the whole reason this mode exists. */
     if (millis() - lastTick > 3000) {
       lastTick = millis();
-      Serial.printf("CARD: still waiting — %us left. Hold the card flat on the reader.\n",
-                    (unsigned) ((windowMs - (millis() - startedAt)) / 1000UL));
+      Serial.printf("CARD: still waiting — %us left.%s\n",
+                    (unsigned) ((windowMs - (millis() - startedAt)) / 1000UL),
+                    sawCard == 0
+                      ? " Nothing in the field yet — hold the card flat on the reader."
+                      : "");
+
+      if (sawCard > 0) {
+        Serial.printf("      a card is answering but will not select (%u attempt(s)) — "
+                      "try it flatter, or slightly further away.\n", selectFailed);
+      }
     }
 
     /* Short enough that a card touched briefly still lands inside a poll, and
@@ -1027,8 +1076,27 @@ static void runCardEnrollment(int requestId, const char *label, int waitSeconds)
   }
 
   if (uid.length() == 0) {
-    Serial.println("CARD: no card was presented in time.");
-    reportCardFailed(requestId, "No card was presented within the time allowed.");
+    /* The two failures need different actions, so they get different words
+     * here and in the browser rather than one message covering both. */
+    const bool answered = sawCard > 0;
+
+    Serial.printf("CARD: gave up. Card detected %u time(s), select failed %u time(s).\n",
+                  sawCard, selectFailed);
+
+    if (answered) {
+      Serial.println("      The reader sees a card but cannot read its serial. That is an antenna");
+      Serial.println("      or power problem, not a card problem: check the module is on 3.3 V,");
+      Serial.println("      that its GND shares the ESP32's, and that the SPI leads are short.");
+    } else {
+      Serial.println("      Nothing answered at all. Either the card is not 13.56 MHz (a thick");
+      Serial.println("      white 125 kHz fob will never read), or the reader is not wired right.");
+      Serial.println("      Try the card that already works for attendance to tell those apart.");
+    }
+
+    reportCardFailed(requestId, answered
+      ? "The reader detected a card but could not read its serial — hold it flatter, or check the reader's power and wiring."
+      : "No card answered the reader. Check the card is 13.56 MHz, and that the reader is wired and powered correctly.");
+
     enrollingCard = false;
     return;
   }
@@ -1060,7 +1128,7 @@ static void runCardEnrollment(int requestId, const char *label, int waitSeconds)
   Serial.println("CARD: take the card off the reader.");
 
   uint32_t clearedAt = millis();
-  while (millis() - clearedAt < 8000 && readCardUidIncludingResting().length() > 0) {
+  while (millis() - clearedAt < 8000 && readCardUidIncludingResting(nullptr, nullptr).length() > 0) {
     delay(80);
   }
 
