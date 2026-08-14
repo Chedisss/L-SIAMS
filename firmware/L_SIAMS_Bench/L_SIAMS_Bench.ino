@@ -19,8 +19,11 @@
  *      VCC -> VIN (5V)     GND -> GND
  *      WAKEUP and the 3.3 V touch feed stay disconnected.
  *
- * Libraries: MFRC522 (GithubCommunity), Adafruit Fingerprint Sensor Library,
- *            ArduinoJson v7.   Board: ESP32 Dev Module.  Serial: 115200.
+ * Libraries, by the exact name Library Manager shows:
+ *      "MFRC522" by GithubCommunity              (NOT MFRC522v2 - different API)
+ *      "Adafruit Fingerprint Sensor Library" by Adafruit
+ *      "ArduinoJson" by Benoit Blanchon          (6 or 7; both compile)
+ * Board: ESP32 Dev Module.  Serial Monitor: 115200.
  * ======================================================================== */
 
 #include <WiFi.h>
@@ -30,6 +33,22 @@
 #include <MFRC522.h>
 #include <Adafruit_Fingerprint.h>
 #include <ArduinoJson.h>
+
+/* ArduinoJson 7 made JsonDocument a concrete, self-sizing type. In 6 it is an
+ * abstract base and only DynamicJsonDocument can be declared, with a capacity
+ * given up front. Library Manager installs whichever the sketch asks for and
+ * happily leaves an older one in place, and the failure under 6 reads "cannot
+ * declare variable to be of abstract type 'JsonDocument'" -- which names
+ * nothing you would think to go and change. One alias covers both versions.
+ * Function parameters stay JsonDocument*: that is a valid base pointer in 6
+ * and the type itself in 7. */
+#if ARDUINOJSON_VERSION_MAJOR < 7
+struct LsJson : public DynamicJsonDocument {
+  LsJson() : DynamicJsonDocument(4096) {}
+};
+#else
+using LsJson = JsonDocument;
+#endif
 #include <sys/time.h>
 #include <esp_system.h>
 #include "mbedtls/md.h"
@@ -329,7 +348,7 @@ static bool claimDevice() {
     return true;
   }
 
-  JsonDocument request;
+  LsJson request;
   request["claim_token"] = CLAIM_TOKEN;
   request["device_id"]   = DEVICE_ID;
   request["mac_address"] = WiFi.macAddress();
@@ -337,7 +356,7 @@ static bool claimDevice() {
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = unsignedPost("/api/device/claim", body, &response);
   const char *code = response["code"] | "";
 
@@ -386,7 +405,7 @@ static void setClock(time_t epoch) {
  * which is good to the second and enough to make the retry succeed.
  */
 static bool syncClockFromServer() {
-  JsonDocument response;
+  LsJson response;
   int status = signedRequest("GET", "/api/device/time", "", &response);
 
   if (status == 200) {
@@ -435,7 +454,7 @@ static bool syncClockFromServer() {
 static void sendHeartbeat() {
   if (!clockSet) return;
 
-  JsonDocument request;
+  LsJson request;
   request["firmware"]    = "1.0.0-bench";
   request["wifi_signal"] = WiFi.RSSI();
   request["queue"]       = 0;
@@ -445,7 +464,7 @@ static void sendHeartbeat() {
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = signedRequest("POST", "/api/device/heartbeat", body, &response);
 
   if (status == 200 || status == 201) {
@@ -508,28 +527,28 @@ static void watchReader() {
  * number and a quality score.
  */
 static void reportEnrollStage(int requestId, const char *stage) {
-  JsonDocument request;
+  LsJson request;
   request["request_id"] = requestId;
   request["stage"]      = stage;
 
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   signedRequest("POST", "/api/fingerprint/enrollment/progress", body, &response);
 }
 
 static void reportEnrollFailed(int requestId, const char *reason) {
   Serial.printf("Enrol: FAILED — %s\n", reason);
 
-  JsonDocument request;
+  LsJson request;
   request["request_id"] = requestId;
   request["reason"]     = reason;
 
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   signedRequest("POST", "/api/fingerprint/enrollment/failed", body, &response);
 }
 
@@ -618,7 +637,7 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
    * cannot leave a teacher bound to the wrong finger. */
   finger.getTemplateCount();
 
-  JsonDocument request;
+  LsJson request;
   request["request_id"]         = requestId;
   request["sensor_template_id"] = slot;
   request["sample_count"]       = 2;
@@ -626,7 +645,7 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = signedRequest("POST", "/api/fingerprint/enrollment/complete", body, &response);
 
   if (status == 200 || status == 201) {
@@ -668,13 +687,13 @@ static void discardSlots(JsonArrayConst slots) {
       continue;
     }
 
-    JsonDocument request;
+    LsJson request;
     request["sensor_template_id"] = slot;
 
     String body;
     serializeJson(request, body);
 
-    JsonDocument response;
+    LsJson response;
     int status = signedRequest("POST", "/api/fingerprint/enrollment/discarded", body, &response);
 
     if (status == 200 || status == 201) {
@@ -694,7 +713,7 @@ static void pollEnrollment() {
   if (millis() - lastEnrollPoll < ENROLL_POLL_MS) return;
   lastEnrollPoll = millis();
 
-  JsonDocument response;
+  LsJson response;
   int status = signedRequest("GET", "/api/fingerprint/enrollment", "", &response);
 
   if (status != 200) return;
@@ -751,14 +770,14 @@ static void handleFingerprint() {
     return;
   }
 
-  JsonDocument request;
+  LsJson request;
   request["fingerprint_id"] = finger.fingerID;
   request["confidence"]     = finger.confidence;
 
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = signedRequest("POST", "/api/attendance/start", body, &response, generateUuid());
 
   Serial.printf("  HTTP %d  %s\n", status, (const char *) (response["code"] | "-"));
@@ -802,7 +821,7 @@ static String readCardUid() {
 }
 
 static void sendTap(const String &uid) {
-  JsonDocument request;
+  LsJson request;
   request["rfid_uid"] = uid;
 
   String requestId = generateUuid();
@@ -811,7 +830,7 @@ static void sendTap(const String &uid) {
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = signedRequest("POST", "/api/attendance/tap", body, &response, requestId);
 
   /* One retry after a clock correction. A device powered off for a while

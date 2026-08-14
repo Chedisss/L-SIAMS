@@ -38,7 +38,8 @@
  *      3.3V   → 3V3  (NEVER 5V — 5 V destroys the module)
  *      GND    → GND
  *
- * Libraries: MFRC522 by GithubCommunity, ArduinoJson v7.
+ * Libraries: "MFRC522" by GithubCommunity (NOT MFRC522v2 - different API),
+ *            "ArduinoJson" by Benoit Blanchon (6 or 7; both compile).
  * Board: ESP32 Dev Module.
  * ======================================================================== */
 
@@ -48,6 +49,22 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <ArduinoJson.h>
+
+/* ArduinoJson 7 made JsonDocument a concrete, self-sizing type. In 6 it is an
+ * abstract base and only DynamicJsonDocument can be declared, with a capacity
+ * given up front. Library Manager installs whichever the sketch asks for and
+ * happily leaves an older one in place, and the failure under 6 reads "cannot
+ * declare variable to be of abstract type 'JsonDocument'" -- which names
+ * nothing you would think to go and change. One alias covers both versions.
+ * Function parameters stay JsonDocument*: that is a valid base pointer in 6
+ * and the type itself in 7. */
+#if ARDUINOJSON_VERSION_MAJOR < 7
+struct LsJson : public DynamicJsonDocument {
+  LsJson() : DynamicJsonDocument(4096) {}
+};
+#else
+using LsJson = JsonDocument;
+#endif
 #include <sys/time.h>
 #include <esp_system.h>      /* esp_random() */
 #include "mbedtls/md.h"
@@ -360,7 +377,7 @@ static bool claimDevice() {
     return true;
   }
 
-  JsonDocument request;
+  LsJson request;
   request["claim_token"] = CLAIM_TOKEN;
   request["device_id"]   = DEVICE_ID;
   request["mac_address"] = DEVICE_MAC;
@@ -368,7 +385,7 @@ static bool claimDevice() {
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = unsignedPost("/api/device/claim", body, &response);
 
   const char *code = response["code"] | "";
@@ -414,7 +431,7 @@ static void setClock(time_t epoch) {
 }
 
 static bool syncClockFromServer() {
-  JsonDocument response;
+  LsJson response;
 
   /* First attempt. With a dead clock this is rejected as TIMESTAMP_EXPIRED,
    * which is fine — the response still carries a Date header. */
@@ -474,7 +491,7 @@ static bool syncClockFromServer() {
 static void sendHeartbeat() {
   if (!clockSet) return;
 
-  JsonDocument request;
+  LsJson request;
   request["firmware"]    = "1.0.0-bench";
   request["wifi_signal"] = WiFi.RSSI();
   request["queue"]       = 0;
@@ -484,7 +501,7 @@ static void sendHeartbeat() {
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = signedRequest("POST", "/api/device/heartbeat", body, &response);
 
   if (status == 200 || status == 201) {
@@ -558,7 +575,7 @@ static String readCardUid() {
 }
 
 static void sendTap(const String &uid) {
-  JsonDocument request;
+  LsJson request;
   request["rfid_uid"] = uid;
 
   String requestId = generateUuid();
@@ -567,7 +584,7 @@ static void sendTap(const String &uid) {
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = signedRequest("POST", "/api/attendance/tap", body, &response, requestId);
 
   /* One retry after a clock correction. A device that has been powered off for

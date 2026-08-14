@@ -41,6 +41,22 @@
 #include <Wire.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+
+/* ArduinoJson 7 made JsonDocument a concrete, self-sizing type. In 6 it is an
+ * abstract base and only DynamicJsonDocument can be declared, with a capacity
+ * given up front. Library Manager installs whichever the sketch asks for and
+ * happily leaves an older one in place, and the failure under 6 reads "cannot
+ * declare variable to be of abstract type 'JsonDocument'" -- which names
+ * nothing you would think to go and change. One alias covers both versions.
+ * Function parameters stay JsonDocument*: that is a valid base pointer in 6
+ * and the type itself in 7. */
+#if ARDUINOJSON_VERSION_MAJOR < 7
+struct LsJson : public DynamicJsonDocument {
+  LsJson() : DynamicJsonDocument(4096) {}
+};
+#else
+using LsJson = JsonDocument;
+#endif
 #include <MFRC522.h>
 #include <Adafruit_Fingerprint.h>
 #include <Adafruit_GFX.h>
@@ -875,7 +891,7 @@ void syncQueue() {
  * ========================================================================= */
 
 void reportEnrollStage(int requestId, const char *stage) {
-  JsonDocument request;
+  LsJson request;
   request["request_id"] = requestId;
   request["stage"]      = stage;
 
@@ -888,7 +904,7 @@ void reportEnrollStage(int requestId, const char *stage) {
 void reportEnrollFailed(int requestId, const char *reason) {
   LOG("Enrolment failed: %s\n", reason);
 
-  JsonDocument request;
+  LsJson request;
   request["request_id"] = requestId;
   request["reason"]     = reason;
 
@@ -982,7 +998,7 @@ void runEnrollment(int requestId, int slot, const String &teacherName) {
     return;
   }
 
-  JsonDocument request;
+  LsJson request;
   request["request_id"]         = requestId;
   request["sensor_template_id"] = slot;
   request["sample_count"]       = 2;
@@ -990,7 +1006,7 @@ void runEnrollment(int requestId, int slot, const String &teacherName) {
   String body;
   serializeJson(request, body);
 
-  JsonDocument response;
+  LsJson response;
   int status = apiRequest(EP_ENROLL_COMPLETE, body, &response);
 
   if (status == 200 || status == 201) {
@@ -1033,7 +1049,7 @@ void discardSlots(JsonArrayConst slots) {
       continue;
     }
 
-    JsonDocument request;
+    LsJson request;
     request["sensor_template_id"] = slot;
 
     String body;
@@ -1050,7 +1066,7 @@ void pollEnrollment() {
   if (millis() - lastEnrollPoll < ENROLL_POLL_INTERVAL_MS) return;
   lastEnrollPoll = millis();
 
-  JsonDocument response;
+  LsJson response;
   int status = apiRequest(EP_ENROLL_PENDING, "", &response, "", "GET");
 
   if (status != 200) return;
