@@ -527,6 +527,7 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 .toast--warning { border-left-color: var(--warning); }
 .toast__body { flex: 1; font-size: 13px; }
 .toast__title { font-weight: 600; margin-bottom: .1rem; }
+.toast__count { display: inline-block; margin-top: .25rem; font-size: 11px; font-weight: 600; opacity: .7; }
 .toast__close { background: none; border: 0; color: var(--text-subtle); cursor: pointer; font-size: 15px; line-height: 1; }
 
 @keyframes toast-in {
