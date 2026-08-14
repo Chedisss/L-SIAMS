@@ -163,40 +163,61 @@ $__view->start('content');
                 <div class="alert alert-info">
                     <span class="alert__icon"><i class="fa-solid fa-circle-info"></i></span>
                     <div class="alert__body">
-                        Subjects and sections are filtered to what this teacher may actually be assigned.
-                        The server re-checks every pairing on save.
+                        Each choice narrows the next: the subject decides which grade levels apply,
+                        the grade level decides the sections, and the two together decide which
+                        teachers may take the class. The server re-checks every pairing on save.
                     </div>
                 </div>
 
+                <?php
+                // Grouped by department so the list stays navigable once a school
+                // has a few dozen subjects.
+                $subjectsByDepartment = [];
+                foreach ($subjects as $subjectOption) {
+                    $subjectsByDepartment[(string) $subjectOption['department_name']][] = $subjectOption;
+                }
+                ?>
+
                 <div class="form-grid">
                     <div class="form-group">
-                        <label for="s-teacher" class="required">Teacher</label>
-                        <select id="s-teacher" name="teacher_id" required>
-                            <option value="">Select a teacher…</option>
-                            <?php foreach ($teachers as $teacher): ?>
-                                <option value="<?= e($teacher['teacher_id']) ?>">
-                                    <?= e($teacher['last_name']) ?>, <?= e($teacher['first_name']) ?>
-                                    (<?= e($teacher['department_code']) ?>)
-                                </option>
+                        <label for="s-subject" class="required">Subject</label>
+                        <select id="s-subject" name="subject_id" required>
+                            <option value="">Select a subject…</option>
+                            <?php foreach ($subjectsByDepartment as $departmentName => $departmentSubjects): ?>
+                                <optgroup label="── <?= e($departmentName) ?> ──">
+                                    <?php foreach ($departmentSubjects as $subjectOption): ?>
+                                        <option value="<?= e($subjectOption['subject_id']) ?>">
+                                            <?= e($subjectOption['subject_code']) ?> — <?= e($subjectOption['subject_name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </optgroup>
                             <?php endforeach; ?>
                         </select>
-                        <span class="field-help" id="teacher-help">Choose a teacher to load their subjects and sections.</span>
+                        <span class="field-help" id="subject-help">Start here — everything below follows from it.</span>
                     </div>
 
                     <div class="form-group">
-                        <label for="s-subject" class="required">Subject</label>
-                        <select id="s-subject" name="subject_id" required disabled>
-                            <option value="">Select a teacher first</option>
+                        <label for="s-grade" class="required">Grade level</label>
+                        <select id="s-grade" name="grade_level_id" required disabled>
+                            <option value="">Select a subject first</option>
                         </select>
-                        <span class="field-help" id="subject-help"></span>
+                        <span class="field-help" id="grade-help"></span>
                     </div>
 
                     <div class="form-group">
                         <label for="s-section" class="required">Section</label>
                         <select id="s-section" name="section_id" required disabled>
-                            <option value="">Select a teacher first</option>
+                            <option value="">Select a grade level first</option>
                         </select>
                         <span class="field-help" id="section-help"></span>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="s-teacher" class="required">Teacher</label>
+                        <select id="s-teacher" name="teacher_id" required disabled>
+                            <option value="">Select a section first</option>
+                        </select>
+                        <span class="field-help" id="teacher-help"></span>
                     </div>
 
                     <div class="form-group">
@@ -285,9 +306,10 @@ $__view->start('scripts');
 (function () {
     const LS = window.LSIAMS;
 
-    const teacher   = document.getElementById('s-teacher');
     const subject   = document.getElementById('s-subject');
+    const grade     = document.getElementById('s-grade');
     const section   = document.getElementById('s-section');
+    const teacher   = document.getElementById('s-teacher');
     const classroom = document.getElementById('s-classroom');
     const banner    = document.getElementById('conflict-banner');
     const form      = document.getElementById('schedule-form');
@@ -303,41 +325,74 @@ $__view->start('scripts');
         node.className = 'field-help' + (tone ? ' text-' + tone : '');
     }
 
-    /* Teacher → subjects + sections (Part 14.4). Each dependent dropdown is
-       repopulated from the server, never filtered client-side from a full list. */
-    teacher.addEventListener('change', async function () {
-        const id = this.value;
+    /* Subject → grade levels → sections → teachers, each step narrowing the
+       next (Part 14.4). Every dependent dropdown is repopulated from the
+       server rather than filtered client-side from a full list, so the options
+       offered are the options the validators will accept.
 
-        if (!id) {
-            setLoading(subject, 'Select a teacher first');
-            setLoading(section, 'Select a teacher first');
-            setLoading(classroom, 'Select a section first');
-            setHelp('subject-help', '');
-            setHelp('section-help', '');
-            return;
-        }
+       The cascade used to start at the teacher, which asked the administrator
+       to know who could take a class before saying what the class was. This
+       way round the class is the fixed thing and the people are what narrow. */
 
-        setLoading(subject, 'Loading…');
-        setLoading(section, 'Loading…');
-        setLoading(classroom, 'Select a section first');
+    function resetBelow(from) {
+        const chain = [
+            [grade,     'Select a subject first',     'grade-help'],
+            [section,   'Select a grade level first', 'section-help'],
+            [teacher,   'Select a section first',     'teacher-help'],
+            [classroom, 'Select a section first',     'classroom-help'],
+        ];
+
+        chain.slice(from).forEach(([select, message, helpId]) => {
+            select.value = '';
+            setLoading(select, message);
+            setHelp(helpId, '');
+        });
+    }
+
+    /* Each step is awaitable so the edit path can walk the same cascade in
+       order instead of guessing at it with nested timers. */
+
+    async function loadGradeLevels(subjectId) {
+        resetBelow(0);
+
+        if (!subjectId) return;
+
+        setLoading(grade, 'Loading…');
 
         try {
-            const [subjectResponse, sectionResponse] = await Promise.all([
-                LS.http.get('/api/subjects/assignable', { teacher_id: id }),
-                LS.http.get('/api/sections/assignable', { teacher_id: id }),
-            ]);
+            const response = await LS.http.get('/api/subjects/' + encodeURIComponent(subjectId) + '/grade-levels');
 
-            populateGrouped(subject, subjectResponse.data.grouped, 'subject_id', 'subject_code', 'subject_name');
-            setHelp('subject-help', subjectResponse.data.helper_text, subjectResponse.data.empty ? 'warning' : null);
+            populateFlat(grade, response.data.grade_levels, 'grade_level_id',
+                (item) => item.grade_level_code + ' — ' + item.grade_level_name);
 
-            populateGrouped(section, sectionResponse.data.grouped, 'section_id', 'section_code', 'section_name');
-            setHelp('section-help', sectionResponse.data.helper_text, sectionResponse.data.empty ? 'warning' : null);
+            setHelp('grade-help', response.data.helper_text,
+                response.data.empty ? 'warning' : (response.data.explicit ? null : 'muted'));
         } catch (error) {
             LS.toast.fromError(error);
-            setLoading(subject, 'Could not load');
+            setLoading(grade, 'Could not load');
+        }
+    }
+
+    async function loadSections(gradeLevelId) {
+        resetBelow(1);
+
+        if (!gradeLevelId) return;
+
+        setLoading(section, 'Loading…');
+
+        try {
+            const response = await LS.http.get('/api/sections/assignable', { grade_level_ids: [gradeLevelId] });
+
+            populateGrouped(section, response.data.grouped, 'section_id', 'section_code', 'section_name');
+            setHelp('section-help', response.data.helper_text, response.data.empty ? 'warning' : null);
+        } catch (error) {
+            LS.toast.fromError(error);
             setLoading(section, 'Could not load');
         }
-    });
+    }
+
+    subject.addEventListener('change', function () { loadGradeLevels(this.value); });
+    grade.addEventListener('change', function () { loadSections(this.value); });
 
     function populateGrouped(select, grouped, valueKey, codeKey, nameKey) {
         select.innerHTML = '<option value="">Select…</option>';
@@ -374,23 +429,54 @@ $__view->start('scripts');
         select.disabled = false;
     }
 
-    /* Section → classrooms with a registered terminal. */
-    section.addEventListener('change', async function () {
-        const id = this.value;
+    /** A plain, ungrouped select. */
+    function populateFlat(select, items, valueKey, label) {
+        select.innerHTML = '<option value="">Select…</option>';
 
-        if (!id) {
-            setLoading(classroom, 'Select a section first');
+        if (!items || items.length === 0) {
+            select.innerHTML = '<option value="">None available</option>';
+            select.disabled = true;
             return;
         }
 
+        items.forEach((item) => {
+            const option = document.createElement('option');
+            option.value = item[valueKey];
+            option.textContent = label(item);
+            select.appendChild(option);
+        });
+
+        select.disabled = false;
+    }
+
+    /* Section → the teachers who may take this subject here, and the rooms
+       with a terminal. Both depend on the section, so both run together. */
+    async function loadTeachersAndRooms(sectionId) {
+        resetBelow(2);
+
+        if (!sectionId) return;
+
+        setLoading(teacher, 'Loading…');
         setLoading(classroom, 'Loading…');
 
         try {
-            const response = await LS.http.get('/api/classrooms/assignable', { section_id: id });
+            const [teacherResponse, roomResponse] = await Promise.all([
+                LS.http.get('/api/teachers/assignable', { subject_id: subject.value, section_id: sectionId }),
+                LS.http.get('/api/classrooms/assignable', { section_id: sectionId }),
+            ]);
+
+            populateFlat(teacher, teacherResponse.data.teachers, 'teacher_id', (item) =>
+                item.last_name + ', ' + item.first_name
+                + ' (' + item.department_code + ')'
+                + (item.is_primary_department == 1 ? '' : '  · secondary department')
+                + (item.has_fingerprint == 1 ? '' : '  ⚠ no fingerprint'));
+
+            setHelp('teacher-help', teacherResponse.data.helper_text,
+                teacherResponse.data.empty ? 'warning' : null);
 
             classroom.innerHTML = '<option value="">Select a room…</option>';
 
-            (response.data.classrooms || []).forEach((room) => {
+            (roomResponse.data.classrooms || []).forEach((room) => {
                 const option = document.createElement('option');
                 option.value = room.classroom_id;
                 option.textContent = 'Room ' + room.room_number
@@ -400,13 +486,17 @@ $__view->start('scripts');
                 classroom.appendChild(option);
             });
 
-            classroom.disabled = (response.data.classrooms || []).length === 0;
-            setHelp('classroom-help', response.data.helper_text, response.data.empty ? 'warning' : null);
+            classroom.disabled = (roomResponse.data.classrooms || []).length === 0;
+            setHelp('classroom-help', roomResponse.data.helper_text, roomResponse.data.empty ? 'warning' : null);
             checkConflicts();
         } catch (error) {
             LS.toast.fromError(error);
+            setLoading(teacher, 'Could not load');
+            setLoading(classroom, 'Could not load');
         }
-    });
+    }
+
+    section.addEventListener('change', function () { loadTeachersAndRooms(this.value); });
 
     /* Live conflict check once day and both times are filled (Part 14.4). */
     const checkConflicts = LS.util.debounce(async function () {
@@ -524,17 +614,23 @@ $__view->start('scripts');
 
                 document.getElementById('schedule-modal-title').textContent = 'Edit Schedule';
                 document.getElementById('schedule-id').value = s.schedule_id;
-                teacher.value = s.teacher_id;
 
-                // Populate the dependent dropdowns, then restore the selections.
-                teacher.dispatchEvent(new Event('change'));
+                // Walk the cascade in order, waiting for each list before
+                // choosing from it. The previous version fired the first
+                // request and then guessed at the rest with nested timers,
+                // which silently lost the selection whenever a request took
+                // longer than the guess.
+                subject.value = s.subject_id;
+                await loadGradeLevels(s.subject_id);
 
-                setTimeout(() => {
-                    subject.value = s.subject_id;
-                    section.value = s.section_id;
-                    section.dispatchEvent(new Event('change'));
-                    setTimeout(() => { classroom.value = s.classroom_id; checkConflicts(); }, 400);
-                }, 500);
+                grade.value = s.grade_level_id;
+                await loadSections(s.grade_level_id);
+
+                section.value = s.section_id;
+                await loadTeachersAndRooms(s.section_id);
+
+                teacher.value   = s.teacher_id;
+                classroom.value = s.classroom_id;
 
                 document.getElementById('s-day').value   = s.day_of_week;
                 document.getElementById('s-start').value = String(s.start_time).slice(0, 5);
@@ -545,6 +641,7 @@ $__view->start('scripts');
                     .forEach((field) => { form.elements[field].value = s[field]; });
 
                 updateWindowPreview();
+                checkConflicts();
                 LS.modal.open('schedule-modal');
             } catch (error) {
                 LS.toast.fromError(error);
@@ -581,9 +678,9 @@ $__view->start('scripts');
             document.getElementById('schedule-id').value = '';
             document.getElementById('schedule-modal-title').textContent = 'Add Schedule';
             banner.innerHTML = '';
-            setLoading(subject, 'Select a teacher first');
-            setLoading(section, 'Select a teacher first');
-            setLoading(classroom, 'Select a section first');
+            subject.value = '';
+            resetBelow(0);
+            setHelp('subject-help', 'Start here — everything below follows from it.');
         }, 200);
     });
 

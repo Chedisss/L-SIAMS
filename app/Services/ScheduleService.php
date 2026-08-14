@@ -6,6 +6,7 @@ namespace App\Services;
 use App\Core\Clock;
 use App\Core\Database;
 use App\Core\Exceptions\ValidationException;
+use App\Services\AcademicStructureService;
 use App\Validators\TeacherSectionAssignmentValidator;
 use App\Validators\TeacherSubjectAssignmentValidator;
 
@@ -142,10 +143,19 @@ final class ScheduleService
         );
 
         if ($device === null) {
-            throw new ValidationException(['classroom_id' => [sprintf(
-                'Room %s has no registered attendance terminal. Register a device for this classroom first.',
-                $classroom['room_number']
-            )]]);
+            // Telling somebody to register a device they have already
+            // registered sends them round the same loop; the usual mistake is
+            // a terminal saved with Classroom left on Unassigned.
+            $gap = AcademicStructureService::classroomTerminalGap();
+
+            throw new ValidationException(['classroom_id' => [
+                $gap['reason'] === 'devices_unassigned'
+                    ? sprintf('Room %s has no terminal. %s', $classroom['room_number'], $gap['message'])
+                    : sprintf(
+                        'Room %s has no registered attendance terminal. Register a device for this classroom first.',
+                        $classroom['room_number']
+                    ),
+            ]]);
         }
 
         // 10. Classroom capacity ≥ section size (warning; overridable with a reason)

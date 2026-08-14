@@ -128,6 +128,100 @@ final class ConstraintApiController extends Controller
     }
 
     /**
+     * GET /api/subjects/{id}/grade-levels
+     *
+     * The grade levels a subject is offered for. A subject with no explicit
+     * mapping falls back to every active grade level rather than to none: an
+     * unmapped subject is an incomplete setup, not a subject nobody may teach,
+     * and returning nothing would silently make it unschedulable.
+     */
+    public function subjectGradeLevels(Request $request): Response
+    {
+        $subjectId = $request->routeInt('id');
+        $subject   = AcademicStructureService::findSubject($subjectId);
+
+        if ($subject === null) {
+            return $this->fail('SUBJECT_NOT_FOUND', 'That subject does not exist.', 404);
+        }
+
+        $ids         = AcademicStructureService::subjectGradeLevelIds($subjectId);
+        $explicit    = $ids !== [];
+        $gradeLevels = $explicit
+            ? AcademicStructureService::gradeLevelsByIds($ids)
+            : AcademicStructureService::gradeLevels();
+
+        return $this->json([
+            'grade_levels' => $gradeLevels,
+            'subject'      => $subject,
+            'explicit'     => $explicit,
+            'helper_text'  => $gradeLevels === []
+                ? 'No grade levels exist yet. Add one before scheduling.'
+                : ($explicit
+                    ? sprintf('Grade levels %s is offered for.', $subject['subject_code'])
+                    : sprintf(
+                        '%s is not mapped to any grade level, so all are shown. Set its grade levels '
+                        . 'on the Subjects page to narrow this.',
+                        $subject['subject_code']
+                    )),
+            'empty'       => $gradeLevels === [],
+            'empty_action_url' => '/admin/grade-levels',
+        ]);
+    }
+
+    /**
+     * GET /api/teachers/assignable?subject_id=&section_id=
+     *
+     * The teachers who may take this subject in this section — the inverse of
+     * the subject and section endpoints above, for a form that starts from the
+     * class rather than the person.
+     */
+    public function assignableTeachers(Request $request): Response
+    {
+        $subjectId = $request->int('subject_id');
+        $sectionId = $request->int('section_id');
+
+        if ($subjectId <= 0 || $sectionId <= 0) {
+            return $this->fail('PAIRING_REQUIRED', 'Choose a subject and a section first.', 422);
+        }
+
+        $subject = AcademicStructureService::findSubject($subjectId);
+        $section = AcademicStructureService::findSection($sectionId);
+
+        if ($subject === null) {
+            return $this->fail('SUBJECT_NOT_FOUND', 'That subject does not exist.', 404);
+        }
+
+        if ($section === null) {
+            return $this->fail('SECTION_NOT_FOUND', 'That section does not exist.', 404);
+        }
+
+        $teachers = TeacherService::assignableForPairing($subjectId, $sectionId);
+
+        // Naming both halves matters when the list is empty: the fix is either
+        // a department assignment or a grade level, and which one is not
+        // guessable from "no teachers".
+        return $this->json([
+            'teachers'    => $teachers,
+            'subject'     => $subject,
+            'section'     => $section,
+            'helper_text' => $teachers === []
+                ? sprintf(
+                    'No teacher is assigned to both the %s and %s. Give a teacher that department, '
+                    . 'or that grade level, on their profile.',
+                    $subject['department_name'] ?? 'that department',
+                    $section['grade_level_code'] ?? 'that grade level'
+                )
+                : sprintf(
+                    'Showing teachers who may take %s in %s.',
+                    $subject['subject_code'] ?? 'this subject',
+                    $section['section_code'] ?? 'this section'
+                ),
+            'empty'       => $teachers === [],
+            'empty_action_url' => '/admin/teachers',
+        ]);
+    }
+
+    /**
      * GET /api/classrooms/assignable?section_id=
      *
      * Active, device-equipped rooms, with a capacity flag so the form can warn
@@ -143,19 +237,21 @@ final class ConstraintApiController extends Controller
 
         $classrooms = AcademicStructureService::assignableClassrooms($sectionId);
         $section    = AcademicStructureService::findSection($sectionId);
+        $gap        = $classrooms === [] ? AcademicStructureService::classroomTerminalGap() : null;
 
         return $this->json([
             'classrooms'  => $classrooms,
             'section'     => $section,
-            'helper_text' => $classrooms === []
-                ? 'No classroom has a registered attendance terminal. Register a device before scheduling.'
+            'helper_text' => $gap !== null
+                ? $gap['message']
                 : sprintf(
                     'Showing rooms with a registered terminal. %s has %d student(s) enrolled.',
                     $section['section_code'] ?? 'This section',
                     (int) ($section['enrolled_count'] ?? 0)
                 ),
             'empty'       => $classrooms === [],
-            'empty_action_url' => '/admin/devices',
+            'empty_reason' => $gap === null ? null : $gap['reason'],
+            'empty_action_url' => $gap === null ? '/admin/devices' : $gap['action_url'],
         ]);
     }
 

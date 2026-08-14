@@ -568,6 +568,18 @@ final class AcademicStructureService
     }
 
     /** @return array<string,mixed>|null */
+    /** @return array<string,mixed>|null */
+    public static function findSubject(int $subjectId): ?array
+    {
+        return Database::instance()->selectOne(
+            'SELECT s.*, d.department_code, d.department_name
+               FROM subjects s
+               JOIN departments d ON d.department_id = s.department_id
+              WHERE s.subject_id = :id AND s.deleted_at IS NULL',
+            ['id' => $subjectId]
+        );
+    }
+
     public static function findSection(int $sectionId): ?array
     {
         return Database::instance()->selectOne(
@@ -809,6 +821,75 @@ final class AcademicStructureService
         }
 
         return Database::instance()->select($sql . ' ORDER BY c.building, c.room_number');
+    }
+
+    /**
+     * Why assignableClassrooms() came back empty.
+     *
+     * "Register a device before scheduling" is the wrong instruction to give
+     * somebody who has registered one — and registering a terminal without
+     * choosing a classroom is easy, because the field defaults to Unassigned
+     * and nothing on that form says the terminal is unusable without it. The
+     * three states need three different sentences.
+     *
+     * @return array{reason:string,message:string,action_url:string,devices:list<array<string,mixed>>}
+     */
+    public static function classroomTerminalGap(): array
+    {
+        $db = Database::instance();
+
+        $classrooms = (int) $db->scalar(
+            "SELECT COUNT(*) FROM classrooms WHERE status = 'active' AND deleted_at IS NULL"
+        );
+
+        if ($classrooms === 0) {
+            return [
+                'reason'     => 'no_classrooms',
+                'message'    => 'No classroom exists yet. Add a classroom, then give it a terminal.',
+                'action_url' => '/admin/classrooms',
+                'devices'    => [],
+            ];
+        }
+
+        // Same conditions assignableClassrooms() joins on, minus the classroom.
+        $unassigned = $db->select(
+            "SELECT id, device_id, device_name
+               FROM devices
+              WHERE classroom_id IS NULL
+                AND deleted_at IS NULL
+                AND status IN ('active','offline','pending')
+                AND device_role IN ('both','entry')
+              ORDER BY device_id"
+        );
+
+        if ($unassigned !== []) {
+            $names = implode(', ', array_map(static fn (array $d): string => (string) $d['device_id'], $unassigned));
+
+            return [
+                'reason'     => 'devices_unassigned',
+                'message'    => count($unassigned) === 1
+                    ? sprintf(
+                        'Terminal %s is registered but not assigned to a classroom, so no room can host a '
+                        . 'schedule yet. Open it and set its Classroom.',
+                        $names
+                    )
+                    : sprintf(
+                        '%d terminals are registered but none is assigned to a classroom, so no room can host '
+                        . 'a schedule yet. Open one and set its Classroom: %s.',
+                        count($unassigned),
+                        $names
+                    ),
+                'action_url' => '/admin/devices',
+                'devices'    => $unassigned,
+            ];
+        }
+
+        return [
+            'reason'     => 'no_devices',
+            'message'    => 'No classroom has a registered attendance terminal. Register a device before scheduling.',
+            'action_url' => '/admin/devices',
+            'devices'    => [],
+        ];
     }
 
     /**

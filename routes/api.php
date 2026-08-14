@@ -143,6 +143,8 @@ $router->group('/api', $adminApiChain, static function ($router): void {
     // Part 14.5 — constraint resolution for the cascading dropdowns.
     $router->get('/subjects/assignable', ConstraintApiController::class . '@assignableSubjects');
     $router->get('/sections/assignable', ConstraintApiController::class . '@assignableSections');
+    $router->get('/subjects/{id:\d+}/grade-levels', ConstraintApiController::class . '@subjectGradeLevels');
+    $router->get('/teachers/assignable', ConstraintApiController::class . '@assignableTeachers');
     $router->get('/classrooms/assignable', ConstraintApiController::class . '@assignableClassrooms');
     $router->get('/teachers/{id:\d+}/constraints', ConstraintApiController::class . '@teacherConstraints');
 
