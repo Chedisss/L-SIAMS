@@ -1155,19 +1155,46 @@ function commandSchemaDump(): void
         }
     }
 
-    // mysqldump of a single database emits no CREATE DATABASE or USE, so the
-    // file only works if something already selected the target — paste it into
-    // phpMyAdmin's server-level SQL tab and every statement dies with
-    // "#1046 - No database selected". Naming the target up front makes the file
-    // import cleanly on a machine that has never run L-SIAMS before.
+    // Newer mariadb-dump opens its output with a client-side directive:
+    //
+    //     /*M!999999\- enable the sandbox mode */
+    //
+    // It is meaningful only to the `mariadb` command-line client, and the
+    // version gate makes every server ignore it. phpMyAdmin's SQL parser does
+    // not: the backslash inside the comment is enough to make some versions
+    // abort the import on the first line, before a single table is created.
+    // Nothing is lost by removing it.
+    // The backslash is part of the payload, so it has to survive PHP's string
+    // parsing and then be escaped again for the regex: '\\\\' is one literal
+    // backslash by the time the pattern is compiled.
+    $body = (string) preg_replace('~/\*M!\d+\\\\-[^*]*\*/\s*~', '', $body);
+
+    // Foreign keys are switched off around the whole file because mysqldump
+    // emits tables alphabetically, not in dependency order: api_key_history is
+    // first and references devices, api_keys and users, all created hundreds of
+    // lines later. mysqldump does say so itself — but only inside
+    // /*!40014 ... */, a versioned comment, and anything that strips comments or
+    // runs one statement at a time loses it and then fails with
+    // "errno: 150 - Foreign key constraint is incorrectly formed" on the very
+    // first table. Saying it in plain SQL costs nothing and survives.
     $quoted   = '`' . str_replace('`', '``', $database) . '`';
     $preamble = sprintf(
-        "CREATE DATABASE IF NOT EXISTS %s CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\nUSE %s;\n\n",
+        "CREATE DATABASE IF NOT EXISTS %s CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n"
+        . "USE %s;\n\n"
+        . "-- Tables are emitted alphabetically rather than in dependency order,\n"
+        . "-- so the constraints are only valid once every table exists.\n"
+        . "SET FOREIGN_KEY_CHECKS = 0;\n\n",
         $quoted,
         $quoted
     );
 
-    file_put_contents($target, sprintf($header, $database, date('Y-m-d')) . $preamble . $body);
+    $postamble = "\n-- Re-enabled once every table, view and trigger exists.\n"
+               . "SET FOREIGN_KEY_CHECKS = 1;\n";
+
+    file_put_contents(
+        $target,
+        sprintf($header, $database, date('Y-m-d')) . $preamble . $body . $postamble
+    );
 
     ok(sprintf("database/lsiams_schema.sql written (%.1f KB)", filesize($target) / 1024));
     out(sprintf('  %d tables, %d triggers, %d insert statements',
