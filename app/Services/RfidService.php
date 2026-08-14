@@ -360,7 +360,8 @@ final class RfidService
         return strtoupper((string) preg_replace('/[^0-9A-Fa-f]/', '', $uid));
     }
 
-    private static function assertValidUid(string $uid): void
+    /** Public so a UID arriving from a terminal is held to the same shape. */
+    public static function assertValidUid(string $uid): void
     {
         if (preg_match('/^[0-9A-F]{8,32}$/', $uid) !== 1) {
             throw new ValidationException([

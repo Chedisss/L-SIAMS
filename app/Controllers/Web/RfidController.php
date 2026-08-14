@@ -4,9 +4,12 @@ declare(strict_types=1);
 namespace App\Controllers\Web;
 
 use App\Controllers\Controller;
+use App\Core\Database;
+use App\Core\Exceptions\HttpException;
 use App\Core\Request;
 use App\Core\Response;
 use App\Services\AcademicStructureService;
+use App\Services\RfidEnrollmentService;
 use App\Services\RfidService;
 use App\Services\StudentService;
 
@@ -36,7 +39,114 @@ final class RfidController extends Controller
             'filters'    => $filters,
             'summary'    => RfidService::summary(),
             'sections'   => AcademicStructureService::sections(['status' => 'active']),
+            'readers'    => RfidEnrollmentService::captureDevices(),
+            'students'   => StudentService::paginate(['status' => 'active'], 1, 1000)['rows'],
         ]);
+    }
+
+    // ------------------------------------------------- issue by tapping ----
+
+    /**
+     * Ask a terminal to read the next card presented to it.
+     *
+     * Card-first by default: somebody standing at the reader with a stack of
+     * cards taps one, sees who it belongs to, chooses the student and taps the
+     * next. Naming the student up front is allowed but not required.
+     */
+    public function startRead(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'device_row_id' => 'required|int',
+            'student_id'    => 'nullable|int',
+        ], [
+            'device_row_id' => 'Terminal',
+        ]);
+
+        $enrolment = RfidEnrollmentService::open(
+            (int) $data['device_row_id'],
+            $this->requireUserId(),
+            isset($data['student_id']) ? (int) $data['student_id'] : null
+        );
+
+        return $this->json($this->readPayload($enrolment), 'Present the card to the terminal.');
+    }
+
+    public function readStatus(Request $request): Response
+    {
+        $enrolment = RfidEnrollmentService::find($request->routeInt('id'));
+
+        if ($enrolment === null) {
+            throw new HttpException(404, 'NOT_FOUND', 'Card read not found.');
+        }
+
+        // Evaluated on read as well as on write, so a panel left open against a
+        // terminal that was switched off stops saying "waiting" by itself.
+        if (in_array((string) $enrolment['status'], ['pending', 'waiting', 'captured'], true)) {
+            RfidEnrollmentService::expireStale();
+            $enrolment = RfidEnrollmentService::find($request->routeInt('id')) ?? $enrolment;
+        }
+
+        return $this->json($this->readPayload($enrolment));
+    }
+
+    /** Issue the card that was just read to a student. */
+    public function assignRead(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'student_id' => 'required|int|exists:students,student_id',
+            'notes'      => 'nullable|string|max:255|no_html',
+        ]);
+
+        $result = RfidEnrollmentService::assignCaptured(
+            $request->routeInt('id'),
+            (int) $data['student_id'],
+            $this->requireUserId(),
+            $data['notes'] ?? null
+        );
+
+        return $this->json(
+            $this->readPayload($result['request']) + ['rfid_id' => $result['rfid_id']],
+            'Card issued. The student keeps all previous attendance history.'
+        );
+    }
+
+    public function cancelRead(Request $request): Response
+    {
+        $enrolment = RfidEnrollmentService::cancel($request->routeInt('id'), $this->requireUserId());
+
+        return $this->json($this->readPayload($enrolment), 'Card read cancelled.');
+    }
+
+    /**
+     * @param  array<string,mixed> $enrolment
+     * @return array<string,mixed>
+     */
+    private function readPayload(array $enrolment): array
+    {
+        // "Waiting for the terminal" reads the same whether the reader is about
+        // to answer or has been unplugged since Tuesday, so the terminal's
+        // liveness travels with the status.
+        $terminal = Database::instance()->selectOne(
+            'SELECT health, seconds_since_heartbeat FROM v_device_status WHERE device_row_id = :id',
+            ['id' => (int) $enrolment['device_row_id']]
+        );
+
+        return [
+            'request_id'  => (int) $enrolment['request_id'],
+            'status'      => (string) $enrolment['status'],
+            'stage'       => (string) $enrolment['stage'],
+            'message'     => (string) ($enrolment['message'] ?? ''),
+            'card_uid'    => $enrolment['card_uid'],
+            'label'       => (string) ($enrolment['display_name'] ?? 'the next card'),
+            'device_id'   => (string) $enrolment['device_id'],
+            'room_number' => $enrolment['room_number'],
+            'student_id'  => $enrolment['student_id'] === null ? null : (int) $enrolment['student_id'],
+            'finished'    => !in_array((string) $enrolment['status'], ['pending', 'waiting'], true),
+            'terminal_health'     => $terminal === null ? 'unknown' : (string) $terminal['health'],
+            'terminal_silent_for' => $terminal === null || $terminal['seconds_since_heartbeat'] === null
+                ? null
+                : (int) $terminal['seconds_since_heartbeat'],
+        ];
     }
 
     public function assign(Request $request): Response

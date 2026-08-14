@@ -46,6 +46,26 @@ return [
         'enrollment_hold_seconds'  => 1800,
     ],
 
+    'rfid' => [
+        // Card issuance driven from the browser, mirroring the fingerprint
+        // enrolment above. The gap between steps rather than the budget for
+        // the whole thing — every report from the terminal restarts it.
+        'enrollment_ttl_seconds'  => 180,
+        'enrollment_poll_seconds' => 2,
+
+        // How long the terminal holds the reader to itself waiting for a card.
+        // This is the whole point of the feature: while it is inside this
+        // window it does not heartbeat, does not sync and does not poll, so a
+        // card presented at any moment is read rather than landing in the gap
+        // where the board was busy talking to the server.
+        'enrollment_wait_seconds' => 45,
+
+        // A UID that has been read waits much longer than a reader does: the
+        // card is in somebody's hand and the only thing outstanding is which
+        // student it belongs to. Losing it would mean walking back.
+        'enrollment_hold_seconds' => 1800,
+    ],
+
     'device' => [
         'heartbeat_interval_sec' => 30,
         'heartbeat_jitter_sec'   => 5,

@@ -114,6 +114,7 @@ static const char *CLAIM_TOKEN = "";
  * has nothing else to do between taps, and the reply is a few hundred bytes.
  * Polling stops while a session is open — the sensor is busy then. */
 #define ENROLL_POLL_MS         2000
+#define CARD_POLL_MS           2000
 #define ENROLL_STEP_TIMEOUT_MS 20000   /* per finger placement */
 
 MFRC522        rfid(PIN_RFID_SS, PIN_RFID_RST);
@@ -133,6 +134,8 @@ static uint32_t lastFingerAt      = 0;
 static bool     sessionOpen       = false;
 static uint32_t lastEnrollPoll    = 0;
 static bool     enrolling         = false;
+static uint32_t lastCardPoll      = 0;
+static bool     enrollingCard     = false;
 
 /* --------------------------------------------------------------- helpers -- */
 
@@ -892,6 +895,136 @@ static String readCardUid() {
   return uid;
 }
 
+/* ------------------------------------------------- card enrolment (issue) -- */
+
+static String jsonToString(const LsJson &document) {
+  String body;
+  serializeJson(document, body);
+  return body;
+}
+
+static void reportCardStage(int requestId, const char *stage) {
+  LsJson request;
+  request["request_id"] = requestId;
+  request["stage"]      = stage;
+
+  LsJson response;
+  signedRequest("POST", "/api/rfid/enrollment/progress", jsonToString(request), &response);
+}
+
+static void reportCardFailed(int requestId, const char *reason) {
+  LsJson request;
+  request["request_id"] = requestId;
+  request["reason"]     = reason;
+
+  LsJson response;
+  signedRequest("POST", "/api/rfid/enrollment/failed", jsonToString(request), &response);
+}
+
+/**
+ * Read one card for issuance, with the reader to ourselves.
+ *
+ * This is the whole reason the feature exists as its own mode. In the ordinary
+ * loop the board interleaves a card read with a heartbeat, an enrolment poll
+ * and a sync — every one of them a blocking HTTP request — so a card held
+ * against the reader during one of those windows is simply not seen, and the
+ * person tapping has no way to tell a missed read from a broken card.
+ *
+ * Inside this function nothing else runs. No heartbeat, no poll, no sync: just
+ * the reader, polled tightly until a card appears or the window closes. A card
+ * presented at any moment during it is read.
+ */
+static void runCardEnrollment(int requestId, const char *label, int waitSeconds) {
+  Serial.println();
+  Serial.printf("=== CARD: waiting for a card for %s ===\n", label);
+  Serial.println("    (heartbeats paused - the reader has this board to itself)");
+
+  enrollingCard = true;
+
+  reportCardStage(requestId, "present_card");
+
+  uint32_t startedAt = millis();
+  uint32_t windowMs  = (uint32_t) (waitSeconds > 0 ? waitSeconds : 45) * 1000UL;
+  String   uid;
+
+  while (millis() - startedAt < windowMs) {
+    uid = readCardUid();
+
+    if (uid.length() > 0) break;
+
+    /* Short enough that a card touched briefly still lands inside a poll, and
+     * the reader is the only thing being asked. */
+    delay(30);
+  }
+
+  if (uid.length() == 0) {
+    Serial.println("CARD: no card was presented in time.");
+    reportCardFailed(requestId, "No card was presented within the time allowed.");
+    enrollingCard = false;
+    return;
+  }
+
+  Serial.printf("CARD: read %s\n", uid.c_str());
+  reportCardStage(requestId, "reading");
+
+  LsJson request;
+  request["request_id"] = requestId;
+  request["card_uid"]   = uid;
+
+  LsJson response;
+  int status = signedRequest("POST", "/api/rfid/enrollment/captured", jsonToString(request), &response);
+
+  if (status == 200) {
+    Serial.println("CARD: reported to the server — choose the student in L-SIAMS.");
+  } else {
+    Serial.printf("CARD: the server refused the read (HTTP %d, %s)\n",
+                  status, (const char *) (response["code"] | "-"));
+  }
+
+  /* A card left sitting on the reader would otherwise be read again the
+   * instant the next request opens. */
+  uint32_t clearedAt = millis();
+  while (millis() - clearedAt < 1500 && readCardUid().length() > 0) {
+    delay(50);
+  }
+
+  enrollingCard = false;
+}
+
+/** Is a card wanted? Mirrors pollEnrollment(), and skips for the same reasons. */
+static void pollCardEnrollment() {
+  if (!clockSet || enrolling || enrollingCard) return;
+
+  if (millis() - lastCardPoll < CARD_POLL_MS) return;
+  lastCardPoll = millis();
+
+  LsJson response;
+  int status = signedRequest("GET", "/api/rfid/enrollment", "", &response);
+
+  if (status != 200) {
+    static uint32_t lastComplaintAt = 0;
+
+    if (lastComplaintAt == 0 || millis() - lastComplaintAt > 15000) {
+      lastComplaintAt = millis();
+      Serial.printf("\nCARD: the server refused the poll (HTTP %d, %s)\n",
+                    status, (const char *) (response["code"] | "-"));
+    }
+
+    return;
+  }
+
+  JsonObject enrolment = response["data"]["enrollment"];
+  if (enrolment.isNull()) return;
+
+  int requestId = enrolment["request_id"] | 0;
+  if (requestId <= 0) return;
+
+  const char *label = enrolment["label"] | "the next card";
+  int waitSeconds   = enrolment["wait_seconds"] | 45;
+
+  runCardEnrollment(requestId, label, waitSeconds);
+}
+
 static void sendTap(const String &uid) {
   LsJson request;
   request["rfid_uid"] = uid;
@@ -1068,13 +1201,23 @@ void setup() {
 }
 
 void loop() {
-  if (millis() - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+  /* The heartbeat is a blocking HTTP request, and so is every poll below it.
+   * A card held against the reader while one of them is in flight is not seen
+   * — which is invisible from the outside and reads as a dead reader.
+   *
+   * During a capture the reader owns the board: runCardEnrollment() does not
+   * return until it has a UID or the window closes, and nothing here runs in
+   * the meantime. The heartbeat it delays is bounded by that window, and a
+   * terminal that goes quiet for under a minute while somebody issues cards
+   * at it is not a terminal anybody needs alerting about. */
+  if (!enrollingCard && millis() - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
     lastHeartbeatAt = millis();
     sendHeartbeat();
   }
 
   watchReader();
   pollEnrollment();
+  pollCardEnrollment();
   handleFingerprint();
 
   String uid = readCardUid();

@@ -22,6 +22,7 @@ use App\Controllers\Api\ConstraintApiController;
 use App\Controllers\Api\DashboardApiController;
 use App\Controllers\Api\DeviceApiController;
 use App\Controllers\Api\FingerprintEnrollmentApiController;
+use App\Controllers\Api\RfidEnrollmentApiController;
 use App\Controllers\Api\RealtimeApiController;
 use App\Controllers\Web\AttendanceController;
 use App\Controllers\Web\ScheduleController;
@@ -116,6 +117,17 @@ $router->group('/api/fingerprint/enrollment', $deviceChain, static function ($ro
 });
 
 $router->post('/api/rfid/scan', AttendanceApiController::class . '@tap', $deviceChain);
+
+// Card issuance, the same hand-off as fingerprint enrolment. Separate from the
+// tap route above on purpose: reading a card to issue it records no attendance,
+// needs no open session and needs no classroom, so a terminal on the
+// registrar's desk can do it.
+$router->group('/api/rfid/enrollment', $deviceChain, static function ($router): void {
+    $router->get('', RfidEnrollmentApiController::class . '@pending');
+    $router->post('/progress', RfidEnrollmentApiController::class . '@progress');
+    $router->post('/captured', RfidEnrollmentApiController::class . '@captured');
+    $router->post('/failed', RfidEnrollmentApiController::class . '@failed');
+});
 
 // ---------------------------------------------------------------------------
 // Browser API — dashboards, live feed, realtime transport
