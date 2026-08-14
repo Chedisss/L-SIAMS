@@ -264,6 +264,30 @@ console.bat db:import "C:\path\to\file.sql" --fresh
 `--fresh` drops every existing table first. There is no undo — take a backup
 with `console.bat backup` if the current data still matters.
 
+### Restoring a `.sql.gz.enc` backup
+
+`console.bat backup` writes a compressed, encrypted archive to
+`database\backups`. Windows shows it with whatever program has claimed the
+`.enc` extension — often Wireshark. That is only an icon; the file is not a
+capture and nothing is wrong with it. Do not open it in that program.
+
+Normally you restore one from **Admin → Backup → Restore**. That needs the
+`backups` row describing the archive, which lives in the database — so it is
+gone in exactly the situation where a backup matters. From a Command Prompt
+you can go straight at the file:
+
+```
+console.bat backup:decrypt lsiams-manual-20260814-120753.sql.gz.enc
+console.bat db:import database\backups\lsiams-manual-20260814-120753.sql
+```
+
+Delete the decrypted `.sql` afterwards — it is plaintext school data.
+
+> **Keep `.env` with your backups, and never regenerate the keys while an
+> archive still matters.** The archive is encrypted with `APP_KEY`. A new
+> `APP_KEY` does not fail loudly — it fails with `authentication tag
+> mismatch`, and there is no recovery from that.
+
 ### After importing an older export
 
 A file exported before you last updated the project describes an older
