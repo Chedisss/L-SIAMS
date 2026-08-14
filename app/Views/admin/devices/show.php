@@ -13,8 +13,13 @@ $healthBadge = match ($health) {
     default    => 'badge-danger',
 };
 
-$keyAge     = $device['key_age_days'] === null ? null : (int) $device['key_age_days'];
-$rotateDays = (int) config('security.api_key.rotation_days', 90);
+$keyAge = $device['key_age_days'] === null ? null : (int) $device['key_age_days'];
+
+// security.api_key.rotation_days does not exist, so this read always fell
+// through to its own default and the page announced a 90-day rotation policy
+// the system does not have. The keys the audit actually acts on are these two.
+$warnDays   = (int) config('security.api_key.age_warning_days', 180);
+$rotateDays = (int) config('security.api_key.age_rotate_days', 365);
 ?>
 
 <?php $__view->include('partials.page-header', [
@@ -69,7 +74,7 @@ $rotateDays = (int) config('security.api_key.rotation_days', 90);
     </div>
 
     <div class="stat">
-        <span class="stat__icon <?= $keyAge !== null && $keyAge >= $rotateDays ? 'stat__icon--danger' : '' ?>">
+        <span class="stat__icon <?= $keyAge === null ? '' : ($keyAge >= $rotateDays ? 'stat__icon--danger' : ($keyAge >= $warnDays ? 'stat__icon--warning' : '')) ?>">
             <i class="fa-solid fa-key"></i>
         </span>
         <div>
@@ -78,7 +83,11 @@ $rotateDays = (int) config('security.api_key.rotation_days', 90);
             <div class="stat__meta">
                 <?= $keyAge === null
                     ? 'no active key'
-                    : ($keyAge >= $rotateDays ? 'past the ' . $rotateDays . '-day rotation point' : 'rotate at ' . $rotateDays . ' days') ?>
+                    : ($keyAge >= $rotateDays
+                        ? 'past the ' . $rotateDays . '-day rotation point'
+                        : ($keyAge >= $warnDays
+                            ? 'ageing — rotate before ' . $rotateDays . ' days'
+                            : 'rotate at ' . $rotateDays . ' days')) ?>
             </div>
         </div>
     </div>
