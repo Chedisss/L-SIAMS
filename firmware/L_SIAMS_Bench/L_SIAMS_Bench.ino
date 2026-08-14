@@ -703,12 +703,54 @@ static void discardSlots(JsonArrayConst slots) {
 }
 
 /** Ask whether the Fingerprints page has queued somebody for this terminal. */
+/**
+ * Say why enrolment is not being picked up.
+ *
+ * Every reason this board had for skipping a poll used to be a bare return,
+ * while the web page sat on "Waiting for the terminal to pick this up…" —
+ * true, and useless. The board knows exactly why it is not picking anything
+ * up; it just was not saying. Announced once when a reason starts and once
+ * when it clears, so the Serial Monitor does not fill with it.
+ *
+ * Compared by pointer, which is why every caller passes a string literal.
+ */
+static void announceEnrollSkip(const char *reason) {
+  static const char *last = nullptr;
+
+  if (reason == last) return;
+
+  last = reason;
+
+  if (reason != nullptr) {
+    Serial.printf("\nENROLL: not polling — %s\n", reason);
+  } else {
+    Serial.println("\nENROLL: polling for enrolment requests again.");
+  }
+}
+
 static void pollEnrollment() {
-  if (!fingerReady || !clockSet || enrolling) return;
+  if (!fingerReady) {
+    announceEnrollSkip("the fingerprint sensor did not start");
+    return;
+  }
+
+  /* A finger can still be matched against templates already in the sensor's
+   * flash without any of this — matching is local to the R307. So verification
+   * keeps working and printing while enrolment is dead, which is exactly how
+   * this failure hides. */
+  if (!clockSet) {
+    announceEnrollSkip("the clock is not synced, so requests cannot be signed");
+    return;
+  }
+
+  if (enrolling) return;  // normal and brief; not worth announcing
 
   /* The sensor cannot verify a teacher and enrol another at the same time, and
    * an open session means it is in use. */
-  if (sessionOpen) return;
+  if (sessionOpen) {
+    announceEnrollSkip("an attendance session is open on this terminal");
+    return;
+  }
 
   if (millis() - lastEnrollPoll < ENROLL_POLL_MS) return;
   lastEnrollPoll = millis();
@@ -716,7 +758,37 @@ static void pollEnrollment() {
   LsJson response;
   int status = signedRequest("GET", "/api/fingerprint/enrollment", "", &response);
 
-  if (status != 200) return;
+  if (status != 200) {
+    /* Rate-limited rather than announced once: unlike the conditions above,
+     * this one can change from request to request. */
+    static uint32_t lastComplaintAt = 0;
+
+    if (lastComplaintAt == 0 || millis() - lastComplaintAt > 15000) {
+      lastComplaintAt = millis();
+
+      const char *code = response["code"] | "";
+      Serial.printf("\nENROLL: the server refused the poll (HTTP %d%s%s)\n",
+                    status, code[0] ? ", " : "", code);
+
+      if (status == 403) {
+        Serial.println("  403 here is almost always the terminal's IP allowlist. This board");
+        Serial.printf("  is on %s. Clear the IP allowlist on the\n", WiFi.localIP().toString().c_str());
+        Serial.println("  device's Edit page unless you set it deliberately — the router");
+        Serial.println("  hands out a different address sooner or later.");
+      } else if (status == 401) {
+        Serial.println("  401 means the API key and HMAC secret do not match the pair the");
+        Serial.println("  server holds. Download the provisioning file ONCE and copy all");
+        Serial.println("  four values out of that same file — each download replaces the last.");
+      } else if (status < 0) {
+        Serial.println("  A negative number is not an HTTP status: the board could not open");
+        Serial.printf("  a connection to %s at all.\n", SERVER_URL);
+      }
+    }
+
+    return;
+  }
+
+  announceEnrollSkip(nullptr);
 
   JsonArrayConst discard = response["data"]["discard_slots"];
   if (!discard.isNull() && discard.size() > 0) discardSlots(discard);
@@ -974,7 +1046,17 @@ void setup() {
   }
 
   Serial.println("Syncing clock...");
-  syncClockFromServer();
+
+  /* The return value used to be dropped. Without a clock nothing can be
+   * signed, so enrolment and attendance both stop — while finger matching,
+   * which never leaves the sensor, carries on as if all were well. Worth
+   * saying out loud rather than leaving to be deduced. */
+  if (!syncClockFromServer()) {
+    Serial.println("  Enrolment and attendance will NOT work until this succeeds:");
+    Serial.println("  every request to the server is signed, and a signature needs the");
+    Serial.println("  time. Finger matching will still appear to work, because the");
+    Serial.println("  sensor does that on its own without asking the server anything.");
+  }
 
   sendHeartbeat();
   lastHeartbeatAt = millis();
