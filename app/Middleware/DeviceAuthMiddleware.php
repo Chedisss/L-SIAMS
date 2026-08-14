@@ -276,6 +276,7 @@ final class DeviceAuthMiddleware extends Middleware
             '/api/device/status',
             '/api/device/time',
             '/api/fingerprint/enrollment',
+            '/api/rfid/enrollment',
         ];
 
         foreach ($exemptions as $exempt) {

@@ -10,7 +10,8 @@ $__view->start('content');
     'breadcrumbs' => [['Dashboard', '/admin'], ['RFID Cards', null]],
     'actions'     => '<a class="btn btn-secondary" href="/admin/rfid/unknown"><i class="fa-solid fa-circle-question"></i> Unknown cards'
         . ($summary['unknown_pending'] > 0 ? ' <span class="badge badge-danger">' . (int) $summary['unknown_pending'] . '</span>' : '')
-        . '</a><button class="btn btn-primary" data-modal-open="assign-modal"><i class="fa-solid fa-plus"></i> Issue Card</button>',
+        . '</a><button class="btn btn-secondary" data-modal-open="assign-modal"><i class="fa-solid fa-keyboard"></i> Type a UID</button>'
+        . '<button class="btn btn-primary" data-modal-open="read-modal"><i class="fa-solid fa-wifi"></i> Issue by tapping</button>',
 ]); ?>
 
 <div class="grid grid--6 mb-3">
@@ -147,6 +148,106 @@ $__view->start('content');
     </div>
 </div>
 
+<!-- Issue by tapping ------------------------------------------------------- -->
+<div class="modal-backdrop" id="read-modal">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal__header">
+            <h3 class="modal__title" id="read-modal-title">Issue cards by tapping</h3>
+            <button class="modal__close" type="button" data-modal-close>&times;</button>
+        </div>
+
+        <!-- Step 1: pick the reader ---------------------------------------- -->
+        <div class="modal__body" id="read-step-device">
+            <div class="alert alert-info">
+                <span class="alert__icon"><i class="fa-solid fa-circle-info"></i></span>
+                <div class="alert__body">
+                    The terminal takes its reader off attendance duty and holds it for you, so a card
+                    presented at any moment is read. No class session is needed, and nothing is
+                    recorded as attendance.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="r-device" class="required">Reader</label>
+                <select id="r-device" required>
+                    <option value="">Select the terminal…</option>
+                    <?php foreach ($readers as $reader): ?>
+                        <option value="<?= e($reader['id']) ?>">
+                            <?= e($reader['device_id']) ?><?= $reader['room_number'] ? ' — Room ' . e($reader['room_number']) : '' ?>
+                            (<?= e(ucfirst((string) $reader['health'])) ?>)<?= (int) $reader['enrollment_station'] === 1 ? ' · enrolment station' : '' ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <span class="field-help" id="r-device-help">
+                    <?= $readers === []
+                        ? 'No terminal has completed activation yet, so none can be asked to read a card.'
+                        : 'Enrolment stations are listed first.' ?>
+                </span>
+            </div>
+        </div>
+
+        <!-- Step 2: the terminal is holding its reader ---------------------- -->
+        <div class="modal__body hidden" id="read-step-waiting">
+            <div class="enrol-scan">
+                <div class="enrol-scan__icon" id="read-icon"><i class="fa-solid fa-wifi"></i></div>
+                <div class="enrol-scan__stage" id="read-stage">Waiting for the terminal…</div>
+                <div class="enrol-scan__detail text-sm text-muted" id="read-detail"></div>
+
+                <ol class="enrol-scan__steps" id="read-steps">
+                    <li data-stage="waiting_for_device">Terminal picks up the request</li>
+                    <li data-stage="ready">Reader held open for you</li>
+                    <li data-stage="present_card">Hold the card against the reader</li>
+                    <li data-stage="reading">Reading the card</li>
+                </ol>
+
+                <div class="alert alert-warning mt-2 hidden" id="read-terminal-warning">
+                    <span class="alert__icon"><i class="fa-solid fa-plug-circle-xmark"></i></span>
+                    <div class="alert__body" id="read-terminal-warning-text"></div>
+                </div>
+
+                <div class="text-xs text-muted mt-2" id="read-target"></div>
+            </div>
+        </div>
+
+        <!-- Step 3: a card was read, say whose it is ------------------------ -->
+        <div class="modal__body hidden" id="read-step-assign">
+            <div class="credential-box mb-2">
+                <div class="credential-box__label">Card read</div>
+                <span id="read-uid" class="mono" style="font-size:18px"></span>
+            </div>
+
+            <div class="alert mb-2" id="read-holder"></div>
+
+            <div class="form-group">
+                <label for="r-student" class="required">Student</label>
+                <input type="search" id="r-student-search" placeholder="Type a name or student number…" autocomplete="off">
+                <select id="r-student" required size="6" style="margin-top:.4rem">
+                    <option value="">Search for a student above</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="r-notes">Notes</label>
+                <input type="text" id="r-notes" maxlength="255" placeholder="e.g. replacement for a lost card">
+            </div>
+        </div>
+
+        <div class="modal__footer">
+            <button type="button" class="btn btn-secondary" data-modal-close id="read-close">Cancel</button>
+            <button type="button" class="btn btn-primary" id="read-start"
+                    <?= $readers === [] ? 'disabled' : '' ?>>
+                <i class="fa-solid fa-wifi"></i> Wait for a card
+            </button>
+            <button type="button" class="btn btn-primary hidden" id="read-assign">
+                <i class="fa-solid fa-id-card"></i> Issue to this student
+            </button>
+            <button type="button" class="btn btn-secondary hidden" id="read-again">
+                <i class="fa-solid fa-rotate-right"></i> Next card
+            </button>
+        </div>
+    </div>
+</div>
+
 <div class="modal-backdrop" id="history-modal">
     <div class="modal" role="dialog" aria-modal="true">
         <div class="modal__header">
@@ -183,10 +284,7 @@ window.rfidTable = {
     document.getElementById('f-search').addEventListener('input', LS.util.debounce(applyRfidFilters, 500));
 
     // Student picker searches server-side so it works with thousands of students.
-    document.getElementById('student-search').addEventListener('input', LS.util.debounce(async function () {
-        const select = document.getElementById('a-student');
-        const query = this.value.trim();
-
+    async function searchStudents(query, select) {
         if (query.length < 2) return;
 
         try {
@@ -204,7 +302,202 @@ window.rfidTable = {
                 select.innerHTML = '<option value="">No matching students</option>';
             }
         } catch (error) { /* leave the previous list */ }
+    }
+
+    document.getElementById('student-search').addEventListener('input', LS.util.debounce(function () {
+        searchStudents(this.value.trim(), document.getElementById('a-student'));
     }, 300));
+
+    /* ---- issue by tapping ------------------------------------------------- */
+
+    const readSteps = {
+        device:  document.getElementById('read-step-device'),
+        waiting: document.getElementById('read-step-waiting'),
+        assign:  document.getElementById('read-step-assign'),
+    };
+
+    const readButtons = {
+        start:  document.getElementById('read-start'),
+        assign: document.getElementById('read-assign'),
+        again:  document.getElementById('read-again'),
+        close:  document.getElementById('read-close'),
+    };
+
+    const READ_STAGES = ['waiting_for_device', 'ready', 'present_card', 'reading'];
+
+    let readRequestId = null;
+    let readPollTimer = null;
+    let readDeviceId  = null;
+
+    document.getElementById('r-student-search').addEventListener('input', LS.util.debounce(function () {
+        searchStudents(this.value.trim(), document.getElementById('r-student'));
+    }, 300));
+
+    function showReadStep(name) {
+        Object.entries(readSteps).forEach(([key, node]) => node.classList.toggle('hidden', key !== name));
+
+        readButtons.start.classList.toggle('hidden', name !== 'device');
+        readButtons.assign.classList.toggle('hidden', name !== 'assign');
+        readButtons.again.classList.toggle('hidden', name !== 'assign');
+        readButtons.close.textContent = name === 'waiting' ? 'Stop' : 'Close';
+    }
+
+    function stopReadPolling() {
+        if (readPollTimer) { clearInterval(readPollTimer); readPollTimer = null; }
+    }
+
+    function paintRead(data) {
+        document.getElementById('read-stage').textContent =
+            data.status === 'captured'  ? 'Card read'
+            : data.status === 'assigned'  ? 'Card issued'
+            : data.status === 'failed'    ? 'No card presented'
+            : data.status === 'expired'   ? 'Timed out'
+            : data.status === 'cancelled' ? 'Cancelled'
+            : (data.stage === 'waiting_for_device' ? 'Waiting for the terminal…' : 'Reader is open — tap now');
+
+        document.getElementById('read-detail').textContent = data.message || '';
+
+        document.getElementById('read-target').textContent =
+            data.device_id + (data.room_number ? ' · Room ' + data.room_number : '');
+
+        const reached = READ_STAGES.indexOf(data.stage);
+
+        document.querySelectorAll('#read-steps li').forEach((item) => {
+            const at = READ_STAGES.indexOf(item.dataset.stage);
+            item.classList.toggle('is-done', data.status === 'captured' || (reached > -1 && at < reached));
+            item.classList.toggle('is-current', !data.finished && at === reached);
+        });
+
+        // Same reasoning as the fingerprint wizard: "waiting" reads identically
+        // whether the reader is about to answer or the board is unplugged.
+        const warning = document.getElementById('read-terminal-warning');
+        const stillWaiting = !data.finished;
+        const silent = data.terminal_silent_for;
+
+        if (stillWaiting && data.terminal_health !== 'online') {
+            document.getElementById('read-terminal-warning-text').textContent =
+                silent === null || silent === undefined
+                    ? data.device_id + ' has never reported in, so nothing is listening for this request.'
+                    : data.device_id + ' last reported ' + LS.util.humanDuration(silent)
+                      + ' ago, so it may not pick this up. Note that a terminal goes quiet while it is '
+                      + 'holding its reader open, which is normal for up to a minute.';
+            warning.classList.remove('hidden');
+        } else {
+            warning.classList.add('hidden');
+        }
+
+        const icon = document.getElementById('read-icon');
+        icon.className = 'enrol-scan__icon'
+            + (data.status === 'captured' || data.status === 'assigned' ? ' is-success'
+             : (data.finished ? ' is-error' : ' is-waiting'));
+
+        if (data.status === 'captured') {
+            stopReadPolling();
+            document.getElementById('read-uid').textContent = data.card_uid;
+
+            const holder = document.getElementById('read-holder');
+            const known  = (data.message || '').indexOf('already active') > -1
+                        || (data.message || '').indexOf('blacklisted') > -1;
+
+            holder.className = 'alert mb-2 ' + (known ? 'alert-warning' : 'alert-info');
+            holder.textContent = data.message || '';
+
+            showReadStep('assign');
+        } else if (data.finished) {
+            stopReadPolling();
+        }
+    }
+
+    async function pollRead() {
+        if (!readRequestId) return;
+
+        try {
+            const response = await LS.http.poll('/admin/rfid/read/' + readRequestId);
+            paintRead(response.data);
+        } catch (error) {
+            stopReadPolling();
+            LS.toast.fromError(error);
+        }
+    }
+
+    async function startRead() {
+        const select = document.getElementById('r-device');
+        readDeviceId = select.value;
+
+        if (!readDeviceId) { LS.toast.warning('Choose which terminal should read the card.'); return; }
+
+        LS.util.setBusy(readButtons.start, true, 'Asking the terminal…');
+
+        try {
+            const response = await LS.http.post('/admin/rfid/read', { device_row_id: readDeviceId });
+
+            readRequestId = response.data.request_id;
+            showReadStep('waiting');
+            paintRead(response.data);
+
+            stopReadPolling();
+            readPollTimer = setInterval(pollRead, 1200);
+        } catch (error) {
+            LS.toast.fromError(error);
+        } finally {
+            LS.util.setBusy(readButtons.start, false);
+        }
+    }
+
+    readButtons.start.addEventListener('click', startRead);
+
+    readButtons.again.addEventListener('click', function () {
+        document.getElementById('r-student').innerHTML = '<option value="">Search for a student above</option>';
+        document.getElementById('r-student-search').value = '';
+        document.getElementById('r-notes').value = '';
+        startRead();
+    });
+
+    readButtons.assign.addEventListener('click', async function () {
+        const studentId = document.getElementById('r-student').value;
+
+        if (!studentId) { LS.toast.warning('Choose the student this card belongs to.'); return; }
+
+        LS.util.setBusy(this, true, 'Issuing…');
+
+        try {
+            const response = await LS.http.post('/admin/rfid/read/' + readRequestId + '/assign', {
+                student_id: studentId,
+                notes: document.getElementById('r-notes').value,
+            });
+
+            LS.toast.success(response.message);
+            document.body.dataset.rfidIssued = '1';
+
+            // Straight back to waiting, because the next card is the next thing
+            // that happens. Reloading the page between cards would make issuing
+            // a stack of them unbearable.
+            document.getElementById('r-student').innerHTML = '<option value="">Search for a student above</option>';
+            document.getElementById('r-student-search').value = '';
+            document.getElementById('r-notes').value = '';
+            startRead();
+        } catch (error) {
+            LS.toast.fromError(error);
+        } finally {
+            LS.util.setBusy(this, false);
+        }
+    });
+
+    document.getElementById('read-modal').addEventListener('modal:close', async () => {
+        stopReadPolling();
+
+        // Release the reader rather than leaving the terminal holding it for
+        // somebody who has walked away.
+        if (readRequestId) {
+            try { await LS.http.post('/admin/rfid/read/' + readRequestId + '/cancel', {}); } catch (e) { /* it expires anyway */ }
+        }
+
+        readRequestId = null;
+        showReadStep('device');
+
+        // Counts on the page are stale once a card has been issued.
+        if (document.body.dataset.rfidIssued === '1') window.location.reload();
+    });
 
     document.addEventListener('click', async (event) => {
         const history = event.target.closest('[data-history]');
