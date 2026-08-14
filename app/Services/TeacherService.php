@@ -461,6 +461,71 @@ final class TeacherService
         return $id === null ? null : self::find((int) $id);
     }
 
+    /**
+     * Teachers who may take a given subject in a given section.
+     *
+     * The inverse of the two assignment validators, which answer "what may
+     * this teacher be given?". Scheduling asks the opposite question — the
+     * class is the fixed thing and the teacher is what varies — and answering
+     * it by listing every teacher and letting the administrator guess wastes
+     * the constraint the system already knows.
+     *
+     * Eligibility is exactly what those validators enforce on save: the
+     * subject's department must be one of the teacher's (primary, secondary,
+     * or an active exception when exceptions are enabled), and the section's
+     * grade level must be one the teacher carries (likewise). A teacher listed
+     * here will pass validation; one omitted would have been refused.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function assignableForPairing(int $subjectId, int $sectionId): array
+    {
+        $exceptions = TeacherSubjectAssignmentValidator::exceptionsEnabled();
+
+        $departmentMatch = 'tdx.teacher_id IS NOT NULL';
+        $gradeMatch      = 'tgx.teacher_id IS NOT NULL';
+
+        return Database::instance()->select(
+            sprintf(
+                "SELECT t.teacher_id, t.first_name, t.last_name, t.employee_number,
+                        d.department_code, d.department_name,
+                        (t.department_id = sub.department_id) AS is_primary_department,
+                        EXISTS (SELECT 1 FROM fingerprint_templates f
+                                 WHERE f.teacher_id = t.teacher_id AND f.status = 'active') AS has_fingerprint
+                   FROM teachers t
+                   JOIN departments d ON d.department_id = t.department_id
+                   JOIN subjects sub ON sub.subject_id = :subject
+                   JOIN sections sec ON sec.section_id = :section
+              LEFT JOIN teacher_departments td
+                     ON td.teacher_id = t.teacher_id AND td.department_id = sub.department_id
+              LEFT JOIN teacher_department_exceptions tdx
+                     ON %s
+              LEFT JOIN teacher_grade_levels tgl
+                     ON tgl.teacher_id = t.teacher_id AND tgl.grade_level_id = sec.grade_level_id
+              LEFT JOIN teacher_grade_level_exceptions tgx
+                     ON %s
+                  WHERE t.status = 'active'
+                    AND t.deleted_at IS NULL
+                    AND (t.department_id = sub.department_id OR td.teacher_id IS NOT NULL OR %s)
+                    AND (tgl.teacher_id IS NOT NULL OR %s)
+               ORDER BY is_primary_department DESC, t.last_name, t.first_name",
+                $exceptions
+                    ? "tdx.teacher_id = t.teacher_id AND tdx.department_id = sub.department_id
+                       AND tdx.status = 'active'
+                       AND tdx.effective_from <= CURDATE() AND tdx.effective_to >= CURDATE()"
+                    : '1 = 0',
+                $exceptions
+                    ? "tgx.teacher_id = t.teacher_id AND tgx.grade_level_id = sec.grade_level_id
+                       AND tgx.status = 'active'
+                       AND tgx.effective_from <= CURDATE() AND tgx.effective_to >= CURDATE()"
+                    : '1 = 0',
+                $exceptions ? $departmentMatch : '1 = 0',
+                $exceptions ? $gradeMatch : '1 = 0'
+            ),
+            ['subject' => $subjectId, 'section' => $sectionId]
+        );
+    }
+
     /** @return array<string,mixed> */
     public static function constraints(int $teacherId): array
     {
