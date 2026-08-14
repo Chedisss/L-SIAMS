@@ -249,9 +249,36 @@ final class DeviceAuthMiddleware extends Middleware
         }
     }
 
+    /**
+     * A classroom is required to *attribute* something, and only then.
+     *
+     * Attendance is the whole reason the check exists: a tap or a verified
+     * finger becomes a record against a room, and a terminal that cannot say
+     * which room must not be recording anything. Everything else a terminal
+     * does is administrative and has no room to be wrong about.
+     *
+     * Enrolment is the case that made this matter. A terminal can be marked an
+     * enrolment station so it can sit on the registrar's desk rather than in a
+     * classroom — and then every enrolment poll it made was refused with
+     * DEVICE_CLASSROOM_MISMATCH, because the desk is not a room. The two
+     * behaviours contradicted each other and the enrolment one is right.
+     *
+     * Clock sync is exempt for a blunter reason: the timestamp on a signed
+     * request has to be within thirty seconds of the server's, so a terminal
+     * that cannot ask the time cannot sign anything at all, including the
+     * requests that would tell it what was wrong.
+     */
     private function requiresClassroom(Request $request): bool
     {
-        foreach (['/api/device/heartbeat', '/api/device/claim', '/api/device/status'] as $exempt) {
+        $exemptions = [
+            '/api/device/heartbeat',
+            '/api/device/claim',
+            '/api/device/status',
+            '/api/device/time',
+            '/api/fingerprint/enrollment',
+        ];
+
+        foreach ($exemptions as $exempt) {
             if (str_starts_with($request->path(), $exempt)) {
                 return false;
             }
