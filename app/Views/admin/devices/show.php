@@ -474,6 +474,32 @@ $rotateDays = (int) config('security.api_key.age_rotate_days', 365);
                 </div>
 
                 <div class="form-group">
+                    <label for="de-classroom">Classroom</label>
+                    <select id="de-classroom" name="classroom_id">
+                        <option value="">Unassigned</option>
+                        <?php foreach ($classrooms as $room): ?>
+                            <option value="<?= e($room['classroom_id']) ?>"
+                                <?= (int) ($device['classroom_id'] ?? 0) === (int) $room['classroom_id'] ? 'selected' : '' ?>>
+                                Room <?= e($room['room_number']) ?><?= $room['building'] ? ' — ' . e($room['building']) : '' ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <span class="field-help">
+                        <?php if ($device['classroom_id'] === null): ?>
+                            <span class="text-warning">
+                                This terminal is not assigned to a room, so no schedule can be created
+                                for it and the room it sits in still reads "None registered". Assigning
+                                one here is all that is needed.
+                            </span>
+                        <?php else: ?>
+                            Which room this terminal records attendance for. Enrolment and heartbeats
+                            work without one; taps do not, because an attendance record is attributed
+                            to a room.
+                        <?php endif; ?>
+                    </span>
+                </div>
+
+                <div class="form-group">
                     <label for="de-role">Role</label>
                     <select id="de-role" name="device_role">
                         <?php foreach (['both' => 'Entry and exit', 'entry' => 'Entry only', 'exit' => 'Exit only'] as $value => $label): ?>
