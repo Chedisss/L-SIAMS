@@ -311,7 +311,7 @@ final class RfidEnrollmentService
         );
 
         $message = match (true) {
-            $holder === null => 'Card read. Choose the student it belongs to.',
+            $holder === null => 'Card read. Check it against the student and confirm.',
             (string) $holder['status'] === 'blacklisted'
                 => 'This card is blacklisted and cannot be issued.',
             $holder['student_id'] !== null && (string) $holder['status'] === 'active'

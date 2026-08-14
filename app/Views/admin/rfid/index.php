@@ -156,15 +156,33 @@ $__view->start('content');
             <button class="modal__close" type="button" data-modal-close>&times;</button>
         </div>
 
-        <!-- Step 1: pick the reader ---------------------------------------- -->
+        <!-- Step 1: who is the card for, and which reader ------------------- -->
         <div class="modal__body" id="read-step-device">
             <div class="alert alert-info">
                 <span class="alert__icon"><i class="fa-solid fa-circle-info"></i></span>
                 <div class="alert__body">
-                    The terminal takes its reader off attendance duty and holds it for you, so a card
-                    presented at any moment is read. No class session is needed, and nothing is
-                    recorded as attendance.
+                    Name the student first — their name goes on the terminal's display, so whoever is
+                    holding the card can see who it is about to belong to. The terminal then takes its
+                    reader off attendance duty and holds it open, so a card presented at any moment is
+                    read. No class session is needed, and nothing is recorded as attendance.
                 </div>
+            </div>
+
+            <div class="form-group">
+                <label for="r-student" class="required">Student</label>
+                <input type="search" id="r-student-search" placeholder="Type a name or student number…" autocomplete="off">
+                <select id="r-student" required size="6" style="margin-top:.4rem">
+                    <option value="">Search for a student above</option>
+                </select>
+                <span class="field-help">
+                    A student must be in a section and active to hold a card — a card issued otherwise
+                    could never be used, because every tap resolves against the session's section.
+                </span>
+            </div>
+
+            <div class="form-group">
+                <label for="r-notes">Notes</label>
+                <input type="text" id="r-notes" maxlength="255" placeholder="e.g. replacement for a lost card">
             </div>
 
             <div class="form-group">
@@ -209,27 +227,19 @@ $__view->start('content');
             </div>
         </div>
 
-        <!-- Step 3: a card was read, say whose it is ------------------------ -->
+        <!-- Step 3: confirm the card against the student -------------------- -->
         <div class="modal__body hidden" id="read-step-assign">
             <div class="credential-box mb-2">
                 <div class="credential-box__label">Card read</div>
                 <span id="read-uid" class="mono" style="font-size:18px"></span>
             </div>
 
+            <div class="credential-box mb-2">
+                <div class="credential-box__label">Will be issued to</div>
+                <span id="read-student" style="font-size:16px"></span>
+            </div>
+
             <div class="alert mb-2" id="read-holder"></div>
-
-            <div class="form-group">
-                <label for="r-student" class="required">Student</label>
-                <input type="search" id="r-student-search" placeholder="Type a name or student number…" autocomplete="off">
-                <select id="r-student" required size="6" style="margin-top:.4rem">
-                    <option value="">Search for a student above</option>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label for="r-notes">Notes</label>
-                <input type="text" id="r-notes" maxlength="255" placeholder="e.g. replacement for a lost card">
-            </div>
         </div>
 
         <div class="modal__footer">
@@ -239,10 +249,10 @@ $__view->start('content');
                 <i class="fa-solid fa-wifi"></i> Wait for a card
             </button>
             <button type="button" class="btn btn-primary hidden" id="read-assign">
-                <i class="fa-solid fa-id-card"></i> Issue to this student
+                <i class="fa-solid fa-id-card"></i> Issue this card
             </button>
             <button type="button" class="btn btn-secondary hidden" id="read-again">
-                <i class="fa-solid fa-rotate-right"></i> Next card
+                <i class="fa-solid fa-rotate-right"></i> Different card
             </button>
         </div>
     </div>
@@ -395,12 +405,20 @@ window.rfidTable = {
             stopReadPolling();
             document.getElementById('read-uid').textContent = data.card_uid;
 
+            document.getElementById('read-student').textContent =
+                (data.student_name || 'this student')
+                + (data.student_number ? '  ·  ' + data.student_number : '');
+
             const holder = document.getElementById('read-holder');
-            const known  = (data.message || '').indexOf('already active') > -1
-                        || (data.message || '').indexOf('blacklisted') > -1;
+            const blacklisted = (data.message || '').indexOf('blacklisted') > -1;
+            const known = blacklisted || (data.message || '').indexOf('already active') > -1;
 
             holder.className = 'alert mb-2 ' + (known ? 'alert-warning' : 'alert-info');
             holder.textContent = data.message || '';
+
+            // A blacklisted card is refused by assign() anyway; offering the
+            // button would only produce an error the moment it is pressed.
+            readButtons.assign.disabled = blacklisted;
 
             showReadStep('assign');
         } else if (data.finished) {
@@ -421,15 +439,23 @@ window.rfidTable = {
     }
 
     async function startRead() {
-        const select = document.getElementById('r-device');
-        readDeviceId = select.value;
+        readDeviceId = document.getElementById('r-device').value;
 
+        const studentId = document.getElementById('r-student').value;
+
+        // Named before the reader is asked, never after: a UID captured against
+        // nobody is a UID whose card cannot be told apart from the rest of the
+        // stack once it has been put down.
+        if (!studentId)    { LS.toast.warning('Choose the student this card is for.'); return; }
         if (!readDeviceId) { LS.toast.warning('Choose which terminal should read the card.'); return; }
 
         LS.util.setBusy(readButtons.start, true, 'Asking the terminal…');
 
         try {
-            const response = await LS.http.post('/admin/rfid/read', { device_row_id: readDeviceId });
+            const response = await LS.http.post('/admin/rfid/read', {
+                device_row_id: readDeviceId,
+                student_id: studentId,
+            });
 
             readRequestId = response.data.request_id;
             showReadStep('waiting');
@@ -446,36 +472,33 @@ window.rfidTable = {
 
     readButtons.start.addEventListener('click', startRead);
 
+    /* Wrong card off the stack — same student, ask for another read. */
     readButtons.again.addEventListener('click', function () {
-        document.getElementById('r-student').innerHTML = '<option value="">Search for a student above</option>';
-        document.getElementById('r-student-search').value = '';
-        document.getElementById('r-notes').value = '';
         startRead();
     });
 
     readButtons.assign.addEventListener('click', async function () {
-        const studentId = document.getElementById('r-student').value;
-
-        if (!studentId) { LS.toast.warning('Choose the student this card belongs to.'); return; }
-
         LS.util.setBusy(this, true, 'Issuing…');
 
         try {
+            // No student in the payload: the request already names one, and the
+            // server issues to that one. Sending it again would only create a
+            // way for the two to disagree.
             const response = await LS.http.post('/admin/rfid/read/' + readRequestId + '/assign', {
-                student_id: studentId,
                 notes: document.getElementById('r-notes').value,
             });
 
             LS.toast.success(response.message);
             document.body.dataset.rfidIssued = '1';
 
-            // Straight back to waiting, because the next card is the next thing
-            // that happens. Reloading the page between cards would make issuing
-            // a stack of them unbearable.
+            // Back to the top: the next card belongs to the next student, so
+            // the next thing needed is their name.
+            readRequestId = null;
             document.getElementById('r-student').innerHTML = '<option value="">Search for a student above</option>';
             document.getElementById('r-student-search').value = '';
             document.getElementById('r-notes').value = '';
-            startRead();
+            document.getElementById('r-student-search').focus();
+            showReadStep('device');
         } catch (error) {
             LS.toast.fromError(error);
         } finally {
