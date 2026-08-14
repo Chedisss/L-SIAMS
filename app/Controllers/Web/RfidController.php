@@ -47,25 +47,33 @@ final class RfidController extends Controller
     // ------------------------------------------------- issue by tapping ----
 
     /**
-     * Ask a terminal to read the next card presented to it.
+     * Ask a terminal to read a card for a named student.
      *
-     * Card-first by default: somebody standing at the reader with a stack of
-     * cards taps one, sees who it belongs to, chooses the student and taps the
-     * next. Naming the student up front is allowed but not required.
+     * The student is chosen first, deliberately. Reading the card first and
+     * asking afterwards leaves a UID sitting in the browser belonging to
+     * nobody, and the person at the reader holding a stack of identical white
+     * cards has no way to tell which one it was. Naming the student up front
+     * also puts their name on the terminal's display, so the card being
+     * presented and the record being written are checked against each other by
+     * the person doing it.
+     *
+     * It is checked here as well as in the service so the reader is never
+     * asked for a card that could not be issued once it arrived.
      */
     public function startRead(Request $request): Response
     {
         $data = $this->validate($request, [
             'device_row_id' => 'required|int',
-            'student_id'    => 'nullable|int',
+            'student_id'    => 'required|int|exists:students,student_id',
         ], [
             'device_row_id' => 'Terminal',
+            'student_id'    => 'Student',
         ]);
 
         $enrolment = RfidEnrollmentService::open(
             (int) $data['device_row_id'],
             $this->requireUserId(),
-            isset($data['student_id']) ? (int) $data['student_id'] : null
+            (int) $data['student_id']
         );
 
         return $this->json($this->readPayload($enrolment), 'Present the card to the terminal.');
@@ -89,17 +97,33 @@ final class RfidController extends Controller
         return $this->json($this->readPayload($enrolment));
     }
 
-    /** Issue the card that was just read to a student. */
+    /**
+     * Issue the card that was just read.
+     *
+     * The student comes from the request rather than from the browser: it was
+     * named before the reader was ever asked, and accepting a different one
+     * here would let the confirmation step quietly issue the card to somebody
+     * other than the person whose name was on the terminal.
+     */
     public function assignRead(Request $request): Response
     {
         $data = $this->validate($request, [
-            'student_id' => 'required|int|exists:students,student_id',
-            'notes'      => 'nullable|string|max:255|no_html',
+            'notes' => 'nullable|string|max:255|no_html',
         ]);
+
+        $enrolment = RfidEnrollmentService::find($request->routeInt('id'));
+
+        if ($enrolment === null) {
+            throw new HttpException(404, 'NOT_FOUND', 'Card read not found.');
+        }
+
+        if ($enrolment['student_id'] === null) {
+            throw new HttpException(409, 'STUDENT_REQUIRED', 'This card read names no student.');
+        }
 
         $result = RfidEnrollmentService::assignCaptured(
             $request->routeInt('id'),
-            (int) $data['student_id'],
+            (int) $enrolment['student_id'],
             $this->requireUserId(),
             $data['notes'] ?? null
         );
@@ -141,6 +165,10 @@ final class RfidController extends Controller
             'device_id'   => (string) $enrolment['device_id'],
             'room_number' => $enrolment['room_number'],
             'student_id'  => $enrolment['student_id'] === null ? null : (int) $enrolment['student_id'],
+            'student_name'   => $enrolment['first_name'] === null
+                ? null
+                : trim($enrolment['first_name'] . ' ' . $enrolment['last_name']),
+            'student_number' => $enrolment['student_number'],
             'finished'    => !in_array((string) $enrolment['status'], ['pending', 'waiting'], true),
             'terminal_health'     => $terminal === null ? 'unknown' : (string) $terminal['health'],
             'terminal_silent_for' => $terminal === null || $terminal['seconds_since_heartbeat'] === null
