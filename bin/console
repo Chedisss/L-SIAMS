@@ -15,6 +15,7 @@ declare(strict_types=1);
  *   php bin/console backup               Create an encrypted backup now
  *   php bin/console security:audit-keys  Static check that no weak RNG is in the key path
  *   php bin/console doctor               Diagnose a running installation
+ *   php bin/console db:import <file>     Import a .sql file or phpMyAdmin export
  *   php bin/console user:create-admin    Create an administrator interactively
  */
 
@@ -106,6 +107,7 @@ try {
         'backup'              => commandBackup(),
         'security:audit-keys' => commandAuditKeys(),
         'doctor'              => commandDoctor(),
+        'db:import'           => commandDbImport($arguments, $flags),
         'schema:dump'         => commandSchemaDump(),
         'user:create-admin'   => commandCreateAdmin(),
         default               => commandHelp(),
@@ -138,6 +140,7 @@ function commandHelp(): void
     out('    security:audit-keys     Verify no weak RNG exists in the key path');
     out('    doctor                  Diagnose this installation and report problems');
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
+    out('    db:import <file.sql>    Import a .sql file or phpMyAdmin export (--fresh drops first)');
     out('');
 }
 
@@ -281,6 +284,19 @@ function commandMigrate(): void
  */
 function runSqlScript(Database $db, string $sql): void
 {
+    foreach (splitSqlStatements($sql) as $statement) {
+        $db->pdo()->exec($statement);
+    }
+}
+
+/**
+ * Break a .sql file into individual statements, honouring DELIMITER blocks so
+ * triggers and procedures containing internal semicolons stay in one piece.
+ *
+ * @return list<string>
+ */
+function splitSqlStatements(string $sql): array
+{
     $delimiter  = ';';
     $buffer     = '';
     $statements = [];
@@ -319,13 +335,10 @@ function runSqlScript(Database $db, string $sql): void
         $statements[] = $buffer;
     }
 
-    foreach ($statements as $statement) {
-        if (trim($statement) === '') {
-            continue;
-        }
-
-        $db->pdo()->exec($statement);
-    }
+    return array_values(array_filter(
+        $statements,
+        static fn (string $statement): bool => trim($statement) !== ''
+    ));
 }
 
 function commandMigrateStatus(): void
@@ -1047,6 +1060,154 @@ function commandCreateAdmin(): void
  * user accounts and any student, teacher or attendance data: a schema file that
  * shipped a known login would be a backdoor in every installation that used it.
  */
+/**
+ * Import a .sql file — including a phpMyAdmin export — into the configured
+ * database.
+ *
+ * phpMyAdmin's own importer fails on files it happily produces: it writes the
+ * tables alphabetically and adds every foreign key at the end, so a partial
+ * export or a re-run against existing tables dies half way through with a
+ * message that names an errno and nothing else. This importer switches the
+ * constraint checks off for the duration, ignores any CREATE DATABASE / USE
+ * lines so the file always lands in the database named in .env, and when a
+ * statement does fail it prints the statement instead of a number.
+ *
+ * @param list<string> $arguments
+ * @param list<string> $flags
+ */
+function commandDbImport(array $arguments, array $flags): void
+{
+    $paths = array_values(array_filter($arguments, static fn (string $a): bool => !str_starts_with($a, '--')));
+    $path  = $paths[0] ?? '';
+
+    if ($path === '') {
+        fail("Usage: php bin/console db:import <file.sql> [--fresh]\n"
+           . '  --fresh  drop every existing table and view first');
+    }
+
+    if (!is_file($path)) {
+        $candidate = BASE_PATH . '/' . ltrim($path, '/\\');
+
+        if (!is_file($candidate)) {
+            fail('No such file: ' . $path);
+        }
+
+        $path = $candidate;
+    }
+
+    $sql = (string) file_get_contents($path);
+
+    // phpMyAdmin writes UTF-8 with a byte order mark when the browser asks for
+    // one. MySQL reads it as three junk characters in front of the first
+    // statement and reports a syntax error at line 1.
+    $sql = (string) preg_replace('/^\xEF\xBB\xBF/', '', $sql);
+
+    $config   = (array) Config::get('database', []);
+    $database = (string) ($config['database'] ?? '');
+
+    heading('Importing ' . basename($path) . ' into ' . $database);
+
+    $db = Database::instance();
+
+    if (in_array('--fresh', $flags, true)) {
+        $db->pdo()->exec('SET FOREIGN_KEY_CHECKS = 0');
+
+        foreach ($db->select('SHOW FULL TABLES WHERE Table_type = "VIEW"') as $row) {
+            $db->pdo()->exec(sprintf('DROP VIEW IF EXISTS `%s`', (string) array_values($row)[0]));
+        }
+
+        foreach ($db->select('SHOW FULL TABLES WHERE Table_type = "BASE TABLE"') as $row) {
+            $db->pdo()->exec(sprintf('DROP TABLE IF EXISTS `%s`', (string) array_values($row)[0]));
+        }
+
+        ok('  Existing tables dropped.');
+    }
+
+    $statements = splitSqlStatements($sql);
+
+    if ($statements === []) {
+        fail('The file contains no SQL statements. If you pasted it out of a browser, check it was not truncated.');
+    }
+
+    // Anything that would move the import to a different database is dropped:
+    // the target is whatever .env points at, and nothing in the file gets to
+    // override that.
+    $redirects = 0;
+    $executed  = 0;
+
+    $db->pdo()->exec('SET FOREIGN_KEY_CHECKS = 0');
+    $db->pdo()->exec('SET UNIQUE_CHECKS = 0');
+    $db->pdo()->exec("SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO'");
+
+    foreach ($statements as $index => $statement) {
+        $head = ltrim($statement);
+
+        if (preg_match('/^(USE\b|CREATE\s+DATABASE\b|CREATE\s+SCHEMA\b|DROP\s+DATABASE\b|DROP\s+SCHEMA\b)/i', $head) === 1) {
+            $redirects++;
+            continue;
+        }
+
+        try {
+            $db->pdo()->exec($statement);
+            $executed++;
+        } catch (Throwable $e) {
+            $db->pdo()->exec('SET UNIQUE_CHECKS = 1');
+            $db->pdo()->exec('SET FOREIGN_KEY_CHECKS = 1');
+
+            out('');
+            out('  Statement ' . ($index + 1) . ' of ' . count($statements) . ' failed:', 'yellow');
+            out('');
+
+            foreach (array_slice(preg_split('/\n/', trim($statement)) ?: [], 0, 8) as $line) {
+                out('    ' . mb_strimwidth($line, 0, 160, '…'), 'grey');
+            }
+
+            out('');
+            fail($e->getMessage());
+        }
+    }
+
+    $db->pdo()->exec('SET UNIQUE_CHECKS = 1');
+    $db->pdo()->exec('SET FOREIGN_KEY_CHECKS = 1');
+
+    // A file written against an older release leaves the newer migrations
+    // unapplied, and the pages that need them break in ways that look nothing
+    // like an import problem. Say so here rather than letting them find out.
+    $pending = [];
+
+    try {
+        ensureMigrationsTable($db);
+        $applied = array_column($db->select('SELECT migration FROM schema_migrations'), 'migration');
+
+        foreach (discoverMigrations() as $migration) {
+            if (!in_array($migration['name'], $applied, true)) {
+                $pending[] = $migration['name'];
+            }
+        }
+    } catch (Throwable) {
+        // Nothing to report if the table could not be read.
+    }
+
+    out('');
+    ok($executed . ' statement(s) executed.');
+
+    if ($redirects > 0) {
+        out('  ' . $redirects . ' CREATE DATABASE / USE statement(s) ignored — the target came from .env.', 'grey');
+    }
+
+    if ($pending !== []) {
+        out('');
+        out('  ' . count($pending) . ' migration(s) in this release are not in that file:', 'yellow');
+
+        foreach ($pending as $name) {
+            out('    ' . $name, 'yellow');
+        }
+
+        out('');
+        out('  Apply them now:  php bin/console migrate', 'cyan');
+    }
+}
+
 function commandSchemaDump(): void
 {
     heading('Dumping schema and reference data');

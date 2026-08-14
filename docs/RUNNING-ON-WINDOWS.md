@@ -218,12 +218,68 @@ Open a Command Prompt in the project folder (Shift + right-click the folder →
 |---|---|
 | `console.bat doctor` | check the whole installation and list what is wrong |
 | `mysql-doctor.bat` | double-click it when MySQL will not stay started |
+| `import.bat` | drag a `.sql` file onto it to load it into the database |
 | `console.bat seed --demo` | fill the system with sample data |
 | `console.bat user:create-admin` | add another administrator |
 | `console.bat backup` | take an encrypted backup right now |
 | `console.bat migrate:status` | show which database changes have been applied |
 | `console.bat security:audit-keys` | check the key-generation code for weak randomness |
 | `console.bat` | list everything |
+
+---
+
+## Restoring a `.sql` file — yours or phpMyAdmin's
+
+phpMyAdmin will not reliably re-import its own exports. It writes the tables in
+alphabetical order and adds every foreign key at the end, so a table can refer
+to one that does not exist yet; and it leaves the constraint checks switched
+on while it does it. The import stops part-way with a message that names an
+error number and nothing you can act on. Common ones:
+
+| What phpMyAdmin says | What it means |
+|---|---|
+| `#1451` / `#1452` / `errno: 150` | a foreign key pointed at a table that had not been created yet |
+| `#1046 - No database selected` | the file has no `USE` line and no database was open |
+| `#1050 - Table already exists` | the tables were already there; the file cannot add them twice |
+| a syntax error on the last line | the text was truncated — usually pasted into the SQL box rather than uploaded |
+
+**Import it this way instead.** Drag the `.sql` file onto **`import.bat`**, or
+from a Command Prompt in the project folder:
+
+```
+console.bat db:import "C:\Users\You\Downloads\lsiams_db.sql"
+```
+
+That switches the constraint checks off for the duration, ignores any
+`CREATE DATABASE` / `USE` lines in the file so it always lands in the database
+named in `.env`, and if a statement really is bad it prints the statement
+rather than an error number.
+
+To replace what is already there rather than adding to it:
+
+```
+console.bat db:import "C:\path\to\file.sql" --fresh
+```
+
+`--fresh` drops every existing table first. There is no undo — take a backup
+with `console.bat backup` if the current data still matters.
+
+### After importing an older export
+
+A file exported before you last updated the project describes an older
+database. The import will succeed and the system will then break in ways that
+look nothing like an import problem — missing fingerprint enrolment, terminals
+that never leave *Pending*. `db:import` tells you when this has happened:
+
+```
+  5 migration(s) in this release are not in that file:
+    008_create_fingerprint_enrollment_requests.sql
+    ...
+  Apply them now:  console.bat migrate
+```
+
+Run `console.bat migrate` and the database is brought up to date without
+touching your data.
 
 ---
 
