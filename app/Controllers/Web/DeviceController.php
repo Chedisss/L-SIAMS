@@ -58,6 +58,7 @@ final class DeviceController extends Controller
 
         $payload = [
             'device'     => $device,
+            'classrooms' => AcademicStructureService::classrooms(true),
             'logs'       => DeviceService::logs($deviceRowId, 50),
             'heartbeats' => DeviceService::heartbeatHistory($deviceRowId, 24),
             'keyHistory' => ApiKeyService::historyForDevice($deviceRowId),
@@ -170,15 +171,25 @@ final class DeviceController extends Controller
             ]);
         }
 
+        // A field the caller did not send keeps the value it had. The three
+        // nullable ones used to read `$data[...] ?? null`, which cannot tell
+        // "cleared on purpose" from "not part of this request" and silently
+        // chose cleared for both — so a partial update, like the button that
+        // adopts the MAC a board presented, wiped the terminal's classroom,
+        // its IP allowlist and its location note on the way past. A device
+        // with no classroom then fails every attendance route and vanishes
+        // from the scheduling form, neither of which points back here.
+        $keep = static fn (string $field, mixed $sent) => array_key_exists($field, $data) ? $sent : $existing[$field];
+
         $update = [
             'device_name'   => (string) $data['device_name'],
-            'classroom_id'  => empty($data['classroom_id']) ? null : (int) $data['classroom_id'],
+            'classroom_id'  => $keep('classroom_id', empty($data['classroom_id']) ? null : (int) $data['classroom_id']),
             'device_role'   => (string) ($data['device_role'] ?? $existing['device_role']),
-            'ip_allowlist'  => $data['ip_allowlist'] ?? null,
+            'ip_allowlist'  => $keep('ip_allowlist', $data['ip_allowlist'] ?? null),
             'heartbeat_interval_sec' => (int) ($data['heartbeat_interval_sec'] ?? $existing['heartbeat_interval_sec']),
             'sync_interval_sec'      => (int) ($data['sync_interval_sec'] ?? $existing['sync_interval_sec']),
             'offline_queue_limit'    => (int) ($data['offline_queue_limit'] ?? $existing['offline_queue_limit']),
-            'location_note' => $data['location_note'] ?? null,
+            'location_note' => $keep('location_note', $data['location_note'] ?? null),
             'updated_at'    => \App\Core\Clock::nowString(),
         ];
 
