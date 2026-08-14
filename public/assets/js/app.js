@@ -441,6 +441,24 @@
     /* ------------------------------------------------------------ helpers -- */
 
     LS.util = {
+        /** A count of seconds as a person would say it: "40 seconds", "6 minutes". */
+        humanDuration(seconds) {
+            const total = Math.max(0, Math.round(Number(seconds) || 0));
+
+            if (total < 60)   return total + (total === 1 ? ' second' : ' seconds');
+            if (total < 3600) {
+                const minutes = Math.round(total / 60);
+                return minutes + (minutes === 1 ? ' minute' : ' minutes');
+            }
+            if (total < 86400) {
+                const hours = Math.round(total / 3600);
+                return hours + (hours === 1 ? ' hour' : ' hours');
+            }
+
+            const days = Math.round(total / 86400);
+            return days + (days === 1 ? ' day' : ' days');
+        },
+
         debounce(fn, wait = 300) {
             let timer = null;
             return function (...args) {

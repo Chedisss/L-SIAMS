@@ -235,6 +235,11 @@ $__view->start('content');
                         <li data-stage="storing">Sensor stores the template</li>
                     </ol>
 
+                    <div class="alert alert-warning mt-2 hidden" id="scan-terminal-warning">
+                        <span class="alert__icon"><i class="fa-solid fa-plug-circle-xmark"></i></span>
+                        <div class="alert__body" id="scan-terminal-warning-text"></div>
+                    </div>
+
                     <div class="text-xs text-muted mt-2" id="scan-target"></div>
                 </div>
             </div>
@@ -310,6 +315,28 @@ $__view->start('scripts');
             data.teacher_name + ' · ' + data.device_id
             + (data.room_number ? ' · Room ' + data.room_number : '')
             + ' · sensor slot ' + data.sensor_template_id;
+
+        /* "Waiting for the terminal" reads the same whether the board is about
+           to answer or has been unplugged since Tuesday. While nothing has been
+           picked up, say which of the two it is. */
+        const warning = document.getElementById('scan-terminal-warning');
+        const stillWaiting = !data.finished && data.stage === 'waiting_for_device';
+        const silent = data.terminal_silent_for;
+
+        if (stillWaiting && data.terminal_health !== 'online') {
+            document.getElementById('scan-terminal-warning-text').textContent =
+                silent === null || silent === undefined
+                    ? data.device_id + ' has never reported in, so nothing is listening for '
+                      + 'this request. Power the terminal on and check it reached the server.'
+                    : data.device_id + ' last reported ' + LS.util.humanDuration(silent)
+                      + ' ago. A running terminal reports every 30 seconds, so it is probably '
+                      + 'switched off, off the network, or being refused by the server — its '
+                      + 'Serial Monitor will say which.';
+
+            warning.classList.remove('hidden');
+        } else {
+            warning.classList.add('hidden');
+        }
 
         const reached = STAGES.indexOf(data.stage);
 

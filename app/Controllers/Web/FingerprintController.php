@@ -187,7 +187,23 @@ final class FingerprintController extends Controller
      */
     private function scanPayload(array $enrolment): array
     {
+        // "Waiting for the terminal to pick this up…" is true whether the
+        // terminal is thinking about it or has been unplugged since Tuesday.
+        // The difference is knowable here, so it is sent rather than left for
+        // somebody to work out from the Devices page.
+        $terminal = Database::instance()->selectOne(
+            'SELECT health, seconds_since_heartbeat
+               FROM v_device_status WHERE device_row_id = :id',
+            ['id' => (int) $enrolment['device_row_id']]
+        );
+
+        $silentFor = $terminal === null || $terminal['seconds_since_heartbeat'] === null
+            ? null
+            : (int) $terminal['seconds_since_heartbeat'];
+
         return [
+            'terminal_health'     => $terminal === null ? 'unknown' : (string) $terminal['health'],
+            'terminal_silent_for' => $silentFor,
             'request_id'         => (int) $enrolment['request_id'],
             'status'             => (string) $enrolment['status'],
             'stage'              => (string) $enrolment['stage'],
