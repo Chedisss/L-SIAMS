@@ -9,6 +9,7 @@ use App\Core\Exceptions\HttpException;
 use App\Core\Exceptions\ValidationException;
 use App\Services\SecurityLogService;
 use App\Services\SettingsService;
+use PDOException;
 use Throwable;
 
 /**
@@ -170,6 +171,33 @@ final class App
             'user'   => Auth::id(),
         ]);
 
+        // A database that is not running is the one outage a school will
+        // actually meet, and "an unexpected error occurred" is the least useful
+        // thing to say about it: it points at the application, which is fine,
+        // and sends somebody reading logs instead of starting a service.
+        //
+        // Naming it discloses nothing. That the system has a database is not a
+        // secret, and the host, port and credentials stay in the log where they
+        // belong — only the fact of the outage crosses the boundary.
+        if (self::isDatabaseUnavailable($e)) {
+            if ($request->wantsJson()) {
+                return Response::fail(
+                    'DATABASE_UNAVAILABLE',
+                    'The database is not responding. It is usually not running.',
+                    503
+                );
+            }
+
+            return $this->errorPage(
+                503,
+                'The database is not running',
+                'Every page needs it, so nothing will load until it is started. '
+                . 'On a development machine: open the XAMPP Control Panel and press Start next to '
+                . 'MySQL, then reload this page. If it starts and immediately stops, run '
+                . 'mysql-doctor.bat in the project folder — it reports why.'
+            );
+        }
+
         $debug   = (bool) Config::get('app.debug', false);
         $message = $debug
             ? $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()
@@ -180,6 +208,45 @@ final class App
         }
 
         return $this->errorPage(500, 'Something went wrong', $message);
+    }
+
+    /**
+     * Is this failure "the database is not there" rather than a bug?
+     *
+     * Matched on the driver's own codes rather than on message text, which is
+     * localised and version-dependent:
+     *
+     *   2002  cannot connect - nothing listening, or the socket is wrong
+     *   2003  cannot connect - host unreachable
+     *   2006  server has gone away - it died mid-query
+     *   2013  lost connection during the query
+     *   1040  too many connections
+     *   1045  access denied - the credentials no longer work
+     *
+     * The connect path wraps PDOException in a RuntimeException so the DSN
+     * cannot leak, so the cause has to be unwrapped to be read.
+     */
+    private static function isDatabaseUnavailable(Throwable $e): bool
+    {
+        for ($cause = $e; $cause !== null; $cause = $cause->getPrevious()) {
+            if (!$cause instanceof PDOException) {
+                continue;
+            }
+
+            $driverCode = (int) ($cause->errorInfo[1] ?? 0);
+
+            if (in_array($driverCode, [2002, 2003, 2006, 2013, 1040, 1045], true)) {
+                return true;
+            }
+
+            // errorInfo is absent when the failure happened before a statement
+            // ever ran, which is exactly the connect case.
+            if ($cause->errorInfo === null && str_contains((string) $cause->getCode(), 'HY000')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function respondValidation(ValidationException $e, Request $request): Response
