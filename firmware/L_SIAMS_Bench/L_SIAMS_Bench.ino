@@ -1266,11 +1266,42 @@ void setup() {
   /* ---- RFID ---- */
   SPI.begin();
   rfid.PCD_Init();
+
+  /* Read it several times. A reader that answers 0x92 every time is wired
+   * correctly; one that answers a different value each time has a connection
+   * problem, not a configuration problem, and no amount of retrying in the
+   * card code will change that. The two need to be told apart here, once,
+   * rather than inferred later from reads that fail. */
   byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  bool stable  = true;
+
+  for (uint8_t i = 0; i < 8; i++) {
+    delay(5);
+    if (rfid.PCD_ReadRegister(MFRC522::VersionReg) != version) stable = false;
+  }
+
+  const bool known = (version == 0x91 || version == 0x92 || version == 0x88
+                   || version == 0x90 || version == 0x12);
+
   Serial.printf("MFRC522 version: 0x%02X %s\n", version,
-                (version == 0x00 || version == 0xFF)
-                  ? "<-- NOT RESPONDING, check wiring (and that it is on 3.3V)"
-                  : "(ok)");
+                known ? (stable ? "(ok)" : "(known version but UNSTABLE - see below)")
+                      : "<-- NOT a version any MFRC522 reports");
+
+  if (!known || !stable) {
+    /* Said plainly because the alternative is hours spent on the card. */
+    Serial.println("  The reader is not talking properly, so NO card will ever read.");
+    Serial.println("  Real values are 0x91, 0x92 or 0x88. 0x00 and 0xFF mean nothing is");
+    Serial.println("  answering at all; anything else means the SPI link is unreliable.");
+    Serial.printf("  Reads were %s.\n", stable ? "at least consistent" : "DIFFERENT each time - a loose wire or bad power");
+    Serial.println("  Check, in this order:");
+    Serial.println("    1. VCC on 3.3 V. NEVER 5 V - it damages this module.");
+    Serial.println("    2. GND shared with the ESP32.");
+    Serial.println("    3. MISO 19, MOSI 23, SCK 18, SDA/SS 5, RST 22 - MISO and MOSI");
+    Serial.println("       are the pair people swap.");
+    Serial.println("    4. Re-seat every jumper. Breadboard contacts are the usual cause.");
+    Serial.println("    5. Unplug the R307 and reboot. It shares the supply and draws");
+    Serial.println("       bursts; if the version steadies without it, the rail is weak.");
+  }
 
   /* ---- Fingerprint ---- */
   fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
