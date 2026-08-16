@@ -113,6 +113,7 @@ try {
         'time:shift'          => commandTimeShift($arguments, $flags),
         'schema:dump'         => commandSchemaDump(),
         'user:create-admin'   => commandCreateAdmin(),
+        'user:purge'          => commandUserPurge($arguments, $flags),
         default               => commandHelp(),
     };
 } catch (Throwable $e) {
@@ -136,6 +137,7 @@ function commandHelp(): void
     out('    migrate:fresh --force   Drop all tables and re-migrate (destructive)');
     out('    seed [--demo]           Seed reference data, optionally with demo records');
     out('    user:create-admin       Create an administrator account interactively');
+    out('    user:purge <id>         Erase a user and their history (destructive, last resort)');
     out('');
     out('  Operations', 'cyan');
     out('    worker [--once]         Maintenance loop: sessions, heartbeats, retention');
@@ -1349,6 +1351,224 @@ function commandTimeShift(array $arguments, array $flags): void
         out('  APP_ENV is production, so this will be ignored. Set APP_ENV=local in', 'yellow');
         out('  .env while you are testing, and put it back afterwards.', 'yellow');
     }
+}
+
+/**
+ * Erase a user row and everything that points at it.
+ *
+ * This exists because the database will not let you do it by hand, and the
+ * ways round that by hand are worse than the problem. `audit_logs`,
+ * `login_history` and `security_logs` each hold the user with ON DELETE
+ * RESTRICT *and* carry a BEFORE DELETE trigger that raises SQLSTATE 45000, so
+ * the only route through is to drop those triggers first. An administrator
+ * doing that in phpMyAdmin who then hits an error partway — or simply closes
+ * the tab — leaves the audit table permanently unprotected, and nothing
+ * anywhere says so. That is a far worse outcome than the stuck row they were
+ * trying to fix.
+ *
+ * So the trigger drop happens here, between a confirmation that shows exactly
+ * what will be destroyed and a `finally` that puts the triggers back whatever
+ * happens. DDL commits implicitly in MariaDB, so a transaction cannot cover
+ * this; the `finally` is the guarantee, not the transaction.
+ *
+ * Archiving remains the right answer almost every time — it ends the sessions,
+ * blocks the login and keeps the history. This is for the account created by
+ * mistake that should never have existed.
+ *
+ * @param list<string> $arguments
+ * @param list<string> $flags
+ */
+function commandUserPurge(array $arguments, array $flags): void
+{
+    $db     = Database::instance();
+    $userId = (int) ($arguments[0] ?? 0);
+
+    if ($userId <= 0) {
+        fail('Give the numeric user id: php bin/console user:purge 3');
+    }
+
+    $user = $db->selectOne(
+        'SELECT u.*, r.role_slug, r.role_name
+           FROM users u JOIN roles r ON r.role_id = u.role_id
+          WHERE u.user_id = :id',
+        ['id' => $userId]
+    );
+
+    if ($user === null) {
+        fail(sprintf('No user with id %d.', $userId));
+    }
+
+    heading(sprintf('Purge user %d — %s', $userId, (string) $user['username']));
+
+    out(sprintf('  %-14s %s', 'Name', (string) ($user['full_name'] ?? '—')), 'grey');
+    out(sprintf('  %-14s %s', 'Email', (string) ($user['email'] ?? '—')), 'grey');
+    out(sprintf('  %-14s %s', 'Role', (string) $user['role_name']), 'grey');
+    out(sprintf('  %-14s %s', 'Status', (string) $user['status']), 'grey');
+
+    // The same rule the application enforces. Losing the last administrator
+    // locks everybody out with no recovery short of editing the database, and
+    // this command is meant to keep people out of the database.
+    if (strtolower((string) $user['role_slug']) === 'administrator') {
+        $remaining = (int) $db->scalar(
+            "SELECT COUNT(*) FROM users u JOIN roles r ON r.role_id = u.role_id
+              WHERE r.role_slug = 'administrator' AND u.status = 'active'
+                AND u.deleted_at IS NULL AND u.user_id <> :id",
+            ['id' => $userId]
+        );
+
+        if ($remaining === 0) {
+            fail('This is the last active administrator. Purging it would lock everyone out permanently.');
+        }
+    }
+
+    // Everything that would be destroyed outright, rather than detached. These
+    // are the tables holding the user with ON DELETE RESTRICT.
+    $destroys = [
+        'audit_logs'                     => 'user_id',
+        'login_history'                  => 'user_id',
+        'security_logs'                  => 'user_id',
+        'attendance_modifications'       => 'administrator_id',
+        'student_section_history'        => 'performed_by',
+        'generated_reports'              => 'generated_by',
+        'teacher_department_exceptions'  => 'granted_by',
+        'teacher_grade_level_exceptions' => 'granted_by',
+    ];
+
+    heading('Rows that will be destroyed permanently');
+
+    $total = 0;
+
+    foreach ($destroys as $table => $column) {
+        $count = (int) $db->scalar(
+            sprintf('SELECT COUNT(*) FROM `%s` WHERE `%s` = :id', $table, $column),
+            ['id' => $userId]
+        );
+
+        $total += $count;
+
+        out(sprintf('  %-34s %6d', $table, $count), $count > 0 ? 'yellow' : 'grey');
+    }
+
+    out('');
+    out(sprintf('  %-34s %6d', 'total', $total), $total > 0 ? 'yellow' : 'grey');
+
+    if ($total > 0) {
+        out('');
+        out('  These cannot be recovered from a backup taken after the purge.', 'yellow');
+        out('  Archiving instead keeps every one of them and still blocks the login.', 'grey');
+    }
+
+    if (!in_array('--force', $flags, true)) {
+        out('');
+        out('  Dry run — nothing has been changed.', 'cyan');
+        out('  Re-run with --force to carry it out:', 'grey');
+        out(sprintf('    php bin/console user:purge %d --force', $userId), 'grey');
+        out('');
+
+        return;
+    }
+
+    out('');
+    $typed = prompt(sprintf('  Type the username "%s" to confirm', (string) $user['username']));
+
+    if (!hash_equals((string) $user['username'], $typed)) {
+        fail('Confirmation did not match. Nothing was changed.');
+    }
+
+    // Recorded before the rows go, because afterwards there is nothing left to
+    // describe and no way to tell the purge happened at all.
+    App\Services\AuditService::log(
+        'user.purged',
+        'user_management',
+        'user',
+        $userId,
+        [
+            'username' => (string) $user['username'],
+            'email'    => (string) ($user['email'] ?? ''),
+            'role'     => (string) $user['role_name'],
+            'status'   => (string) $user['status'],
+        ],
+        null,
+        sprintf(
+            'Account "%s" (id %d) purged from the console along with %d referencing row(s).',
+            (string) $user['username'],
+            $userId,
+            $total
+        ),
+        'success',
+        null
+    );
+
+    $guards = ['audit_logs' => 'trg_audit_no_delete',
+               'security_logs' => 'trg_security_no_delete',
+               'login_history' => 'trg_login_history_no_delete'];
+
+    heading('Purging');
+
+    try {
+        foreach ($guards as $trigger) {
+            $db->execute(sprintf('DROP TRIGGER IF EXISTS `%s`', $trigger));
+        }
+
+        out('  immutability triggers lifted for this operation', 'grey');
+
+        foreach ($destroys as $table => $column) {
+            $db->execute(
+                sprintf('DELETE FROM `%s` WHERE `%s` = :id', $table, $column),
+                ['id' => $userId]
+            );
+        }
+
+        // Everything else either cascades or is set to NULL by the schema, so
+        // the user row goes last and takes the rest with it.
+        $db->execute('DELETE FROM users WHERE user_id = :id', ['id' => $userId]);
+
+        ok(sprintf('user %d purged, %d referencing row(s) destroyed', $userId, $total));
+    } finally {
+        // Not conditional on success. A half-finished purge that leaves the
+        // audit table writable is the one outcome worth ruling out entirely.
+        restoreImmutabilityTriggers($db);
+        out('  immutability triggers restored', 'grey');
+    }
+
+    out('');
+}
+
+/**
+ * Put the three no-delete guards back exactly as migration 007 defines them.
+ *
+ * Kept beside the purge rather than re-running the migration: 007 is recorded
+ * as applied, so `migrate` will not run it again, and an administrator who
+ * needed this would have no way to get the protection back.
+ */
+function restoreImmutabilityTriggers(Database $db): void
+{
+    $db->execute('DROP TRIGGER IF EXISTS trg_audit_no_delete');
+    $db->execute(
+        "CREATE TRIGGER trg_audit_no_delete BEFORE DELETE ON audit_logs FOR EACH ROW
+         BEGIN
+           SIGNAL SQLSTATE '45000'
+             SET MESSAGE_TEXT = 'Audit logs are immutable and cannot be deleted.';
+         END"
+    );
+
+    $db->execute('DROP TRIGGER IF EXISTS trg_security_no_delete');
+    $db->execute(
+        "CREATE TRIGGER trg_security_no_delete BEFORE DELETE ON security_logs FOR EACH ROW
+         BEGIN
+           SIGNAL SQLSTATE '45000'
+             SET MESSAGE_TEXT = 'Security logs are immutable and cannot be deleted.';
+         END"
+    );
+
+    $db->execute('DROP TRIGGER IF EXISTS trg_login_history_no_delete');
+    $db->execute(
+        "CREATE TRIGGER trg_login_history_no_delete BEFORE DELETE ON login_history FOR EACH ROW
+         BEGIN
+           SIGNAL SQLSTATE '45000'
+             SET MESSAGE_TEXT = 'Login history is permanent and cannot be deleted.';
+         END"
+    );
 }
 
 function commandSchemaDump(): void
