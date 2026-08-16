@@ -1,11 +1,16 @@
 # Sample import files
 
-## `student-import-G7-RIZAL.xlsx`
+## `student-import-G7-RIZAL.csv` and `student-import-G7-RIZAL.xlsx`
 
-Fifteen Grade 7 students for section `G7-RIZAL`, ready to upload at
-**Admin → Students → Import**. Every row validates against a database seeded
-with the demo data; if your sections differ, change the `section_code` column
-to one of your own.
+The same fifteen Grade 7 students for section `G7-RIZAL`, in both formats,
+ready to upload at **Admin → Students → Import**. Every row validates against a
+database seeded with the demo data; if your sections differ, change the
+`section_code` column to one of your own.
+
+Prefer the CSV. It opens in Excel exactly like a workbook, it is a text file
+you can read and diff, and importing it needs nothing from PHP beyond what is
+already there — reading `.xlsx` needs the `zip` extension enabled, which not
+every XAMPP install has.
 
 ### Why one section per file
 
