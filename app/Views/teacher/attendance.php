@@ -137,7 +137,11 @@ $__view->start('content');
                                 <?php endif; ?>
                             </td>
                             <td class="numeric"><?= $duration === null ? '—' : e($duration) . ' min' ?></td>
-                            <td class="text-xs text-muted"><?= e(str_replace('_', ' ', (string) $record['arrival_status'])) ?></td>
+                            <?php /* Green or red, and "on time" rather than "present": the column
+                                     answers whether they got here in time, so it should say so. */ ?>
+                            <td class="text-xs fw-600 <?= e(AttendanceStatusResolver::arrivalClass((string) $record['arrival_status'])) ?>">
+                                <?= e(AttendanceStatusResolver::arrivalLabel((string) $record['arrival_status'])) ?>
+                            </td>
                             <td class="text-xs text-muted"><?= e(str_replace('_', ' ', (string) $record['departure_status'])) ?></td>
                             <td>
                                 <span class="badge <?= e(AttendanceStatusResolver::badgeClass((string) $record['final_status'])) ?>">
