@@ -1528,6 +1528,7 @@ void setup() {
     fingerReady = true;
     Serial.printf("R307: found — %d template(s) enrolled on this sensor\n",
                   finger.templateCount);
+    Serial.println("       console: type count, slots or wipe into the Serial Monitor");
     if (finger.templateCount == 0) {
       Serial.println("  none enrolled yet — that is fine. Open Fingerprints in");
       Serial.println("  L-SIAMS, press Enrol Fingerprint, choose this terminal,");
@@ -1600,7 +1601,78 @@ void setup() {
   Serial.println("       Admin:   Fingerprints -> Enrol Fingerprint enrols from here.");
 }
 
+/* ---------------------------------------------------------------- console --
+ *
+ * Type a word into the Serial Monitor and press Enter.
+ *
+ * The sensor keeps its own copy of every template, and until now nothing here
+ * could look at that copy or clear it. That mattered once a template ended up
+ * in the sensor with no matching row on the server: the reader went on
+ * matching it happily, the server answered FINGERPRINT_UNKNOWN, and there was
+ * no way to see what the sensor was holding, let alone remove it.
+ *
+ *   count  how many templates the sensor is storing
+ *   slots  which slot numbers those are
+ *   wipe   erase every template on the sensor
+ *
+ * `wipe` clears the sensor only. The server's records are untouched, so every
+ * teacher has to be enrolled again afterwards — which is the point: it is the
+ * way back to the sensor and the server agreeing with each other.
+ */
+void handleConsole() {
+  if (!Serial.available()) return;
+
+  String command = Serial.readStringUntil('\n');
+  command.trim();
+  command.toLowerCase();
+
+  if (command.length() == 0) return;
+
+  if (command == "count") {
+    finger.getTemplateCount();
+    Serial.printf("\nSensor holds %d template(s).\n", finger.templateCount);
+    return;
+  }
+
+  if (command == "slots") {
+    Serial.println("\nOccupied slots:");
+    int found = 0;
+
+    /* No bulk "list" exists in the R307 protocol, so each slot is probed by
+     * asking the sensor to load it. Capped at 200 to keep this quick — a
+     * bench sensor never holds more. */
+    for (uint16_t slot = 1; slot <= 200; slot++) {
+      if (finger.loadModel(slot) == FINGERPRINT_OK) {
+        Serial.printf("  slot %d\n", slot);
+        found++;
+      }
+    }
+
+    if (found == 0) Serial.println("  (none)");
+    Serial.printf("Total: %d\n", found);
+    return;
+  }
+
+  if (command == "wipe") {
+    Serial.println("\nErasing every template on the sensor…");
+
+    if (finger.emptyDatabase() == FINGERPRINT_OK) {
+      finger.getTemplateCount();
+      Serial.printf("Done — sensor now holds %d template(s).\n", finger.templateCount);
+      Serial.println("Re-enrol every teacher from Fingerprints in L-SIAMS.");
+    } else {
+      Serial.println("The sensor refused the erase. Check power and wiring, then try again.");
+    }
+
+    return;
+  }
+
+  Serial.printf("\nUnknown command \"%s\". Try: count, slots, wipe\n", command.c_str());
+}
+
 void loop() {
+  handleConsole();
+
   /* The heartbeat is a blocking HTTP request, and so is every poll below it.
    * A card held against the reader while one of them is in flight is not seen
    * — which is invisible from the outside and reads as a dead reader.

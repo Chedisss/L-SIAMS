@@ -186,7 +186,7 @@ final class FingerprintEnrollmentService
             // across the whole school, and only the server can see that. The
             // sensor is told which slot to write, and refusing a slot that is
             // already taken is then a server decision, not a firmware one.
-            $slot = self::nextFreeSlot($db, $deviceRowId);
+            $slot = self::slotFor($db, $deviceRowId, $teacherId);
 
             $requestId = (int) $db->insert('fingerprint_enrollment_requests', [
                 'teacher_id'         => $teacherId,
@@ -237,6 +237,49 @@ final class FingerprintEnrollmentService
      * there — and handing the same slot to the next registration would have the
      * sensor overwrite one person's finger with another's.
      */
+    /**
+     * The slot this enrolment should write to.
+     *
+     * A teacher who already has a template re-enrols into the slot they
+     * already own. The sensor's store overwrites that slot in place, so the
+     * old template is genuinely replaced.
+     *
+     * Allocating a fresh slot instead — which is what happened before — left
+     * the previous template sitting in the sensor with nothing pointing at it.
+     * fingerprint_templates holds one row per teacher and it was updated to the
+     * new slot, so the old one became invisible to the server while remaining
+     * perfectly matchable by the reader. The same finger then matched slot 1 on
+     * one scan and slot 2 on the next, depending on which stored copy scored
+     * higher, and a scan that landed on the orphan was refused as
+     * FINGERPRINT_UNKNOWN — a finger that was genuinely enrolled, rejected
+     * because it matched the wrong copy of itself. Every re-enrolment made it
+     * worse by adding another copy.
+     *
+     * Only the teacher's own slot is reused. A capture taken before the teacher
+     * row exists has nobody to look up and still takes the next free slot.
+     */
+    private static function slotFor(Database $db, int $deviceRowId, ?int $teacherId): int
+    {
+        if ($teacherId !== null) {
+            $owned = $db->scalar(
+                // Prefer this device's own record if the teacher somehow has
+                // more than one; the slot number is what the sensor here uses.
+                'SELECT sensor_template_id
+                   FROM fingerprint_templates
+                  WHERE teacher_id = :teacher
+                  ORDER BY (enrolled_device_row_id = :device) DESC, fingerprint_id DESC
+                  LIMIT 1',
+                ['teacher' => $teacherId, 'device' => $deviceRowId]
+            );
+
+            if ($owned !== null) {
+                return (int) $owned;
+            }
+        }
+
+        return self::nextFreeSlot($db, $deviceRowId);
+    }
+
     private static function nextFreeSlot(Database $db, int $deviceRowId): int
     {
         // 'abandoned' belongs here as much as the in-flight states. Its template
