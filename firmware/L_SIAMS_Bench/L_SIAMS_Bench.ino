@@ -1265,6 +1265,82 @@ static void diagnoseWifi() {
   Serial.println("  That leaves the password — check case, and l/1/I and O/0.");
 }
 
+/* ------------------------------------------------------- config sanity -- */
+
+/**
+ * Catch the values that were never filled in.
+ *
+ * Each one below has cost a debugging session. A placeholder SERVER_URL
+ * produces "HTTP -1" from a board that is otherwise perfect, which reads as a
+ * network fault and sends people to the firewall; a placeholder API_KEY
+ * produces a storm of 401s that reads as a rotation problem. The sketch knows
+ * the shipped defaults and can say so before anything else runs, which turns
+ * an afternoon into one line.
+ *
+ * Warnings only. A board with a placeholder still boots, still reports its
+ * MAC, and still runs its reader checks — all of which are useful while the
+ * rest is being filled in.
+ */
+static void checkConfig() {
+  uint8_t problems = 0;
+
+  if (strcmp(WIFI_SSID, "YOUR_WIFI_NAME") == 0) {
+    Serial.println("CONFIG: WIFI_SSID is still the placeholder.");
+    problems++;
+  }
+
+  /* The shipped example address. Nobody's PC is ever actually on it, and
+   * leaving it produces a connection refused that looks like a firewall. */
+  if (strstr(SERVER_URL, "192.168.0.100") != nullptr) {
+    Serial.println("CONFIG: SERVER_URL is still the example address (192.168.0.100).");
+    Serial.println("        Put your PC's own address here — start.bat prints it as");
+    Serial.println("        \"On other devices\". Every request fails with HTTP -1 until you do.");
+    problems++;
+  }
+
+  if (strstr(SERVER_URL, "localhost") != nullptr || strstr(SERVER_URL, "127.0.0.1") != nullptr) {
+    Serial.println("CONFIG: SERVER_URL points at localhost, which to this board means");
+    Serial.println("        this board. It has to be the PC's address on the network.");
+    problems++;
+  }
+
+  /* http://x.x.x.x:8080 — the colon after the host is what a missing port
+   * looks like, and a port typed as :080 is the same mistake once removed. */
+  const char *hostStart = strstr(SERVER_URL, "//");
+  const char *portMark  = hostStart == nullptr ? nullptr : strchr(hostStart + 2, ':');
+
+  if (portMark == nullptr) {
+    Serial.println("CONFIG: SERVER_URL has no port. It must end in :8080 (or whatever");
+    Serial.println("        port start.bat reports) — without it the board tries port 80.");
+    problems++;
+  } else if (portMark[1] == '0') {
+    /* :080 rather than :8080. It parses, it connects to port 80, and nothing
+     * is listening there — so it fails exactly like a wrong address. */
+    Serial.printf("CONFIG: SERVER_URL's port is \"%s\", which starts with a zero.\n", portMark + 1);
+    Serial.println("        :080 is the usual way :8080 gets mistyped, and it silently");
+    Serial.println("        connects to port 80 instead, where nothing is listening.");
+    problems++;
+  }
+
+  if (strncmp(API_KEY, "lsk_xxxx", 8) == 0 || strchr(API_KEY, '.') == nullptr) {
+    Serial.println("CONFIG: API_KEY is not a real key. It looks like lsk_<id>.<secret>");
+    Serial.println("        and comes from the provisioning file. Every signed request");
+    Serial.println("        will be refused with API_KEY_INVALID until it is right.");
+    problems++;
+  }
+
+  if (strncmp(HMAC_SECRET, "zzzz", 4) == 0) {
+    Serial.println("CONFIG: HMAC_SECRET is still the placeholder.");
+    problems++;
+  }
+
+  if (problems > 0) {
+    Serial.println("        API_KEY and HMAC_SECRET must come from the SAME download —");
+    Serial.println("        each download replaces the pair the server holds.");
+    Serial.println();
+  }
+}
+
 /* ------------------------------------------------- fingerprint discovery -- */
 
 /**
@@ -1360,6 +1436,8 @@ void setup() {
   Serial.println();
   Serial.println("L-SIAMS bench terminal — RFID + fingerprint");
   Serial.println("------------------------------------------");
+
+  checkConfig();
 
   /* ---- RFID ---- */
   SPI.begin();
