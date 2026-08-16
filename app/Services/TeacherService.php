@@ -659,6 +659,141 @@ final class TeacherService
         );
     }
 
+    /**
+     * The sections a teacher actually teaches, one row each.
+     *
+     * Derived from schedules rather than teacher_sections, matching how the
+     * rest of the portal scopes a teacher: teacher_sections records who *may*
+     * be given a section, a schedule records who *has* it. A teacher assigned
+     * to a section they hold no class for has no roster to look at.
+     *
+     * A section taught for two subjects is still one section, so the subjects
+     * are collapsed into the row rather than duplicating the class.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function sectionsForTeacher(int $teacherId): array
+    {
+        return Database::instance()->select(
+            "SELECT sec.section_id,
+                    sec.section_code,
+                    sec.section_name,
+                    gl.grade_level_code,
+                    gl.grade_level_name,
+                    GROUP_CONCAT(DISTINCT sub.subject_code ORDER BY sub.subject_code SEPARATOR ', ') AS subject_codes,
+                    COUNT(DISTINCT sch.subject_id) AS subject_count,
+                    (SELECT COUNT(*) FROM students st
+                      WHERE st.section_id = sec.section_id
+                        AND st.deleted_at IS NULL AND st.status = 'active') AS student_count,
+                    (SELECT COUNT(*) FROM students st
+                      WHERE st.section_id = sec.section_id
+                        AND st.deleted_at IS NULL AND st.status = 'active'
+                        AND NOT EXISTS (SELECT 1 FROM rfid_cards rc
+                                         WHERE rc.student_id = st.student_id
+                                           AND rc.status = 'active')) AS without_card
+               FROM schedules sch
+               JOIN sections sec    ON sec.section_id = sch.section_id
+               JOIN grade_levels gl ON gl.grade_level_id = sec.grade_level_id
+               JOIN subjects sub    ON sub.subject_id = sch.subject_id
+              WHERE sch.teacher_id = :teacher
+                AND sch.status = 'active'
+                AND sch.deleted_at IS NULL
+                AND sec.deleted_at IS NULL
+              GROUP BY sec.section_id, sec.section_code, sec.section_name,
+                       gl.grade_level_code, gl.grade_level_name, gl.numeric_level
+              ORDER BY gl.numeric_level, sec.section_code",
+            ['teacher' => $teacherId]
+        );
+    }
+
+    /**
+     * One section's roster, or null if this teacher does not teach it.
+     *
+     * The ownership test is the first thing that happens and it runs against
+     * the teacher id from the session, so a section id typed into the URL
+     * cannot reach a colleague's class. Returning null rather than throwing
+     * lets the controller answer 404 — which section ids exist is not
+     * something a teacher needs to learn by probing.
+     *
+     * Attendance is counted only for this teacher's own schedules in this
+     * section. A student taught by two teachers has two different rates, and
+     * blending them would describe neither class.
+     *
+     * @return array{section:array<string,mixed>,students:list<array<string,mixed>>}|null
+     */
+    public static function sectionRoster(int $teacherId, int $sectionId): ?array
+    {
+        $db = Database::instance();
+
+        $section = $db->selectOne(
+            "SELECT sec.section_id, sec.section_code, sec.section_name, sec.capacity,
+                    gl.grade_level_code, gl.grade_level_name,
+                    GROUP_CONCAT(DISTINCT sub.subject_code ORDER BY sub.subject_code SEPARATOR ', ') AS subject_codes
+               FROM schedules sch
+               JOIN sections sec    ON sec.section_id = sch.section_id
+               JOIN grade_levels gl ON gl.grade_level_id = sec.grade_level_id
+               JOIN subjects sub    ON sub.subject_id = sch.subject_id
+              WHERE sch.teacher_id = :teacher
+                AND sch.section_id = :section
+                AND sch.status = 'active'
+                AND sch.deleted_at IS NULL
+                AND sec.deleted_at IS NULL
+              GROUP BY sec.section_id, sec.section_code, sec.section_name, sec.capacity,
+                       gl.grade_level_code, gl.grade_level_name",
+            ['teacher' => $teacherId, 'section' => $sectionId]
+        );
+
+        if ($section === null) {
+            return null;
+        }
+
+        $students = $db->select(
+            // A student with no active card cannot be marked present at all —
+            // the terminal has nothing to read. Surfacing it here is the point
+            // of the page: the teacher sees it before the first class rather
+            // than when the tap does not happen.
+            "SELECT st.student_id, st.student_number, st.first_name, st.middle_name,
+                    st.last_name, st.suffix, st.gender, st.photo_path,
+                    st.guardian_name, st.guardian_contact,
+                    rc.card_uid,
+                    (SELECT COUNT(*) FROM attendance_records ar
+                      WHERE ar.student_id = st.student_id
+                        AND ar.section_id = :section2
+                        AND ar.teacher_id = :teacher2) AS meetings,
+                    (SELECT COUNT(*) FROM attendance_records ar
+                      WHERE ar.student_id = st.student_id
+                        AND ar.section_id = :section3
+                        AND ar.teacher_id = :teacher3
+                        AND ar.final_status IN ('Present', 'Late')) AS attended
+               FROM students st
+               LEFT JOIN rfid_cards rc
+                      ON rc.student_id = st.student_id AND rc.status = 'active'
+              WHERE st.section_id = :section
+                AND st.deleted_at IS NULL
+                AND st.status = 'active'
+              ORDER BY st.last_name, st.first_name",
+            [
+                'section'  => $sectionId,
+                'section2' => $sectionId,
+                'section3' => $sectionId,
+                'teacher2' => $teacherId,
+                'teacher3' => $teacherId,
+            ]
+        );
+
+        foreach ($students as $index => $student) {
+            $meetings = (int) $student['meetings'];
+
+            // Null rather than 0% when the class has not met: a student who has
+            // had no opportunity to attend has not attended badly.
+            $students[$index]['attendance_rate'] = $meetings === 0
+                ? null
+                : (int) round(((int) $student['attended'] / $meetings) * 100);
+        }
+
+        return ['section' => $section, 'students' => $students];
+    }
+
     public static function nextEmployeeNumber(): string
     {
         $year = Clock::now()->format('Y');

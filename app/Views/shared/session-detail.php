@@ -42,9 +42,16 @@ foreach ($roster as $entry) {
     'subtitle'    => $session['section_code'] . ' · ' . $session['subject_name'] . ' · Room ' . $session['room_number']
         . ' · ' . $session['teacher_name'],
     'breadcrumbs' => $crumbs,
-    'actions'     => $isOpen
-        ? '<button class="btn btn-danger" id="close-session"><i class="fa-solid fa-lock"></i> Close session</button>'
-        : '<span class="badge badge-neutral">Closed ' . e(format_datetime($session['closed_at'])) . '</span>',
+    // The roster link is teacher-only: this page is shared, and an
+    // administrator following it would land on a teacher route they have no
+    // access to. Admins reach the same students through Students.
+    'actions'     => ($isTeacher
+            ? '<a class="btn btn-secondary" href="/teacher/sections/' . (int) $session['section_id'] . '">'
+              . '<i class="fa-solid fa-users-rectangle"></i> Section roster</a>'
+            : '')
+        . ($isOpen
+            ? '<button class="btn btn-danger" id="close-session"><i class="fa-solid fa-lock"></i> Close session</button>'
+            : '<span class="badge badge-neutral">Closed ' . e(format_datetime($session['closed_at'])) . '</span>'),
 ]); ?>
 
 <div class="grid grid--4 mb-3">
