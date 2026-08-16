@@ -1798,13 +1798,41 @@ void handleConsole() {
   if (command == "wipe") {
     Serial.println("\nErasing every template on the sensor…");
 
-    if (finger.emptyDatabase() == FINGERPRINT_OK) {
-      finger.getTemplateCount();
-      Serial.printf("Done — sensor now holds %d template(s).\n", finger.templateCount);
-      Serial.println("Re-enrol every teacher from Fingerprints in L-SIAMS.");
-    } else {
-      Serial.println("The sensor refused the erase. Check power and wiring, then try again.");
+    uint8_t erased = finger.emptyDatabase();
+
+    if (erased != FINGERPRINT_OK) {
+      Serial.printf("The sensor refused the erase (code %d). Check power and wiring.\n", erased);
+      return;
     }
+
+    /* Believing the OK is not enough. A sensor whose flash has stopped
+     * accepting writes acknowledges the command and keeps every template, and
+     * that is indistinguishable from success unless the count is read back.
+     *
+     * It is worth catching precisely, because it is the difference between a
+     * sensor that needs its templates re-enrolled and a sensor that needs
+     * replacing — and enrolling into flash that cannot be written is what
+     * produces a template stored "successfully" that no search can ever find. */
+    finger.getTemplateCount();
+
+    if (finger.templateCount == 0) {
+      Serial.println("Done — the sensor is empty.");
+      Serial.println("Re-enrol every teacher from Fingerprints in L-SIAMS.");
+      return;
+    }
+
+    Serial.printf("The sensor accepted the erase and still holds %d template(s).\n",
+                  finger.templateCount);
+    Serial.println();
+    Serial.println("That is a hardware fault, and a conclusive one: the flash is not");
+    Serial.println("accepting writes. Every enrolment will report success and store");
+    Serial.println("nothing findable, which is why the same finger keeps coming back");
+    Serial.println("as not recognised however many times it is enrolled.");
+    Serial.println();
+    Serial.println("Try once: unplug the sensor's power completely, wait five seconds,");
+    Serial.println("reconnect, and run wipe again. If the count still will not reach 0,");
+    Serial.println("this R307 needs replacing — no change to the code or the wiring");
+    Serial.println("will fix it.");
 
     return;
   }
