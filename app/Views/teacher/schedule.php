@@ -58,7 +58,14 @@ $columns  = array_merge($weekdays, $weekend);
                                 <span class="cell-primary"><?= e($schedule['subject_name']) ?></span>
                                 <span class="cell-muted mono"><?= e($schedule['subject_code']) ?></span>
                             </td>
-                            <td><span class="badge badge-primary"><?= e($schedule['section_code']) ?></span></td>
+                            <td>
+                                <?php /* Straight to the roster: the question that follows "when do I
+                                         teach this" is almost always "who is in it". */ ?>
+                                <a class="badge badge-primary" href="/teacher/sections/<?= e($schedule['section_id']) ?>"
+                                   title="See who is in this section">
+                                    <?= e($schedule['section_code']) ?>
+                                </a>
+                            </td>
                             <td class="text-sm"><?= e($schedule['room_number']) ?><span class="text-muted"> · <?= e($schedule['building']) ?></span></td>
                             <td class="text-sm"><?= e(format_time($schedule['start_time'])) ?> + <?= e($schedule['late_threshold_minutes']) ?>m</td>
                             <td class="text-sm"><?= e(format_time($schedule['time_in_window_close'])) ?></td>
@@ -93,7 +100,12 @@ $columns  = array_merge($weekdays, $weekend);
                                         </div>
                                         <div class="timetable__subject"><?= e($schedule['subject_code']) ?></div>
                                         <div class="timetable__meta">
-                                            <?= e($schedule['section_code']) ?> · Room <?= e($schedule['room_number']) ?>
+                                            <?php /* The weekly grid is the default view, so the roster
+                                                     has to be reachable from here and not only from the
+                                                     daily table. */ ?>
+                                            <a href="/teacher/sections/<?= e($schedule['section_id']) ?>"
+                                               title="See who is in this section"><?= e($schedule['section_code']) ?></a>
+                                            · Room <?= e($schedule['room_number']) ?>
                                         </div>
                                         <div class="timetable__meta text-xs">
                                             Late after <?= e($schedule['late_threshold_minutes']) ?> min ·

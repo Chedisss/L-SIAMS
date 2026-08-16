@@ -48,6 +48,8 @@ $teacherMenu = [
     'Teaching' => [
         ['/teacher',            'fa-gauge-high',     'Dashboard'],
         ['/teacher/schedule',   'fa-calendar-days',  'My Schedule'],
+        // Schedule says when, sections say who, attendance says what happened.
+        ['/teacher/sections',   'fa-users-rectangle', 'My Sections'],
         ['/teacher/attendance', 'fa-clipboard-user', 'Attendance'],
         ['/teacher/sessions',   'fa-clock-rotate-left', 'My Sessions'],
     ],

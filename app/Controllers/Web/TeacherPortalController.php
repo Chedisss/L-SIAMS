@@ -49,6 +49,50 @@ final class TeacherPortalController extends Controller
         ]);
     }
 
+    /**
+     * The classes this teacher takes, as classes rather than as timeslots.
+     *
+     * The schedule answers when, the sessions answer what happened; neither
+     * answers who is in the room, which is the question asked when no class is
+     * running.
+     */
+    public function sections(Request $request): Response
+    {
+        $teacherId = $this->requireTeacherId();
+
+        return $this->view('teacher.sections', [
+            'pageTitle' => 'My Sections',
+            'sections'  => TeacherService::sectionsForTeacher($teacherId),
+        ]);
+    }
+
+    /**
+     * One section's roster.
+     *
+     * The section id arrives from the URL, so it is never trusted: the service
+     * resolves it against this teacher's own schedules and answers null for
+     * anything else. That is reported as 404 rather than 403 — a teacher has
+     * no business learning which section ids exist by probing for the
+     * difference between "not yours" and "not there".
+     */
+    public function sectionRoster(Request $request): Response
+    {
+        $roster = TeacherService::sectionRoster(
+            $this->requireTeacherId(),
+            $request->routeInt('id')
+        );
+
+        if ($roster === null) {
+            throw new \App\Core\Exceptions\HttpException(404, 'NOT_FOUND', 'Section not found.');
+        }
+
+        return $this->view('teacher.section-roster', [
+            'pageTitle' => $roster['section']['section_code'] . ' — Roster',
+            'section'   => $roster['section'],
+            'students'  => $roster['students'],
+        ]);
+    }
+
     public function schedule(Request $request): Response
     {
         $teacherId = $this->requireTeacherId();
