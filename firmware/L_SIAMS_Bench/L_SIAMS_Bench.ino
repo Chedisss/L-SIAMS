@@ -1463,7 +1463,39 @@ void setup() {
                 known ? (stable ? "(ok)" : "(known version but UNSTABLE - see below)")
                       : "<-- NOT a version any MFRC522 reports");
 
+  /* The version register alone cannot separate a faulty chip from an odd
+   * clone, and that distinction decides whether to keep debugging or buy a
+   * replacement. The chip's own self test can: it runs a known input through
+   * the internal CRC engine and compares the result against the signature NXP
+   * burned into the part. Passing it is proof the silicon works.
+   *
+   * Run here rather than in a separate sketch because this is the sketch
+   * people actually flash, and a diagnostic nobody runs answers nothing. */
   if (!known || !stable) {
+    Serial.print("  Chip self test: ");
+    Serial.println(rfid.PCD_PerformSelfTest()
+      ? "PASSED — the silicon is genuine and working, so the odd\n"
+        "                  version is cosmetic. Cards should read; if they do not,\n"
+        "                  the antenna or the 3.3 V supply is the next suspect."
+      : "FAILED — the chip cannot produce its own signature.\n"
+        "                  With the reads consistent, that means the module itself is\n"
+        "                  faulty. No wiring change will fix it.");
+
+    /* The self test leaves the chip reset and idle; without this everything
+     * afterwards fails and looks like a second, separate fault. */
+    rfid.PCD_Init();
+    delay(50);
+
+    /* A chip that answers every register read with its transmitter switched
+     * off will never see a card, and nothing else here would mention it. */
+    byte tx = rfid.PCD_ReadRegister(MFRC522::TxControlReg);
+
+    if ((tx & 0x03) != 0x03) {
+      Serial.printf("  Antenna: OFF (TxControlReg 0x%02X) — switching it on.\n", tx);
+      rfid.PCD_AntennaOn();
+      delay(10);
+    }
+
     /* Said plainly because the alternative is hours spent on the card. */
     Serial.println("  The reader is not talking properly, so NO card will ever read.");
     Serial.println("  Real values are 0x91, 0x92 or 0x88. 0x00 and 0xFF mean nothing is");
