@@ -81,6 +81,10 @@ final class DeviceApiController extends Controller
             'uptime'      => $request->int('uptime', 0),
             'battery'     => $request->has('battery') ? $request->int('battery') : null,
             'free_heap'   => $request->has('free_heap') ? $request->int('free_heap') : null,
+            // What the fingerprint sensor says it is holding. Absent from
+            // older firmware, and absent is not the same as zero: one means
+            // the terminal did not say, the other that it said "nothing".
+            'fp_templates' => $request->has('fp_templates') ? $request->int('fp_templates') : null,
         ]);
 
         return $this->json($result, 'Heartbeat received.');

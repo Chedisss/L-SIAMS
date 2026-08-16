@@ -60,6 +60,10 @@ final class FingerprintController extends Controller
             // to the far end of the building to stand in front of it.
             'devices'     => FingerprintEnrollmentService::captureDevices(),
             'nextSlot'    => FingerprintService::nextAvailableSlot(),
+            // A sensor holding something other than what these rows describe
+            // is the one failure this page could not previously show: every
+            // teacher reads "Active" while the reader recognises nobody.
+            'mismatches'  => FingerprintService::sensorMismatches(),
         ]);
     }
 

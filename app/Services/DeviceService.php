@@ -523,7 +523,7 @@ final class DeviceService
         $queueDepth = (int) ($payload['queue'] ?? $payload['queue_count'] ?? 0);
         $wasOffline = (string) $device['status'] === 'offline';
 
-        $db->update('devices', [
+        $columns = [
             'last_heartbeat_at' => $now,
             'last_seen_ip'      => RequestContext::ip(),
             'ip_address'        => RequestContext::ip(),
@@ -534,7 +534,17 @@ final class DeviceService
             'battery_percent'   => isset($payload['battery']) ? (int) $payload['battery'] : null,
             'status'            => 'active',
             'updated_at'        => $now,
-        ], ['id' => $deviceRowId]);
+        ];
+
+        // Only written when the terminal actually reported. Firmware that
+        // predates the field must not have its last known count overwritten
+        // with a null that would read as "the sensor is unknown again".
+        if (isset($payload['fp_templates'])) {
+            $columns['sensor_template_count'] = max(0, (int) $payload['fp_templates']);
+            $columns['sensor_reported_at']    = $now;
+        }
+
+        $db->update('devices', $columns, ['id' => $deviceRowId]);
 
         $db->insert('device_heartbeats', [
             'device_row_id'    => $deviceRowId,

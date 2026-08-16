@@ -476,6 +476,16 @@ static void sendHeartbeat() {
   request["uptime"]      = (int) (millis() / 1000);
   request["free_heap"]   = (int) ESP.getFreeHeap();
 
+  /* What the sensor is actually holding. The server records which teacher owns
+   * which slot but has never been able to see the templates themselves, so the
+   * two could disagree — a sensor erased, or one holding a print whose
+   * enrolment never finished — with nothing on any screen saying so, and the
+   * only symptom a reader that recognises nobody. Sending the count lets the
+   * Fingerprints page compare the two and say which way they differ. */
+  if (finger.getTemplateCount() == FINGERPRINT_OK) {
+    request["fp_templates"] = (int) finger.templateCount;
+  }
+
   String body;
   serializeJson(request, body);
 
