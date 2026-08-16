@@ -133,7 +133,12 @@ $__view->start('content');
                             <td class="text-sm"><?= e($record['room_number']) ?></td>
                             <td class="nowrap"><?= e(format_time($record['time_in'])) ?></td>
                             <td class="nowrap">
-                                <?php if ($record['time_out'] === null): ?>
+                                <?php if ($record['time_out'] === null && $record['time_in'] === null): ?>
+                                    <?php /* No arrival, so nothing is pending. The badge on a
+                                             row already marked Absent claimed the school was
+                                             waiting for a tap-out that is never coming. */ ?>
+                                    <span class="text-muted">—</span>
+                                <?php elseif ($record['time_out'] === null): ?>
                                     <span class="text-warning">—<span class="badge badge-warning ml-1" style="margin-left:.3rem">pending</span></span>
                                 <?php else: ?>
                                     <?= e(format_time($record['time_out'])) ?>
