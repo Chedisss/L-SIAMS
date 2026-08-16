@@ -891,18 +891,39 @@ static void handleFingerprint() {
    *
    * NOTFOUND is left alone: that is the sensor doing its job and saying this
    * print is not in its library, which no retry will change. */
-  uint8_t search = finger.fingerFastSearch();
+  /* Three outcomes have to be told apart, and only one of them is "unknown
+   * finger".
+   *
+   * fingerFastSearch() sends HighSpeedSearch (0x1B). Plenty of sensors sold as
+   * R307 are clones that do not implement it, or cover a narrower page range
+   * than they claim, and answer with an error rather than a polite "no match".
+   * The ordinary Search (0x04) is the same operation without the optimisation
+   * and is supported everywhere.
+   *
+   * Beyond that, a search is the longest and most power-hungry thing the
+   * sensor does, and it is where a marginal 5 V rail or a noisy UART pair
+   * shows up first. The give-away is a confirmation code outside the
+   * datasheet's table — 0x17 is not a code the R307 defines, so a reply
+   * carrying it was corrupted in transit rather than sent deliberately.
+   * Corruption is transient, so it is worth asking again.
+   *
+   * NOTFOUND is never retried: that is the sensor working correctly and saying
+   * this print is not in its library, and asking again cannot change it. */
+  uint8_t search   = finger.fingerFastSearch();
+  bool    usedSlow = false;
 
-  if (search != FINGERPRINT_OK && search != FINGERPRINT_NOTFOUND) {
-    uint8_t retried = finger.fingerSearch();
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (search == FINGERPRINT_OK || search == FINGERPRINT_NOTFOUND) break;
 
-    if (retried == FINGERPRINT_OK) {
-      Serial.printf("\nFinger: fast search failed (sensor said %d); ordinary search worked.\n", search);
-      Serial.println("        This sensor does not handle HighSpeedSearch properly — harmless, now handled.");
-      search = retried;
-    } else {
-      search = retried;
-    }
+    delay(60);
+    search   = finger.fingerSearch();
+    usedSlow = true;
+  }
+
+  if (search == FINGERPRINT_OK && usedSlow) {
+    Serial.println("\nFinger: the fast search failed but the ordinary one worked.");
+    Serial.println("        Harmless in itself, but it usually means the sensor's 5 V rail");
+    Serial.println("        or its RX/TX pair is marginal. Worth tightening before it bites.");
   }
 
   if (search == FINGERPRINT_NOTFOUND) {
@@ -912,12 +933,17 @@ static void handleFingerprint() {
   }
 
   if (search != FINGERPRINT_OK) {
-    /* Not "unknown finger" — the sensor could not complete the search at all.
-     * Saying so points at wiring and power rather than at re-enrolling, which
-     * is what the old message sent people off to do. */
-    Serial.printf("\nFinger: the sensor could not search (code %d)\n", search);
-    Serial.println("        That is a sensor fault, not an unknown finger. Check the R307's");
-    Serial.println("        5 V supply and the RX/TX pair, then type 'count' to test it.");
+    /* Not "unknown finger" — the sensor could not complete the search, three
+     * times running. Saying so points at power and wiring rather than sending
+     * somebody off to enrol the same finger again, which cannot help. */
+    Serial.printf("\nFinger: the sensor could not search — 3 attempts, last code %d\n", search);
+    Serial.println("        Codes outside the datasheet's table mean the reply was corrupted,");
+    Serial.println("        not that the finger is unknown. Enrolling again will not help.");
+    Serial.println("        Check, in this order:");
+    Serial.println("          1. The R307's red wire on VIN (5 V), not 3V3 — it browns out mid-search.");
+    Serial.println("          2. A shared GND between the sensor and the ESP32.");
+    Serial.println("          3. The RX/TX pair re-seated; breadboard contacts are the usual culprit.");
+    Serial.println("          4. Powering the ESP32 from a wall charger rather than a laptop port.");
     return;
   }
 
