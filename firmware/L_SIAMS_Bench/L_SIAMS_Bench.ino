@@ -854,8 +854,45 @@ static void handleFingerprint() {
     return;
   }
 
-  if (finger.fingerFastSearch() != FINGERPRINT_OK) {
-    Serial.println("\nFinger: NOT RECOGNISED (no matching template on this sensor)");
+  /* Two different failures were being reported as one.
+   *
+   * fingerFastSearch() sends HighSpeedSearch (0x1B). Plenty of sensors sold as
+   * R307 are clones that either do not implement it or implement it over a
+   * narrower page range than they claim, and they answer with an error rather
+   * than a polite "no match". The ordinary Search (0x04) is the same operation
+   * without the optimisation and is supported everywhere, so an error from the
+   * fast path is worth retrying on the slow one before telling somebody their
+   * finger is unknown.
+   *
+   * NOTFOUND is left alone: that is the sensor doing its job and saying this
+   * print is not in its library, which no retry will change. */
+  uint8_t search = finger.fingerFastSearch();
+
+  if (search != FINGERPRINT_OK && search != FINGERPRINT_NOTFOUND) {
+    uint8_t retried = finger.fingerSearch();
+
+    if (retried == FINGERPRINT_OK) {
+      Serial.printf("\nFinger: fast search failed (sensor said %d); ordinary search worked.\n", search);
+      Serial.println("        This sensor does not handle HighSpeedSearch properly — harmless, now handled.");
+      search = retried;
+    } else {
+      search = retried;
+    }
+  }
+
+  if (search == FINGERPRINT_NOTFOUND) {
+    Serial.println("\nFinger: NOT RECOGNISED (this print is not in the sensor's library)");
+    Serial.println("        Type 'count' to see how many templates the sensor is holding.");
+    return;
+  }
+
+  if (search != FINGERPRINT_OK) {
+    /* Not "unknown finger" — the sensor could not complete the search at all.
+     * Saying so points at wiring and power rather than at re-enrolling, which
+     * is what the old message sent people off to do. */
+    Serial.printf("\nFinger: the sensor could not search (code %d)\n", search);
+    Serial.println("        That is a sensor fault, not an unknown finger. Check the R307's");
+    Serial.println("        5 V supply and the RX/TX pair, then type 'count' to test it.");
     return;
   }
 
