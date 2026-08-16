@@ -1265,6 +1265,92 @@ static void diagnoseWifi() {
   Serial.println("  That leaves the password — check case, and l/1/I and O/0.");
 }
 
+/* ------------------------------------------------- fingerprint discovery -- */
+
+/**
+ * Find the sensor when it is not on the configured pins.
+ *
+ * Two things go wrong here and neither announces itself. UART2 is not fixed
+ * to GPIO 16 and 17 — a WROVER has no such pins at all, and most boards print
+ * them as RX2 and TX2, so people wire to whatever is free. And TX/RX cross,
+ * which means a perfectly reasonable straight-through wiring leaves both ends
+ * talking and neither listening.
+ *
+ * Rather than asking which pins were used, try the plausible ones. Each pair
+ * is tried both ways round, so a reversed connection is found and named
+ * instead of reported as a missing sensor. Both baud rates are tried too:
+ * 57600 is the R307's default, but modules ship configured at 9600 and the
+ * symptom is identical.
+ *
+ * Only runs when the configured pins fail, so a correctly wired board never
+ * waits for it.
+ */
+static bool findFingerprintSensor() {
+  struct Pair { uint8_t rx; uint8_t tx; };
+
+  /* Pairs worth trying: free on a typical dev board, not strapping pins, not
+   * input-only, and not already used by the reader or the USB serial. */
+  static const Pair candidates[] = {
+    { PIN_FINGER_TX, PIN_FINGER_RX },   /* configured, but crossed */
+    { 16, 17 }, { 17, 16 },
+    { 25, 26 }, { 26, 25 },
+    { 32, 33 }, { 33, 32 },
+    { 27, 14 }, { 14, 27 },
+    { 13,  4 }, {  4, 13 },
+  };
+
+  static const uint32_t bauds[] = { 57600, 9600 };
+
+  Serial.println("R307: not on the configured pins — looking for it...");
+
+  for (uint8_t b = 0; b < sizeof(bauds) / sizeof(bauds[0]); b++) {
+    for (uint8_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+      const Pair &p = candidates[i];
+
+      /* Skip the pair already tried by the caller, at its baud rate. */
+      if (bauds[b] == FINGERPRINT_BAUD && p.rx == PIN_FINGER_RX && p.tx == PIN_FINGER_TX) {
+        continue;
+      }
+
+      fingerSerial.end();
+      delay(20);
+      fingerSerial.begin(bauds[b], SERIAL_8N1, p.rx, p.tx);
+      delay(120);
+
+      if (!finger.verifyPassword()) continue;
+
+      Serial.println();
+      Serial.printf("R307: FOUND on RX %d, TX %d at %lu baud.\n",
+                    p.rx, p.tx, (unsigned long) bauds[b]);
+      Serial.println();
+      Serial.println("  It works from here, but the sketch is still configured for");
+      Serial.println("  something else. Make it permanent so the next boot does not");
+      Serial.println("  have to search:");
+      Serial.println();
+      Serial.printf("      #define PIN_FINGER_RX      %d\n", p.rx);
+      Serial.printf("      #define PIN_FINGER_TX      %d\n", p.tx);
+
+      if (bauds[b] != FINGERPRINT_BAUD) {
+        Serial.printf("      #define FINGERPRINT_BAUD   %lu\n", (unsigned long) bauds[b]);
+      }
+
+      Serial.println();
+      return true;
+    }
+  }
+
+  /* Nothing answered anywhere — put the port back where it was configured so
+   * the failure message below describes the state the board is actually in. */
+  fingerSerial.end();
+  delay(20);
+  fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
+  delay(100);
+
+  Serial.println("R307: no answer on any pin pair tried.");
+
+  return false;
+}
+
 /* ----------------------------------------------------------------- setup -- */
 
 void setup() {
@@ -1318,6 +1404,14 @@ void setup() {
   /* ---- Fingerprint ---- */
   fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
   delay(100);
+
+  /* Configured pins first, always. The search below only runs when those do
+   * not answer, so a board that is wired as documented behaves exactly as it
+   * did and pays nothing for the search existing. */
+  if (!finger.verifyPassword() && findFingerprintSensor()) {
+    /* findFingerprintSensor() has already reopened the port on whatever it
+     * found and said so; fall through into the success branch. */
+  }
 
   if (finger.verifyPassword()) {
     finger.getTemplateCount();
