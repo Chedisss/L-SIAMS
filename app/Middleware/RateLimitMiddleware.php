@@ -28,7 +28,7 @@ final class RateLimitMiddleware extends Middleware
     {
         $bucket = $this->parameters[0] ?? 'web';
 
-        /** @var array{limit:int,window:int,burst?:int}|null $config */
+        /** @var array{limit:int,window:int}|null $config */
         $config = Config::get('security.rate_limit.' . $bucket);
 
         if ($config === null) {
