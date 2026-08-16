@@ -356,6 +356,16 @@ final class AttendanceSessionService
      * matters when a large section closes: 45 individual round trips inside a
      * held transaction would extend the lock window unnecessarily.
      *
+     * The departure is no_time_out, not pending. Pending means "in the room,
+     * has not tapped out yet" — it is the state a present student sits in
+     * while the class runs, and every screen renders it as still being there.
+     * On somebody who never arrived it produced a row reading absent and still
+     * in the room at the same time. no_time_out says the only thing that is
+     * actually true: there is no tap-out, and there is never going to be one.
+     *
+     * The final status is unaffected either way — resolve() short-circuits on
+     * an absent arrival before it looks at the departure at all.
+     *
      * @param array<string,mixed> $session
      */
     private static function generateAbsences(Database $db, array $session): int
@@ -373,7 +383,7 @@ final class AttendanceSessionService
                  (session_id, student_id, section_id, grade_level_id, subject_id, teacher_id, classroom_id,
                   arrival_status, departure_status, final_status, created_at, updated_at)
              SELECT :session, st.student_id, :section, :grade, :subject, :teacher, :classroom,
-                    \'absent\', \'pending\', \'Absent\', :now, :now
+                    \'absent\', \'no_time_out\', \'Absent\', :now, :now
                FROM students st
               WHERE st.section_id = :section
                 AND st.deleted_at IS NULL

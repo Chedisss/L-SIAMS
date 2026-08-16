@@ -121,7 +121,13 @@ $__view->start('content');
                             <td class="text-sm"><?= e($record['room_number']) ?></td>
                             <td class="nowrap text-sm"><?= e(format_time($record['time_in'])) ?></td>
                             <td class="nowrap text-sm">
-                                <?php if ($record['time_out'] === null): ?>
+                                <?php if ($record['time_out'] === null && $record['time_in'] === null): ?>
+                                    <?php /* Never arrived, so there is nothing to leave. Reading
+                                             "still in room" off a missing tap-out alone put an
+                                             absent student in the room and marked them absent in
+                                             the same row. */ ?>
+                                    —
+                                <?php elseif ($record['time_out'] === null): ?>
                                     <span class="text-warning">still in room</span>
                                 <?php else: ?>
                                     <?= e(format_time($record['time_out'])) ?>
