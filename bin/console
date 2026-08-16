@@ -114,6 +114,7 @@ try {
         'schema:dump'         => commandSchemaDump(),
         'user:create-admin'   => commandCreateAdmin(),
         'user:purge'          => commandUserPurge($arguments, $flags),
+        'session:why'         => commandSessionWhy($arguments),
         default               => commandHelp(),
     };
 } catch (Throwable $e) {
@@ -144,6 +145,7 @@ function commandHelp(): void
     out('    backup                  Create an encrypted database backup');
     out('    security:audit-keys     Verify no weak RNG exists in the key path');
     out('    doctor                  Diagnose this installation and report problems');
+    out('    session:why [device]    Explain why a terminal will not open a session now');
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
     out('    db:import <file.sql>    Import a .sql file or phpMyAdmin export (--fresh drops first)');
     out('    backup:decrypt <file>   Turn a .sql.gz.enc backup back into readable SQL');
@@ -1322,7 +1324,12 @@ function commandTimeShift(array $arguments, array $flags): void
     }
 
     if ($spec !== '' && !Clock::isValidOffset($spec)) {
-        fail('"' . $spec . '" is not a relative time PHP understands. Try "+2 hours" or "next monday 08:05".');
+        // "+8h" is the mistake worth naming: PHP parses it, ignores it, and
+        // leaves the clock where it was, so it used to be accepted and then
+        // quietly do nothing.
+        fail('"' . $spec . '" does not move the clock. Single-letter units are '
+           . 'silently ignored by PHP — write the unit out: "+8 hours", not "+8h"; '
+           . '"+30 minutes", not "+30m". "next monday 08:05" also works.');
     }
 
     $contents = (string) file_get_contents($envFile);
@@ -1569,6 +1576,208 @@ function restoreImmutabilityTriggers(Database $db): void
              SET MESSAGE_TEXT = 'Login history is permanent and cannot be deleted.';
          END"
     );
+}
+
+/**
+ * Work through every condition a fingerprint has to satisfy to open a session,
+ * and say which one is not met.
+ *
+ * "It does not start" has meant a different thing each time it has been said:
+ * the terminal throttled, the print matching a template the server had
+ * forgotten, no schedule covering the moment, the terminal bound to the wrong
+ * room. Each looks identical from the outside — a finger on the sensor and
+ * nothing happening — and each needed a different fix. The checks are all
+ * cheap; what was missing was somewhere to read them together.
+ *
+ * Deliberately read-only. It opens nothing and changes nothing, so it is safe
+ * to run against a system a class is waiting on.
+ *
+ * @param list<string> $arguments
+ */
+function commandSessionWhy(array $arguments): void
+{
+    $db       = Database::instance();
+    $selector = $arguments[0] ?? '';
+
+    $devices = $selector === ''
+        ? $db->select('SELECT device_row_id FROM v_device_status ORDER BY device_id')
+        : $db->select(
+            'SELECT device_row_id FROM v_device_status WHERE device_id = :sel OR device_row_id = :num',
+            ['sel' => $selector, 'num' => (int) $selector]
+        );
+
+    if ($devices === []) {
+        fail($selector === ''
+            ? 'No terminals are registered.'
+            : sprintf('No terminal matches "%s". Pass a device id, or nothing to check them all.', $selector));
+    }
+
+    $now = Clock::now();
+
+    heading('Right now');
+    out(sprintf('  %-22s %s', 'Server time', $now->format('D d M Y H:i:s')), 'grey');
+    out(sprintf('  %-22s %s', 'Day', $now->format('l')), 'grey');
+
+    if (Clock::isShifted()) {
+        out(sprintf('  %-22s %s (real time is %s)', 'Clock shift', 'ACTIVE', Clock::real()->format('D d M Y H:i:s')), 'yellow');
+    }
+
+    foreach ($devices as $row) {
+        $device = $db->selectOne(
+            'SELECT * FROM v_device_status WHERE device_row_id = :id',
+            ['id' => (int) $row['device_row_id']]
+        );
+
+        if ($device === null) {
+            continue;
+        }
+
+        heading(sprintf('%s — %s', (string) $device['device_id'], (string) $device['device_name']));
+
+        $blockers = [];
+
+        // --- the terminal itself ---
+        if ((string) $device['claim_status'] !== 'claimed') {
+            $blockers[] = 'The terminal has not claimed its key yet, so it cannot sign any request. '
+                        . 'Flash it with its provisioning file and let it claim.';
+        }
+
+        if ((string) $device['configured_status'] !== 'active') {
+            $blockers[] = sprintf('The terminal is set to "%s" rather than active.', $device['configured_status']);
+        }
+
+        $seen = $device['seconds_since_heartbeat'] === null
+            ? 'never'
+            : sprintf('%d s ago', (int) $device['seconds_since_heartbeat']);
+
+        out(sprintf('  %-22s %s', 'Claim', $device['claim_status']), 'grey');
+        out(sprintf('  %-22s %s (last heartbeat %s)', 'Health', $device['health'], $seen),
+            (string) $device['health'] === 'online' ? 'grey' : 'yellow');
+
+        if ((string) $device['health'] !== 'online') {
+            // Not fatal on its own — a verify arriving from a terminal that has
+            // been quiet still opens a session — but it is nearly always the
+            // visible end of something else, so it is worth saying plainly.
+            out('    A terminal that is not heartbeating is usually not reaching the server at all.', 'grey');
+            out('    Check its serial output: a 429 there means it is being throttled.', 'grey');
+        }
+
+        // --- the classroom binding ---
+        if ($device['classroom_id'] === null) {
+            $blockers[] = 'The terminal is not bound to a classroom. Schedules are matched by room, '
+                        . 'so an unbound terminal can never find one. Set the classroom on the device.';
+            out(sprintf('  %-22s %s', 'Classroom', 'NOT SET'), 'red');
+        } else {
+            out(sprintf('  %-22s %s (%s)', 'Classroom', $device['room_number'], $device['building']), 'grey');
+        }
+
+        // --- schedules for this room today ---
+        $today = $db->select(
+            "SELECT sch.schedule_id, sch.day_of_week, sch.start_time, sch.end_time, sch.status,
+                    sch.time_in_window_open, sch.time_out_window_close,
+                    sub.subject_code, sec.section_code,
+                    CONCAT(t.first_name, ' ', t.last_name) AS teacher_name,
+                    t.teacher_id, t.fingerprint_status
+               FROM schedules sch
+               JOIN subjects sub ON sub.subject_id = sch.subject_id
+               JOIN sections sec ON sec.section_id = sch.section_id
+               JOIN teachers t   ON t.teacher_id = sch.teacher_id
+              WHERE sch.classroom_id = :room
+                AND sch.day_of_week = :day
+                AND sch.deleted_at IS NULL
+              ORDER BY sch.start_time",
+            ['room' => $device['classroom_id'], 'day' => $now->format('l')]
+        );
+
+        out(sprintf('  %-22s %d for %s', 'Schedules in this room', count($today), $now->format('l')), 'grey');
+
+        if ($today === [] && $device['classroom_id'] !== null) {
+            $anyDay = (int) $db->scalar(
+                'SELECT COUNT(*) FROM schedules WHERE classroom_id = :room AND deleted_at IS NULL',
+                ['room' => $device['classroom_id']]
+            );
+
+            $blockers[] = $anyDay === 0
+                ? 'No schedule exists for this room at all. Create one in Schedules.'
+                : sprintf('This room has %d schedule(s), but none on a %s. A session can only open '
+                        . 'inside a scheduled class.', $anyDay, $now->format('l'));
+        }
+
+        // ScheduleService is the same code the fingerprint path uses, so an
+        // answer here is the answer the terminal will get.
+        $active = App\Services\ScheduleService::activeForDevice((int) $device['device_row_id'], $now);
+        $activeIds = array_map(static fn (array $s): int => (int) $s['schedule_id'], $active);
+
+        foreach ($today as $schedule) {
+            $isActive = in_array((int) $schedule['schedule_id'], $activeIds, true);
+
+            $opens = $now->setTime(0, 0)->modify($schedule['start_time'])
+                ->modify('-' . (int) $schedule['time_in_window_open'] . ' minutes');
+            $shuts = $now->setTime(0, 0)->modify($schedule['end_time'])
+                ->modify('+' . (int) $schedule['time_out_window_close'] . ' minutes');
+
+            out(sprintf('    %s %s %s  %s-%s  window %s-%s  %s',
+                $isActive ? '>' : ' ',
+                str_pad((string) $schedule['subject_code'], 10),
+                str_pad((string) $schedule['section_code'], 10),
+                substr((string) $schedule['start_time'], 0, 5),
+                substr((string) $schedule['end_time'], 0, 5),
+                $opens->format('H:i'),
+                $shuts->format('H:i'),
+                $isActive ? 'OPEN NOW' : 'not now'
+            ), $isActive ? 'green' : 'grey');
+
+            out(sprintf('        teacher %s, fingerprint %s, schedule %s',
+                $schedule['teacher_name'],
+                $schedule['fingerprint_status'] === 'enrolled' ? 'enrolled' : strtoupper((string) $schedule['fingerprint_status']),
+                $schedule['status']
+            ), 'grey');
+
+            if ($isActive) {
+                if ((string) $schedule['status'] !== 'active') {
+                    $blockers[] = sprintf('The class open right now (%s) is set to "%s", not active.',
+                        $schedule['subject_code'], $schedule['status']);
+                }
+
+                $template = $db->selectOne(
+                    'SELECT sensor_template_id, status FROM fingerprint_templates WHERE teacher_id = :t',
+                    ['t' => (int) $schedule['teacher_id']]
+                );
+
+                if ($template === null) {
+                    $blockers[] = sprintf('%s has no fingerprint enrolled, so nothing they scan can be '
+                                        . 'recognised. Enrol them in Fingerprints.', $schedule['teacher_name']);
+                } else {
+                    out(sprintf('        sensor slot %d (%s)', (int) $template['sensor_template_id'], $template['status']), 'grey');
+
+                    if ((string) $template['status'] !== 'active') {
+                        $blockers[] = sprintf("%s's fingerprint is %s rather than active.",
+                            $schedule['teacher_name'], $template['status']);
+                    }
+                }
+            }
+        }
+
+        if ($active === [] && $today !== []) {
+            $blockers[] = sprintf('A class is scheduled in this room today, but none covers %s. '
+                                . 'Wait for the window, or use time:shift to test.', $now->format('H:i'));
+        }
+
+        // --- verdict ---
+        if ($blockers === []) {
+            ok('Nothing is blocking a session. The assigned teacher scanning now should open one.');
+            out('  If it still refuses, the terminal\'s serial output carries the server\'s reason verbatim.', 'grey');
+        } else {
+            out('');
+            out('  Blocking:', 'red');
+
+            foreach ($blockers as $index => $blocker) {
+                out(sprintf('    %d. %s', $index + 1, $blocker), 'yellow');
+            }
+        }
+    }
+
+    out('');
 }
 
 function commandSchemaDump(): void

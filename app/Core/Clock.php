@@ -87,7 +87,20 @@ final class Clock
         return self::$offset = $configured;
     }
 
-    /** Whether a string is something DateTimeImmutable::modify() accepts. */
+    /**
+     * Whether a string is an offset that actually moves the clock.
+     *
+     * Parsing is not enough. PHP accepts "+8h" and "+30m" without complaint and
+     * then ignores them — the single-letter unit is not one it knows, so the
+     * result comes back unchanged rather than failing. An offset like that
+     * passed validation, was written to .env, and reported itself as active
+     * while the application went on running at real time, which is a worse
+     * outcome than refusing it: the shift appears to be in force and every
+     * conclusion drawn from the test is wrong.
+     *
+     * So the test is not "did modify() survive" but "did the clock move".
+     * "+8 hours" and "+2hours" both move it; "+8h" does not, and is refused.
+     */
     public static function isValidOffset(string $spec): bool
     {
         if (trim($spec) === '') {
@@ -95,7 +108,10 @@ final class Clock
         }
 
         try {
-            return (new DateTimeImmutable('now'))->modify($spec) !== false;
+            $reference = new DateTimeImmutable('2026-01-01 00:00:00');
+            $shifted   = $reference->modify($spec);
+
+            return $shifted !== false && $shifted->getTimestamp() !== $reference->getTimestamp();
         } catch (\Throwable) {
             return false;
         }
