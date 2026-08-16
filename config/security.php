@@ -83,7 +83,31 @@ return [
 
     // --- Rate limiting -----------------------------------------------------
     'rate_limit' => [
-        'device'   => ['limit' => 60,  'window' => 60,  'burst' => 30],
+        // Counted per terminal, not per IP (see RateLimitMiddleware::subject).
+        //
+        // 60/minute was below what one idle terminal legitimately sends, so
+        // every terminal throttled itself within a minute of being switched on
+        // and stayed throttled. The firmware's own cadence:
+        //
+        //     card-enrolment poll   every 2 s   = 30 / min
+        //     fingerprint poll      every 2 s   = 30 / min
+        //     heartbeat             every 30 s  =  2 / min
+        //                                       ─────────
+        //                            idle total = 62 / min
+        //
+        // Two over the limit before a single card is presented. A class then
+        // adds a tap per student arriving and another leaving, so a busy
+        // minute reaches roughly 110.
+        //
+        // 240 leaves better than 2x headroom over that peak while still
+        // catching what the limit is actually for: a terminal stuck in a retry
+        // loop, which sends thousands a minute, not hundreds.
+        //
+        // The cost of getting this wrong is not a slow terminal. A throttled
+        // heartbeat marks the device offline, a throttled poll misses an
+        // enrolment request, and a throttled verify leaves the teacher unable
+        // to open a session at all.
+        'device'   => ['limit' => 240, 'window' => 60],
         'login'    => ['limit' => 10,  'window' => 300],
         'api_user' => ['limit' => 300, 'window' => 60],
         'web'      => ['limit' => 600, 'window' => 60],
