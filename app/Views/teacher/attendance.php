@@ -85,7 +85,7 @@ $__view->start('content');
 <div class="card">
     <div class="card__header">
         <h2 class="card__title">Records</h2>
-        <span class="text-sm text-muted"><?= e(number_format($pagination['total'])) ?> total</span>
+        <span class="text-sm text-muted" id="attendance-total"><?= e(number_format($pagination['total'])) ?> total</span>
     </div>
 
     <div class="card__body--flush">
@@ -187,10 +187,20 @@ $__view->start('scripts');
     });
 
     // A tap in one of this teacher's own classes arrives on their channel.
+    //
+    // Announcing it and leaving the table showing the state before the tap
+    // told the teacher something had happened and then made them reload to
+    // find out what. The rows are pulled fresh instead, with the filters and
+    // page they are already looking at still applied.
+    //
+    // Debounced because a class taps in together: thirty students through the
+    // reader in a minute should be a handful of refreshes, not thirty.
+    const refreshRows = LS.util.debounce(() => {
+        LS.util.swapFromServer(['attendance-body', 'attendance-total']);
+    }, 700);
+
     ['attendance.time_in', 'attendance.time_out'].forEach((event) => {
-        LS.realtime.on(event, () => {
-            LS.toast.info('New attendance recorded in one of your classes.');
-        });
+        LS.realtime.on(event, refreshRows);
     });
 })();
 </script>
