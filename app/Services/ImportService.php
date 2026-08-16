@@ -547,25 +547,147 @@ final class ImportService
             throw new ValidationException(['file' => ['Only .csv and .xlsx files may be imported.']]);
         }
 
-        // Trust the sniffed type, not the client-declared one.
-        $finfo = new \finfo(FILEINFO_MIME_TYPE);
-        $mime  = (string) $finfo->file($tmpName);
+        // What the file *is* gets decided by opening it, not by asking libmagic
+        // what it looks like.
+        //
+        // A MIME allowlist was the wrong gate in both directions. Magic
+        // databases differ between platforms: the same workbook that reports as
+        // an OOXML spreadsheet on one machine comes back as
+        // application/octet-stream on a stock XAMPP install, so real files from
+        // real schools were being refused and logged as attacks. In the other
+        // direction it was too generous — every .xlsx is a ZIP, so allowing
+        // application/zip admitted any archive at all with the extension
+        // changed.
+        //
+        // Opening the file settles both. A workbook has to actually be a
+        // workbook, and a CSV has to actually be text.
+        if ($extension === 'xlsx') {
+            self::assertRealWorkbook($tmpName, (string) ($file['name'] ?? '?'));
+        } else {
+            self::assertRealTextFile($tmpName, (string) ($file['name'] ?? '?'));
+        }
+    }
 
-        $allowed = [
-            'text/plain', 'text/csv', 'application/csv', 'application/vnd.ms-excel',
-            'application/zip', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    /**
+     * Prove an upload is an OOXML spreadsheet by looking inside it.
+     *
+     * Checked against the parts the format requires rather than the bytes at
+     * the front, so a renamed .zip — or a .docx, which shares the container and
+     * the signature — is refused here instead of parsing to nothing later.
+     */
+    private static function assertRealWorkbook(string $path, string $displayName): void
+    {
+        $handle    = @fopen($path, 'rb');
+        $signature = $handle === false ? '' : (string) fread($handle, 4);
+
+        if ($handle !== false) {
+            fclose($handle);
+        }
+
+        // Every .xlsx is a ZIP container; an empty archive starts "PK\x05\x06".
+        if ($signature !== "PK\x03\x04") {
+            self::rejectUpload($displayName, 'xlsx', 'the file is not a ZIP container, so it cannot be a workbook');
+        }
+
+        $zip = new \ZipArchive();
+
+        if ($zip->open($path) !== true) {
+            self::rejectUpload($displayName, 'xlsx', 'the archive could not be opened');
+        }
+
+        // These two are mandatory in every workbook Excel, LibreOffice or this
+        // application writes. A .docx carries [Content_Types].xml but has
+        // word/document.xml where xl/workbook.xml would be.
+        foreach (['[Content_Types].xml', 'xl/workbook.xml'] as $required) {
+            if ($zip->locateName($required) === false) {
+                $zip->close();
+                self::rejectUpload($displayName, 'xlsx', sprintf('the archive has no %s', $required));
+            }
+        }
+
+        // Only two entries are ever read, and both are read whole, so an entry
+        // that unpacks to gigabytes is worth refusing before it is touched.
+        $budget = 64 * 1024 * 1024;
+
+        foreach (['xl/sharedStrings.xml', 'xl/worksheets/sheet1.xml'] as $entry) {
+            $stat = $zip->statName($entry);
+
+            if (is_array($stat) && (int) $stat['size'] > $budget) {
+                $zip->close();
+                self::rejectUpload($displayName, 'xlsx', sprintf(
+                    '%s expands to %d bytes, past the %d byte limit',
+                    $entry,
+                    (int) $stat['size'],
+                    $budget
+                ));
+            }
+        }
+
+        $zip->close();
+    }
+
+    /**
+     * Prove an upload is text rather than something binary wearing .csv.
+     *
+     * A NUL byte is the giveaway: no CSV a spreadsheet exports contains one,
+     * and every executable, archive and image is full of them.
+     */
+    private static function assertRealTextFile(string $path, string $displayName): void
+    {
+        $handle = @fopen($path, 'rb');
+        $head   = $handle === false ? '' : (string) fread($handle, 8192);
+
+        if ($handle !== false) {
+            fclose($handle);
+        }
+
+        if ($head === '') {
+            throw new ValidationException(['file' => ['The file is empty.']]);
+        }
+
+        // Named signatures are tested before the NUL check purely for the
+        // message: these formats are all full of NUL bytes and would be caught
+        // either way, but "this is a legacy .xls" tells somebody what to do
+        // next and "the file is not text" does not.
+        //
+        // Two-byte signatures are deliberately absent — "MZ" would reject a
+        // perfectly good CSV whose first cell happens to start with those
+        // letters, and a real executable is caught by the NUL test below.
+        $signatures = [
+            "PK\x03\x04"       => 'a ZIP archive or Office document',
+            "\x7fELF"          => 'a Linux executable',
+            '%PDF'             => 'a PDF',
+            "\x89PNG"          => 'a PNG image',
+            "\xff\xd8\xff"     => 'a JPEG image',
+            "\xd0\xcf\x11\xe0" => 'a legacy .xls workbook',
         ];
 
-        if (!in_array($mime, $allowed, true)) {
-            SecurityLogService::log(
-                SecurityLogService::MALICIOUS_UPLOAD,
-                'high',
-                sprintf('Rejected upload "%s" with sniffed MIME type %s.', $file['name'] ?? '?', $mime),
-                ['declared_extension' => $extension, 'detected_mime' => $mime]
-            );
-
-            throw new ValidationException(['file' => ['The file contents do not match a spreadsheet or CSV file.']]);
+        foreach ($signatures as $magic => $what) {
+            if (str_starts_with($head, $magic)) {
+                self::rejectUpload($displayName, 'csv', sprintf('the file is %s', $what));
+            }
         }
+
+        if (str_contains($head, "\0")) {
+            self::rejectUpload($displayName, 'csv', 'the file contains NUL bytes, so it is not text');
+        }
+    }
+
+    private static function rejectUpload(string $displayName, string $extension, string $reason): never
+    {
+        SecurityLogService::log(
+            SecurityLogService::MALICIOUS_UPLOAD,
+            'high',
+            sprintf('Rejected upload "%s": %s.', $displayName, $reason),
+            ['declared_extension' => $extension, 'reason' => $reason]
+        );
+
+        throw new ValidationException(['file' => [sprintf(
+            'This does not look like a %s file — %s. Check that the right file was picked, and that it was saved as %s rather than renamed.',
+            $extension === 'xlsx' ? 'workbook' : 'CSV',
+            $reason,
+            $extension === 'xlsx' ? 'Excel Workbook (.xlsx)' : 'CSV'
+        )]]);
     }
 
     private static function isValidDate(string $value): bool
