@@ -261,6 +261,18 @@ final class XlsxWriter
      */
     public static function read(string $path): array
     {
+        // Same reason as build(): without ext-zip there is no way to open the
+        // container. Left unguarded this surfaced as "Class ZipArchive not
+        // found" — a 500 and an unexplained "an unexpected error occurred" on
+        // the import screen, where the real answer is one line of php.ini.
+        if (!class_exists(ZipArchive::class)) {
+            throw new RuntimeException(
+                'Reading .xlsx files needs the PHP "zip" extension, which is not enabled. '
+                . 'Enable extension=zip in php.ini and restart the web server, '
+                . 'or save the spreadsheet as CSV and import that instead.'
+            );
+        }
+
         $zip = new ZipArchive();
 
         if ($zip->open($path) !== true) {
