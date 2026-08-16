@@ -32,6 +32,11 @@ final class RfidController extends Controller
             return $this->json(['rows' => $result['rows'], 'pagination' => $meta]);
         }
 
+        // The queue is rendered from the server on first paint so the page is
+        // useful before any script runs; every later refresh goes through
+        // withoutCard() below.
+        $queue = RfidService::studentsWithoutCard([], 1, self::QUEUE_PAGE_SIZE);
+
         return $this->view('admin.rfid.index', [
             'pageTitle'  => 'RFID Cards',
             'cards'      => $result['rows'],
@@ -41,6 +46,41 @@ final class RfidController extends Controller
             'sections'   => AcademicStructureService::sections(['status' => 'active']),
             'readers'    => RfidEnrollmentService::captureDevices(),
             'students'   => StudentService::paginate(['status' => 'active'], 1, 1000)['rows'],
+            'queue'      => $queue['rows'],
+            'queueTotal' => $queue['total'],
+            'queueSize'  => self::QUEUE_PAGE_SIZE,
+        ]);
+    }
+
+    /**
+     * How many of the waiting students to hand over at a time.
+     *
+     * Large enough that a whole section arrives in one response — a section is
+     * capped well below this — so working down one class never pages.
+     */
+    private const QUEUE_PAGE_SIZE = 100;
+
+    /**
+     * The students still waiting for a card.
+     *
+     * Answers JSON only: the panel refreshes itself after every issue, and
+     * reloading the whole page between two students would throw away the
+     * reader selection and the operator's place in the list.
+     */
+    public function withoutCard(Request $request): Response
+    {
+        $page   = max(1, $request->int('page', 1));
+        $result = RfidService::studentsWithoutCard([
+            'section_id' => $request->int('section_id', 0) ?: null,
+            'search'     => $request->string('search', ''),
+        ], $page, self::QUEUE_PAGE_SIZE);
+
+        return $this->json([
+            'rows'      => $result['rows'],
+            'total'     => $result['total'],
+            'page'      => $page,
+            'per_page'  => self::QUEUE_PAGE_SIZE,
+            'has_more'  => $result['total'] > $page * self::QUEUE_PAGE_SIZE,
         ]);
     }
 

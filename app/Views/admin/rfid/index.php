@@ -16,17 +16,97 @@ $__view->start('content');
 
 <div class="grid grid--6 mb-3">
     <?php foreach ([
-        ['Active', $summary['active'], 'success'], ['Inactive', $summary['inactive'], 'neutral'],
-        ['Lost', $summary['lost'], 'warning'], ['Blacklisted', $summary['blacklisted'], 'danger'],
-        ['No card', $summary['unassigned_students'], 'warning'], ['Unknown', $summary['unknown_pending'], 'info'],
-    ] as [$label, $value, $tone]): ?>
+        ['Active', $summary['active'], 'success', null], ['Inactive', $summary['inactive'], 'neutral', null],
+        ['Lost', $summary['lost'], 'warning', null], ['Blacklisted', $summary['blacklisted'], 'danger', null],
+        // Kept in step with the waiting list below, which empties as cards are
+        // issued without the page being reloaded.
+        ['No card', $summary['unassigned_students'], 'warning', 'stat-no-card'],
+        ['Unknown', $summary['unknown_pending'], 'info', null],
+    ] as [$label, $value, $tone, $id]): ?>
         <div class="stat">
             <div>
                 <div class="stat__label"><?= e($label) ?></div>
-                <div class="stat__value <?= $value > 0 && in_array($tone, ['danger', 'warning'], true) ? 'text-' . e($tone) : '' ?>"><?= e($value) ?></div>
+                <div class="stat__value <?= $value > 0 && in_array($tone, ['danger', 'warning'], true) ? 'text-' . e($tone) : '' ?>"
+                     <?= $id === null ? '' : 'id="' . e($id) . '"' ?>><?= e($value) ?></div>
             </div>
         </div>
     <?php endforeach; ?>
+</div>
+
+<!-- Waiting for a card ------------------------------------------------------->
+<!--
+    The work queue after a roster import. Importing a section leaves every
+    student in it with a complete record and no card, and the only way to find
+    them used to be to already know their names. Filtering this to the section
+    that is standing in front of the reader turns issuing a class's cards into
+    one list that empties as you go.
+-->
+<div class="card mb-3" id="queue-card">
+    <div class="card__header">
+        <h2 class="card__title">
+            Waiting for a card
+            <span class="badge badge-warning" id="queue-count"><?= e($queueTotal) ?></span>
+        </h2>
+
+        <div class="flex gap-1">
+            <select id="q-section" class="input-sm" aria-label="Filter waiting students by section">
+                <option value="">All sections</option>
+                <?php foreach ($sections as $section): ?>
+                    <option value="<?= e($section['section_id']) ?>"><?= e($section['section_code']) ?></option>
+                <?php endforeach; ?>
+            </select>
+            <input type="search" id="q-search" class="input-sm" placeholder="Name or student number…" aria-label="Search waiting students">
+        </div>
+    </div>
+
+    <div class="card__body--flush">
+        <div class="table-wrap" style="max-height:420px;overflow-y:auto">
+            <table class="data">
+                <thead>
+                <tr><th>Student</th><th>Section</th><th>Grade</th><th></th><th style="width:150px"></th></tr>
+                </thead>
+                <tbody id="queue-rows">
+                <?php if ($queue === []): ?>
+                    <tr id="queue-empty"><td colspan="5" class="text-center text-muted" style="padding:1.75rem">
+                        Every active student holds a card.
+                    </td></tr>
+                <?php else: ?>
+                    <?php foreach ($queue as $student): ?>
+                        <tr data-queue-row="<?= e($student['student_id']) ?>">
+                            <td>
+                                <a href="/admin/students/<?= e($student['student_id']) ?>">
+                                    <?= e($student['last_name']) ?>, <?= e($student['first_name']) ?>
+                                </a>
+                                <div class="text-xs text-muted mono"><?= e($student['student_number']) ?></div>
+                            </td>
+                            <td><?= $student['section_code']
+                                ? '<span class="badge badge-primary">' . e($student['section_code']) . '</span>'
+                                : '<span class="text-subtle">no section</span>' ?></td>
+                            <td class="text-sm"><?= e($student['grade_level_code'] ?? '—') ?></td>
+                            <td>
+                                <?php if ((int) $student['previous_cards'] > 0): ?>
+                                    <span class="badge badge-neutral" title="A card was issued before and is no longer active">replacement</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="nowrap">
+                                <?php /* The row carries the id and nothing else. The name is looked up
+                                         from the queue the script already holds, so no student-supplied
+                                         text is ever written into an HTML attribute. */ ?>
+                                <button class="btn btn-primary btn-sm" data-issue-to="<?= e($student['student_id']) ?>">
+                                    <i class="fa-solid fa-wifi"></i> Issue card
+                                </button>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card__footer text-xs text-muted" id="queue-more" <?= $queueTotal > $queueSize ? '' : 'hidden' ?>>
+        Showing the first <?= e($queueSize) ?> of <?= e($queueTotal) ?>. Filter by section to see the rest.
+    </div>
 </div>
 
 <form class="filter-bar" data-no-submit>
@@ -166,6 +246,17 @@ $__view->start('content');
                     reader off attendance duty and holds it open, so a card presented at any moment is
                     read. No class session is needed, and nothing is recorded as attendance.
                 </div>
+            </div>
+
+            <!--
+                Only shown when the modal was opened from the waiting list. The
+                student is already chosen and the next one is named, so the
+                operator can see their place in the queue without closing the
+                dialog to look.
+            -->
+            <div class="alert alert-success hidden" id="r-queue-note">
+                <span class="alert__icon"><i class="fa-solid fa-list-check"></i></span>
+                <div class="alert__body" id="r-queue-note-text"></div>
             </div>
 
             <div class="form-group">
@@ -318,6 +409,97 @@ window.rfidTable = {
         searchStudents(this.value.trim(), document.getElementById('a-student'));
     }, 300));
 
+    /* ---- the waiting list -------------------------------------------------- */
+
+    // Held in memory so "who is next" can be answered between two students
+    // without another round trip, and so the row just issued can leave the list
+    // the moment the card is written rather than at the next page load.
+    let queue = <?= json_encode(array_map(static fn (array $s): array => [
+        'student_id'     => (int) $s['student_id'],
+        'student_number' => (string) $s['student_number'],
+        'name'           => $s['last_name'] . ', ' . $s['first_name'],
+        'section_code'   => $s['section_code'],
+        'grade_level_code' => $s['grade_level_code'],
+        'previous_cards' => (int) $s['previous_cards'],
+    ], $queue), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+
+    let queueTotal = <?= (int) $queueTotal ?>;
+    const QUEUE_SIZE = <?= (int) $queueSize ?>;
+
+    const queueRows  = document.getElementById('queue-rows');
+    const queueCount = document.getElementById('queue-count');
+    const queueMore  = document.getElementById('queue-more');
+
+    function renderQueue() {
+        queueCount.textContent = queueTotal;
+
+        const noCard = document.getElementById('stat-no-card');
+        if (noCard) {
+            noCard.textContent = queueTotal;
+            noCard.classList.toggle('text-warning', queueTotal > 0);
+        }
+
+        queueMore.hidden = queueTotal <= QUEUE_SIZE;
+        queueMore.textContent = 'Showing the first ' + QUEUE_SIZE + ' of ' + queueTotal
+            + '. Filter by section to see the rest.';
+
+        if (queue.length === 0) {
+            queueRows.innerHTML = '<tr><td colspan="5" class="text-center text-muted" style="padding:1.75rem">'
+                + (queueTotal === 0
+                    ? 'Every active student holds a card.'
+                    : 'No waiting student matches this filter.')
+                + '</td></tr>';
+            return;
+        }
+
+        // Only the numeric id goes into an attribute. LS.util.escape is built on
+        // textContent, which leaves a double quote alone — correct for element
+        // text, wrong for an attribute value, and a student's name is data an
+        // administrator (or an imported spreadsheet) supplies. The click handler
+        // reads the name out of this array by id instead.
+        queueRows.innerHTML = queue.map((student) =>
+            '<tr data-queue-row="' + Number(student.student_id) + '">'
+            + '<td><a href="/admin/students/' + Number(student.student_id) + '">' + LS.util.escape(student.name) + '</a>'
+            + '<div class="text-xs text-muted mono">' + LS.util.escape(student.student_number) + '</div></td>'
+            + '<td>' + (student.section_code
+                ? '<span class="badge badge-primary">' + LS.util.escape(student.section_code) + '</span>'
+                : '<span class="text-subtle">no section</span>') + '</td>'
+            + '<td class="text-sm">' + LS.util.escape(student.grade_level_code || '—') + '</td>'
+            + '<td>' + (student.previous_cards > 0
+                ? '<span class="badge badge-neutral" title="A card was issued before and is no longer active">replacement</span>'
+                : '') + '</td>'
+            + '<td class="nowrap"><button class="btn btn-primary btn-sm" data-issue-to="' + Number(student.student_id) + '">'
+            + '<i class="fa-solid fa-wifi"></i> Issue card</button></td></tr>').join('');
+    }
+
+    async function loadQueue() {
+        try {
+            const response = await LS.http.get('/admin/rfid/without-card', {
+                section_id: document.getElementById('q-section').value,
+                search:     document.getElementById('q-search').value.trim(),
+            });
+
+            // Normalised to a number here so every later identity check is a
+            // plain === against the same type, whatever the driver hands back.
+            queue = (response.data.rows || []).map((row) => ({
+                student_id:       Number(row.student_id),
+                student_number:   row.student_number,
+                name:             row.last_name + ', ' + row.first_name,
+                section_code:     row.section_code,
+                grade_level_code: row.grade_level_code,
+                previous_cards:   Number(row.previous_cards),
+            }));
+
+            queueTotal = response.data.total;
+            renderQueue();
+        } catch (error) {
+            LS.toast.fromError(error);
+        }
+    }
+
+    document.getElementById('q-section').addEventListener('change', loadQueue);
+    document.getElementById('q-search').addEventListener('input', LS.util.debounce(loadQueue, 400));
+
     /* ---- issue by tapping ------------------------------------------------- */
 
     const readSteps = {
@@ -338,6 +520,115 @@ window.rfidTable = {
     let readRequestId = null;
     let readPollTimer = null;
     let readDeviceId  = null;
+
+    // Queue mode is the same dialog driven from the waiting list: the student
+    // is already known, so the only thing left is the card itself. The manual
+    // path through the search box is untouched and still the way to issue a
+    // card to somebody who is not on the list — a replacement, or a student
+    // whose card was blacklisted an hour ago.
+    let queueMode      = false;
+    let armedStudentId = null;
+
+    /** Put one student into the picker and select them. */
+    function armStudent(student) {
+        const select = document.getElementById('r-student');
+        const option = document.createElement('option');
+
+        option.value       = student.student_id;
+        option.textContent = student.name + '  ·  ' + student.student_number
+            + (student.section_code ? '  ·  ' + student.section_code : '');
+        option.selected    = true;
+
+        select.innerHTML = '';
+        select.appendChild(option);
+
+        document.getElementById('r-student-search').value = '';
+        armedStudentId = Number(student.student_id);
+    }
+
+    function paintQueueNote(armedName, next) {
+        const note = document.getElementById('r-queue-note');
+
+        if (!queueMode) {
+            note.classList.add('hidden');
+            return;
+        }
+
+        const remaining = queue.length - (armedStudentId === null ? 0 : 1);
+
+        document.getElementById('r-queue-note-text').innerHTML =
+            '<strong>' + LS.util.escape(armedName) + '</strong> is next to receive a card.'
+            + (next
+                ? ' After this one, ' + remaining + ' still waiting — ' + LS.util.escape(next.name) + ' follows.'
+                : (remaining > 0
+                    ? ' ' + remaining + ' still waiting after this one.'
+                    : ' This is the last student waiting.'));
+
+        note.classList.remove('hidden');
+    }
+
+    /** The student below the armed one, wrapping to the top at the end. */
+    function nextInQueue() {
+        if (armedStudentId === null) return queue[0] || null;
+
+        const at = queue.findIndex((student) => student.student_id === armedStudentId);
+
+        return at === -1 ? (queue[0] || null) : (queue[at + 1] || null);
+    }
+
+    /**
+     * Drop the student whose card was just written and hand back whoever is
+     * now in their place, so the operator carries straight on down the list.
+     */
+    function advanceQueue(issuedId) {
+        const at = queue.findIndex((student) => student.student_id === Number(issuedId));
+
+        if (at === -1) {
+            renderQueue();
+            return queue[0] || null;
+        }
+
+        queue.splice(at, 1);
+        queueTotal = Math.max(0, queueTotal - 1);
+        renderQueue();
+
+        // queue[at] is the row that moved up into the gap; at the bottom of the
+        // list there is nothing below, so start again from the top rather than
+        // claiming the work is finished while names are still on screen.
+        return queue[at] || queue[0] || null;
+    }
+
+    document.addEventListener('click', (event) => {
+        const issue = event.target.closest('[data-issue-to]');
+
+        if (issue === null) return;
+
+        const student = queue.find((row) => row.student_id === Number(issue.dataset.issueTo));
+
+        if (!student) return;
+
+        queueMode = true;
+        armStudent(student);
+
+        showReadStep('device');
+        paintQueueNote(student.name, nextInQueue());
+        LS.modal.open('read-modal');
+
+        // The reader is remembered between students, so once it has been picked
+        // the only thing left to do is press the button.
+        const device = document.getElementById('r-device');
+        (device.value === '' ? device : readButtons.start).focus();
+    });
+
+    // Opening the dialog from the page header is the manual path: no student is
+    // implied, and any queue position from a previous run is dropped.
+    document.querySelectorAll('[data-modal-open="read-modal"]').forEach((button) => {
+        button.addEventListener('click', () => {
+            queueMode      = false;
+            armedStudentId = null;
+            document.getElementById('r-queue-note').classList.add('hidden');
+        });
+    });
 
     document.getElementById('r-student-search').addEventListener('input', LS.util.debounce(function () {
         searchStudents(this.value.trim(), document.getElementById('r-student'));
@@ -480,6 +771,8 @@ window.rfidTable = {
     readButtons.assign.addEventListener('click', async function () {
         LS.util.setBusy(this, true, 'Issuing…');
 
+        const issuedId = armedStudentId;
+
         try {
             // No student in the payload: the request already names one, and the
             // server issues to that one. Sending it again would only create a
@@ -491,14 +784,42 @@ window.rfidTable = {
             LS.toast.success(response.message);
             document.body.dataset.rfidIssued = '1';
 
-            // Back to the top: the next card belongs to the next student, so
-            // the next thing needed is their name.
             readRequestId = null;
+            document.getElementById('r-notes').value = '';
+            showReadStep('device');
+
+            if (queueMode) {
+                // Straight on to whoever is next: the card is written, the row
+                // leaves the list, and the reader stays selected. One press and
+                // one tap per student, without going back to a search box.
+                const next = advanceQueue(issuedId);
+
+                if (next === null) {
+                    queueMode      = false;
+                    armedStudentId = null;
+                    document.getElementById('r-queue-note').classList.add('hidden');
+                    document.getElementById('r-student').innerHTML =
+                        '<option value="">Search for a student above</option>';
+                    LS.toast.success('Every student on the list now holds a card.');
+                    return;
+                }
+
+                armStudent(next);
+                paintQueueNote(next.name, nextInQueue());
+                readButtons.start.focus();
+                return;
+            }
+
+            // Manual path, unchanged: the next card belongs to somebody whose
+            // name has not been given yet, so ask for it.
+            armedStudentId = null;
             document.getElementById('r-student').innerHTML = '<option value="">Search for a student above</option>';
             document.getElementById('r-student-search').value = '';
-            document.getElementById('r-notes').value = '';
             document.getElementById('r-student-search').focus();
-            showReadStep('device');
+
+            // The student who was just given a card may well be sitting in the
+            // list behind this dialog; take them out of it.
+            loadQueue();
         } catch (error) {
             LS.toast.fromError(error);
         } finally {
@@ -515,10 +836,14 @@ window.rfidTable = {
             try { await LS.http.post('/admin/rfid/read/' + readRequestId + '/cancel', {}); } catch (e) { /* it expires anyway */ }
         }
 
-        readRequestId = null;
+        readRequestId  = null;
+        queueMode      = false;
+        armedStudentId = null;
+        document.getElementById('r-queue-note').classList.add('hidden');
         showReadStep('device');
 
-        // Counts on the page are stale once a card has been issued.
+        // The waiting list has kept itself current throughout, but the card
+        // table behind it has not, so one reload at the end of the run.
         if (document.body.dataset.rfidIssued === '1') window.location.reload();
     });
 

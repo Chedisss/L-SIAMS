@@ -153,6 +153,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/rfid/read/{id:\d+}', RfidController::class . '@readStatus');
     $router->post('/rfid/read/{id:\d+}/assign', RfidController::class . '@assignRead');
     $router->post('/rfid/read/{id:\d+}/cancel', RfidController::class . '@cancelRead');
+    $router->get('/rfid/without-card', RfidController::class . '@withoutCard');
     $router->get('/rfid/history', RfidController::class . '@history');
     $router->get('/rfid/unknown', RfidController::class . '@unknown');
     $router->post('/rfid/unknown/{id:\d+}/resolve', RfidController::class . '@resolveUnknown');

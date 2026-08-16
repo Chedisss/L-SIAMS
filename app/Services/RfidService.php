@@ -390,4 +390,69 @@ final class RfidService
             'unknown_pending' => (int) $db->scalar("SELECT COUNT(*) FROM unknown_rfid_logs WHERE resolution = 'pending'"),
         ];
     }
+
+    /**
+     * Active students who hold no active card — the queue to work down after a
+     * roster import.
+     *
+     * The summary has counted these for a long time; this returns the names
+     * behind the count. Without it the only way to issue a card is to remember
+     * who still needs one and type their name into a search box, which for a
+     * freshly imported section means a few hundred searches and no way to tell
+     * what is left.
+     *
+     * "No active card" rather than "no card": a student whose card was lost or
+     * replaced has rows in rfid_cards but nothing they can tap with, and they
+     * need a card exactly as much as somebody who has never held one.
+     *
+     * Ordered by section then name so the list reads in the same order as the
+     * class list the cards are usually handed out from.
+     *
+     * @param  array<string,mixed> $filters
+     * @return array{rows:list<array<string,mixed>>,total:int}
+     */
+    public static function studentsWithoutCard(array $filters, int $page, int $perPage): array
+    {
+        $where = [
+            'st.deleted_at IS NULL',
+            "st.status = 'active'",
+            "NOT EXISTS (SELECT 1 FROM rfid_cards rc
+                          WHERE rc.student_id = st.student_id AND rc.status = 'active')",
+        ];
+
+        $bindings = [];
+
+        if (!empty($filters['section_id'])) {
+            $where[]                = 'st.section_id = :section_id';
+            $bindings['section_id'] = (int) $filters['section_id'];
+        }
+
+        if (!empty($filters['search'])) {
+            $where[] = "(st.student_number LIKE :search
+                         OR CONCAT(st.first_name, ' ', st.last_name) LIKE :search
+                         OR CONCAT(st.last_name, ' ', st.first_name) LIKE :search)";
+            $bindings['search'] = '%' . $filters['search'] . '%';
+        }
+
+        $db   = Database::instance();
+        $base = 'FROM students st
+                 LEFT JOIN sections sec ON sec.section_id = st.section_id
+                 LEFT JOIN grade_levels gl ON gl.grade_level_id = sec.grade_level_id
+                WHERE ' . implode(' AND ', $where);
+
+        $total = (int) $db->scalar("SELECT COUNT(*) {$base}", $bindings);
+
+        $rows = $db->select(
+            "SELECT st.student_id, st.student_number, st.first_name, st.middle_name,
+                    st.last_name, st.suffix, st.section_id,
+                    sec.section_code, gl.grade_level_code,
+                    (SELECT COUNT(*) FROM rfid_cards rc2 WHERE rc2.student_id = st.student_id) AS previous_cards
+             {$base}
+             ORDER BY sec.section_code IS NULL, sec.section_code, st.last_name, st.first_name
+             LIMIT " . max(1, $perPage) . ' OFFSET ' . max(0, ($page - 1) * $perPage),
+            $bindings
+        );
+
+        return ['rows' => $rows, 'total' => $total];
+    }
 }
