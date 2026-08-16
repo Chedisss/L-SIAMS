@@ -1,5 +1,18 @@
 # Sample import files
 
+## `student-import-G7-S1.csv`
+
+Ten students for section `G7-S1`, numbered `26-0002` upward so they sit behind
+`26-0001` without colliding.
+
+Its `grade_level_code` column is **empty on every row**, and that is the useful
+part to copy. The section is what places a student; the grade column is only
+cross-checked against it, and a code that does not match the section's own
+gets the row flagged. Leaving it blank skips the check entirely, so a file
+cannot fail on a column that was never load-bearing.
+
+Change `section_code` if you are importing a different class.
+
 ## `student-import-G7-RIZAL.csv` and `student-import-G7-RIZAL.xlsx`
 
 The same fifteen Grade 7 students for section `G7-RIZAL`, in both formats,

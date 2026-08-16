@@ -1,0 +1,11 @@
+﻿student_number,first_name,middle_name,last_name,suffix,gender,birthdate,email,address,guardian_name,guardian_contact,guardian_email,grade_level_code,section_code,card_uid,status
+26-0002,"Angelo Rafael",Santos,"Dela Peña",,Male,2013-02-18,angelo.delapena@gmail.com,"14 Sampaguita St., Barangay San Roque","Marissa Dela Peña",09171234501,marissa.delapena@gmail.com,,G7-S1,,active
+26-0003,"Kyla Marie",Bautista,Ocampo,,Female,2013-06-04,kyla.ocampo@gmail.com,"221 Mabini Ext., Barangay Poblacion","Ronaldo Ocampo",09171234502,ronaldo.ocampo@gmail.com,,G7-S1,,active
+26-0004,"John Lloyd",Cruz,Villanueva,,Male,2012-11-27,johnlloyd.villanueva@gmail.com,"8 Camia St., Barangay Malinta","Editha Villanueva",09171234503,editha.villanueva@gmail.com,,G7-S1,,active
+26-0005,"Mary Grace",Reyes,Aguilar,,Female,2013-09-12,marygrace.aguilar@gmail.com,"57 Narra Lane, Barangay Sta. Cruz","Benjamin Aguilar",09171234504,benjamin.aguilar@gmail.com,,G7-S1,,active
+26-0006,"Paulo Miguel",Torres,Manalo,Jr.,Male,2013-01-09,paulo.manalo@gmail.com,"33 Acacia Rd., Barangay Concepcion","Paulo Manalo",09171234505,paulo.manalo.sr@gmail.com,,G7-S1,,active
+26-0007,"Ella Jane",Mercado,Salazar,,Female,2013-04-25,ella.salazar@gmail.com,"102 Bonifacio St., Barangay Talon","Cristina Salazar",09171234506,cristina.salazar@gmail.com,,G7-S1,,active
+26-0008,"Mark Anthony",Gonzales,Trinidad,,Male,2013-08-16,mark.trinidad@gmail.com,"19 Kalachuchi St., Barangay Bayanan","Rogelio Trinidad",09171234507,rogelio.trinidad@gmail.com,,G7-S1,,active
+26-0009,"Nicole Ann",Navarro,Castillo,,Female,2013-03-30,nicole.castillo@gmail.com,"76 Del Pilar St., Barangay Tibag","Lourdes Castillo",09171234508,lourdes.castillo@gmail.com,,G7-S1,,active
+26-0010,"Josh Daniel",Alvarez,Ramirez,,Male,2013-07-21,josh.ramirez@gmail.com,"5 Dahlia St., Barangay Sto. Niño","Fernando Ramirez",09171234509,fernando.ramirez@gmail.com,,G7-S1,,active
+26-0011,"Althea Shane",Espiritu,Fajardo,,Female,2013-05-02,althea.fajardo@gmail.com,"88 Luna St., Barangay Maligaya","Wilma Fajardo",09171234510,wilma.fajardo@gmail.com,,G7-S1,,active
