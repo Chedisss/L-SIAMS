@@ -1622,6 +1622,13 @@ void setup() {
 void handleConsole() {
   if (!Serial.available()) return;
 
+  /* The Serial Monitor's line-ending dropdown decides whether a newline is
+   * ever sent. Set to "No line ending" there is none, and the default one
+   * second timeout would stall the whole loop — no card read, no heartbeat —
+   * every time somebody typed. 60 ms is longer than a line takes to arrive at
+   * 115200 baud and short enough not to matter if it never does. */
+  Serial.setTimeout(60);
+
   String command = Serial.readStringUntil('\n');
   command.trim();
   command.toLowerCase();
