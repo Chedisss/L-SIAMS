@@ -588,6 +588,42 @@ final class FingerprintService
      *                             not been bound to a teacher yet, and so has
      *                             no template row here to be seen through.
      */
+    /**
+     * Terminals whose sensor is not holding what the records say it should.
+     *
+     * The server stores which teacher owns which slot; the R307 stores the
+     * templates. Nothing kept the two honest, and they come apart quietly: a
+     * template stored while the completion callback was lost leaves the sensor
+     * holding a print with no row behind it, and erasing the sensor leaves
+     * rows describing prints that are gone. Both look identical on this page —
+     * every teacher "Active" — while the reader answers NOT RECOGNISED.
+     *
+     * The count now arrives on the heartbeat, so the two can simply be
+     * compared. Only a genuine disagreement is reported: a terminal that has
+     * never said (older firmware, or no heartbeat since the upgrade) is left
+     * alone rather than accused.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function sensorMismatches(): array
+    {
+        return Database::instance()->select(
+            "SELECT d.id AS device_row_id, d.device_id, d.device_name,
+                    c.room_number,
+                    d.sensor_template_count, d.sensor_reported_at,
+                    (SELECT COUNT(*) FROM fingerprint_templates fp
+                      WHERE fp.status = 'active'
+                        AND (fp.enrolled_device_row_id = d.id OR fp.enrolled_device_row_id IS NULL)
+                    ) AS expected
+               FROM devices d
+          LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
+              WHERE d.deleted_at IS NULL
+                AND d.sensor_template_count IS NOT NULL
+             HAVING d.sensor_template_count <> expected
+              ORDER BY d.device_id"
+        );
+    }
+
     public static function nextAvailableSlot(?int $deviceRowId = null, array $alsoTaken = []): int
     {
         $rows = Database::instance()->select(
