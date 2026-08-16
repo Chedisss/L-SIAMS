@@ -164,17 +164,41 @@ $counters = $overview['current_counters'];
         </div>
         <div class="card__body--flush">
             <?php if ($overview['todays_schedule'] === []): ?>
+                <?php /* "Enjoy the quiet" was true and unhelpful — a teacher looking
+                         at this wants to know when they are next expected, which is
+                         a question the schedule can answer. */ ?>
+                <?php $next = $overview['next_class'] ?? null; ?>
                 <?php $__view->include('partials.empty-state', [
                     'icon'  => 'fa-mug-hot',
                     'title' => 'No classes scheduled today',
-                    'text'  => 'Enjoy the quiet.',
+                    'text'  => $next === null
+                        ? 'You have no active classes on any day. If you were expecting one, ask the administration to check your schedule.'
+                        : sprintf(
+                            'Next: %s with %s in Room %s on %s at %s. You can scan from %s.',
+                            $next['subject_code'],
+                            $next['section_code'],
+                            $next['room_number'],
+                            format_date(substr((string) $next['occurs_at'], 0, 10)),
+                            substr((string) $next['start_time'], 0, 5),
+                            substr((string) $next['scan_opens'], 0, 5)
+                        ),
                 ]); ?>
             <?php else: ?>
                 <div class="table-wrap">
                     <table class="data">
-                        <thead><tr><th>Time</th><th>Subject</th><th>Section</th><th>Room</th><th>Terminal</th><th>Status</th></tr></thead>
+                        <thead><tr><th>Time</th><th>Subject</th><th>Section</th><th>Room</th><th>Terminal</th><th>Scan</th><th>Status</th></tr></thead>
                         <tbody>
                         <?php foreach ($overview['todays_schedule'] as $slot): ?>
+                            <?php
+                            // scan_state is decided in DashboardService against
+                            // the application clock; asking date() here would
+                            // ignore a clock shift and contradict the schedule
+                            // printed beside it.
+                            $opens    = (string) $slot['scan_opens'];
+                            $closes   = (string) $slot['scan_closes'];
+                            $scanNow  = $slot['scan_state'] === 'now';
+                            $scanLate = $slot['scan_state'] === 'closed';
+                            ?>
                             <tr>
                                 <td class="nowrap mono text-sm">
                                     <?= e(substr((string) $slot['start_time'], 0, 5)) ?>–<?= e(substr((string) $slot['end_time'], 0, 5)) ?>
@@ -191,6 +215,26 @@ $counters = $overview['current_counters'];
                                     <?php else: ?>
                                         <span class="badge <?= e(status_badge($slot['device_status'])) ?>" title="<?= e($slot['device_id']) ?>">
                                             <?= e(ucfirst((string) $slot['device_status'])) ?>
+                                        </span>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="nowrap">
+                                    <?php /* "Not started" said nothing about whether it *could* be
+                                             started. This column answers that, and it is the one a
+                                             teacher standing at the reader actually needs. */ ?>
+                                    <?php if ($slot['session_status'] === 'closed'): ?>
+                                        <span class="text-xs text-muted">—</span>
+                                    <?php elseif ($scanNow): ?>
+                                        <span class="badge badge-success" title="Scan your fingerprint at the terminal now">
+                                            <i class="fa-solid fa-fingerprint"></i> Scan now
+                                        </span>
+                                    <?php elseif ($scanLate): ?>
+                                        <span class="badge badge-danger" title="The window for this class has passed">
+                                            closed <?= e(substr($closes, 0, 5)) ?>
+                                        </span>
+                                    <?php else: ?>
+                                        <span class="badge badge-neutral" title="You can scan from this time">
+                                            from <?= e(substr($opens, 0, 5)) ?>
                                         </span>
                                     <?php endif; ?>
                                 </td>
