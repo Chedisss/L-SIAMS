@@ -163,7 +163,15 @@ final class DashboardService
         }
 
         $upcoming = $db->select(
+            // The window comes back with the row because the teacher's real
+            // question is not "when does this class start" but "when may I
+            // scan". Those are different times — the window opens before the
+            // start and closes after the end — and a dashboard that shows only
+            // the class times leaves a teacher scanning at what looks like the
+            // right moment and being refused with no explanation on screen.
             "SELECT sch.schedule_id, sch.start_time, sch.end_time,
+                    SUBTIME(sch.start_time, SEC_TO_TIME(sch.time_in_window_open * 60))  AS scan_opens,
+                    ADDTIME(sch.end_time,   SEC_TO_TIME(sch.time_out_window_close * 60)) AS scan_closes,
                     sub.subject_code, sub.subject_name, sec.section_code, c.room_number,
                     d.device_id, d.status AS device_status,
                     (SELECT s2.status FROM attendance_sessions s2
@@ -182,6 +190,70 @@ final class DashboardService
               ORDER BY sch.start_time",
             ['teacher' => $teacherId, 'day' => $day, 'today' => $today]
         );
+
+        // Whether each class can be opened right now, decided here rather than
+        // in the template. The view has no access to the application clock, so
+        // it would have to ask PHP for the wall time — and then a shifted
+        // clock, which exists precisely so schedules can be tested, would move
+        // the schedule and not the "can I scan" answer beside it.
+        $clockTime = Clock::now()->format('H:i:s');
+
+        foreach ($upcoming as $index => $slot) {
+            $upcoming[$index]['scan_state'] = $clockTime < (string) $slot['scan_opens']
+                ? 'later'
+                : ($clockTime > (string) $slot['scan_closes'] ? 'closed' : 'now');
+        }
+
+        // The next class after today's list runs out.
+        //
+        // A teacher whose classes are all on other days saw "No classes
+        // scheduled today. Enjoy the quiet." — true, and useless to somebody
+        // who wants to know when they are next expected. Working it out in PHP
+        // rather than SQL keeps the day arithmetic readable: a schedule
+        // repeats weekly, so the next occurrence is today if it has not
+        // started, otherwise the same weekday next week.
+        $weekly = $db->select(
+            "SELECT sch.day_of_week, sch.start_time, sch.end_time,
+                    SUBTIME(sch.start_time, SEC_TO_TIME(sch.time_in_window_open * 60)) AS scan_opens,
+                    sub.subject_code, sec.section_code, c.room_number
+               FROM schedules sch
+               JOIN subjects sub ON sub.subject_id = sch.subject_id
+               JOIN sections sec ON sec.section_id = sch.section_id
+               JOIN classrooms c ON c.classroom_id = sch.classroom_id
+              WHERE sch.teacher_id = :teacher
+                AND sch.status = 'active'
+                AND sch.deleted_at IS NULL",
+            ['teacher' => $teacherId]
+        );
+
+        $now       = Clock::now();
+        $nextClass = null;
+        $soonest   = null;
+
+        foreach ($weekly as $row) {
+            $occurs = $now->modify((string) $row['day_of_week'])
+                          ->modify((string) $row['start_time']);
+
+            // modify('Monday') on a Monday returns *next* Monday, so today's
+            // own classes have to be considered separately or a teacher with a
+            // class in two hours is told about the one next week.
+            if ((string) $row['day_of_week'] === $now->format('l')) {
+                $today = $now->setTime(0, 0)->modify((string) $row['start_time']);
+
+                if ($today > $now) {
+                    $occurs = $today;
+                }
+            }
+
+            if ($occurs <= $now) {
+                continue;
+            }
+
+            if ($soonest === null || $occurs < $soonest) {
+                $soonest   = $occurs;
+                $nextClass = $row + ['occurs_at' => $occurs->format('Y-m-d H:i:s')];
+            }
+        }
 
         // What the teacher is told here has to match what the sensor will do,
         // and the sensor matches on the template row. Reporting the cached
@@ -212,6 +284,7 @@ final class DashboardService
             'current_session'    => $current,
             'current_counters'   => $currentCounters,
             'todays_schedule'    => $upcoming,
+            'next_class'         => $nextClass,
             'fingerprint_status' => (string) ($teacher['fingerprint_status'] ?? 'not_enrolled'),
             'assigned_classrooms' => (int) $db->scalar(
                 'SELECT COUNT(DISTINCT classroom_id) FROM schedules
