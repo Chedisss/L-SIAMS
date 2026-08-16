@@ -656,10 +656,35 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
     return;
   }
 
-  /* Read back what is actually in the sensor rather than trusting the write.
-   * The server compares this against the slot it asked for and discards the
-   * enrolment if they differ, so a sensor that silently relocated the template
-   * cannot leave a teacher bound to the wrong finger. */
+  /* Prove the template can be read back before calling this a success.
+   *
+   * storeModel() returning OK is the sensor saying it accepted the write, not
+   * that anything is retrievable afterwards. That gap produced an enrolment
+   * that announced DONE, pushed the template count up, and then failed every
+   * search — the print reported as stored was not in the library at all, and
+   * the first sign of it was a teacher being told their finger was unknown
+   * minutes later.
+   *
+   * getTemplateCount() cannot close that gap: it counts, it does not look at
+   * this slot. loadModel() pulls the template at this specific slot back into
+   * a character buffer, so it fails when the slot is empty or unreadable. */
+  uint8_t readBack = finger.loadModel(slot);
+
+  if (readBack != FINGERPRINT_OK) {
+    Serial.printf("Enrol: the sensor accepted the write but slot %d reads back empty (code %d)\n",
+                  slot, readBack);
+    Serial.println("       The template is not really stored. This is a sensor fault, not a bad scan.");
+    Serial.println("       Power the R307 off and on — a full power cycle, not just the ESP32 reset —");
+    Serial.println("       then type 'wipe' and enrol again.");
+
+    reportEnrollFailed(requestId,
+      "The sensor reported the template as stored but cannot read it back. "
+      "Power-cycle the fingerprint sensor, wipe it, and enrol again.");
+
+    enrolling = false;
+    return;
+  }
+
   finger.getTemplateCount();
 
   LsJson request;
