@@ -92,6 +92,69 @@ final class AttendanceSessionService
                     );
                 }
 
+                // A session already recorded for this schedule today, and not
+                // currently open.
+                //
+                // uq_session_schedule_day is unique on (schedule_id,
+                // session_date), so the insert below cannot add a second one —
+                // it failed with "A session for this schedule has already been
+                // recorded today" and the teacher's scan did nothing. One
+                // session per class per day is the right rule, but treating it
+                // as one *attempt* per day is not: a session closed early by
+                // mistake, or closed by the auto-close while the class was
+                // still running, locked that class out for the rest of the day
+                // with no way back. Students who had not tapped out could not,
+                // and the teacher had no remedy at all.
+                //
+                // Reopening keeps the rule and removes the trap. It is the
+                // same session continuing — same code, same rows, original
+                // opened_at — so nothing already recorded moves. Only the
+                // window is extended, and this is reached only after the
+                // schedule check has confirmed the class is live right now, so
+                // it cannot revive yesterday's class or one that has finished.
+                $earlier = $db->selectOne(
+                    "SELECT * FROM attendance_sessions
+                      WHERE schedule_id = :schedule AND session_date = :date
+                      LIMIT 1 FOR UPDATE",
+                    ['schedule' => (int) $schedule['schedule_id'], 'date' => $date]
+                );
+
+                if ($earlier !== null) {
+                    $db->update('attendance_sessions', [
+                        'status'         => 'open',
+                        'closed_at'      => null,
+                        'closed_by'      => null,
+                        'closed_by_type' => null,
+                        'expires_at'     => $expiresAt->format('Y-m-d H:i:s'),
+                        'device_row_id'  => (int) $device['id'],
+                        'updated_at'     => Clock::nowString(),
+                    ], ['session_id' => (int) $earlier['session_id']]);
+
+                    $reopened = self::hydrateReopened(
+                        $db, (int) $earlier['session_id'], $teacher, $schedule, $start, $end, $expiresAt
+                    );
+
+                    AuditService::log(
+                        AuditService::ATTENDANCE_SESSION_OPENED,
+                        'attendance',
+                        'attendance_session',
+                        (int) $earlier['session_id'],
+                        ['status' => (string) $earlier['status'], 'closed_at' => $earlier['closed_at']],
+                        ['status' => 'open', 'expires_at' => $expiresAt->format('Y-m-d H:i:s')],
+                        sprintf(
+                            'Attendance session %s reopened by %s %s in room %s after fingerprint verification. '
+                            . 'It had been closed by %s.',
+                            (string) $earlier['session_code'],
+                            $teacher['first_name'],
+                            $teacher['last_name'],
+                            $schedule['room_number'] ?? '?',
+                            (string) ($earlier['closed_by_type'] ?? 'unknown')
+                        )
+                    );
+
+                    return $reopened;
+                }
+
                 $sessionCode = self::nextSessionCode($db, $now);
 
                 $sessionId = (int) $db->insert('attendance_sessions', [
@@ -182,6 +245,7 @@ final class AttendanceSessionService
             });
         } catch (PDOException $e) {
             if (Database::isDuplicateKey($e)) {
+                /** @var string|null $key */
                 $key = Database::duplicateKeyName($e);
 
                 $message = match ($key) {
@@ -509,6 +573,67 @@ final class AttendanceSessionService
     }
 
     /** ATT-{year}-{6 digits}, unique per year. */
+    /**
+     * A reopened session in the same shape the terminal gets for a new one.
+     *
+     * The board reads these fields to drive its display and its windows, and
+     * it has no idea whether the session it is being told about was opened a
+     * moment ago or resumed. Returning a different shape for the two would
+     * make reopening a second code path on the device, which is where the
+     * differences would quietly accumulate.
+     *
+     * @param  array<string,mixed> $teacher
+     * @param  array<string,mixed> $schedule
+     * @return array<string,mixed>
+     */
+    private static function hydrateReopened(
+        Database $db,
+        int $sessionId,
+        array $teacher,
+        array $schedule,
+        DateTimeImmutable $start,
+        DateTimeImmutable $end,
+        DateTimeImmutable $expiresAt
+    ): array {
+        /** @var array<string,mixed> $session */
+        $session  = $db->selectOne('SELECT * FROM attendance_sessions WHERE session_id = :id', ['id' => $sessionId]) ?? [];
+        $counters = AttendanceService::updateSessionCounters($db, $sessionId);
+
+        RealtimeService::broadcast(
+            AttendanceService::channelsFor($session),
+            'session.opened',
+            [
+                'session_id'    => (string) $session['session_code'],
+                'teacher'       => sprintf('%s %s', $teacher['first_name'], $teacher['last_name']),
+                'subject'       => (string) ($schedule['subject_name'] ?? ''),
+                'section'       => (string) ($schedule['section_code'] ?? ''),
+                'classroom'     => (string) ($schedule['room_number'] ?? ''),
+                'reopened'      => true,
+                'scheduled_end' => $end->format(DATE_ATOM),
+                'expires_at'    => $expiresAt->format(DATE_ATOM),
+                'counters'      => $counters,
+            ]
+        );
+
+        return [
+            'session_id'      => $sessionId,
+            'session_code'    => (string) $session['session_code'],
+            'teacher_name'    => sprintf('%s %s', $teacher['first_name'], $teacher['last_name']),
+            'subject_code'    => (string) ($schedule['subject_code'] ?? ''),
+            'subject_name'    => (string) ($schedule['subject_name'] ?? ''),
+            'section_code'    => (string) ($schedule['section_code'] ?? ''),
+            'room_number'     => (string) ($schedule['room_number'] ?? ''),
+            'scheduled_start' => $start->format('H:i'),
+            'scheduled_end'   => $end->format('H:i'),
+            'expires_at'      => $expiresAt->format(DATE_ATOM),
+            'roster_count'    => $counters['total'],
+            'late_after'      => $start->modify('+' . (int) $schedule['late_threshold_minutes'] . ' minutes')->format('H:i'),
+            'time_in_closes'  => $start->modify('+' . (int) $schedule['time_in_window_close'] . ' minutes')->format('H:i'),
+            'time_out_opens'  => $end->modify('-' . (int) $schedule['time_out_window_open'] . ' minutes')->format('H:i'),
+            'reopened'        => true,
+        ];
+    }
+
     private static function nextSessionCode(Database $db, DateTimeImmutable $now): string
     {
         $year   = $now->format('Y');
