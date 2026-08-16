@@ -10,6 +10,12 @@ return [
     'debug'     => Env::bool('APP_DEBUG', false),
     'url'       => rtrim((string) Env::get('APP_URL', 'https://192.168.1.10'), '/'),
     'timezone'  => Env::get('APP_TIMEZONE', 'Asia/Manila'),
+
+    // A relative time added to every clock read, for testing a schedule
+    // without waiting for its window. "+2 hours", "-30 minutes",
+    // "next monday 08:05". Empty in normal use, and ignored outright when
+    // APP_ENV is production. See Clock::offset().
+    'clock_offset' => Env::get('APP_CLOCK_OFFSET', ''),
     'version'   => '1.0.0',
 
     // Paths are resolved once here so nothing else has to guess at directory layout.

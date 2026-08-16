@@ -18,12 +18,98 @@ final class Clock
 {
     private static ?DateTimeImmutable $frozen = null;
 
+    /** Resolved once per request; the .env value does not change mid-request. */
+    private static ?string $offset = null;
+
     public static function now(): DateTimeImmutable
     {
         if (self::$frozen !== null) {
             return self::$frozen;
         }
 
+        $now = new DateTimeImmutable('now', self::timezone());
+
+        $shift = self::offset();
+
+        return $shift === '' ? $now : $now->modify($shift);
+    }
+
+    /**
+     * A deliberate offset applied to every time the application reads.
+     *
+     * Testing a schedule means being inside its window, and a Monday 08:00
+     * class is not a thing anyone can wait for on a Thursday afternoon.
+     * Changing the machine's clock is the obvious alternative and does not
+     * work: Windows re-synchronises it from an internet time server within
+     * minutes, so the tests fail again halfway through for no visible reason.
+     *
+     * Applied here rather than to the operating system, so it moves the whole
+     * application together — attendance windows, session expiry, audit
+     * timestamps and the clock the terminals sync from — and moves nothing
+     * else on the machine.
+     *
+     * Refused outright when APP_ENV is production. An attendance system
+     * running on a shifted clock writes records at times that never happened,
+     * and no amount of care during setup makes that safe to leave available.
+     */
+    public static function offset(): string
+    {
+        if (self::$offset !== null) {
+            return self::$offset;
+        }
+
+        $configured = trim((string) Config::get('app.clock_offset', ''));
+
+        if ($configured === '') {
+            return self::$offset = '';
+        }
+
+        if ((string) Config::get('app.env', 'production') === 'production') {
+            Logger::warning('APP_CLOCK_OFFSET is set but ignored: the environment is production.', [
+                'offset' => $configured,
+            ]);
+
+            return self::$offset = '';
+        }
+
+        // Anything modify() rejects is a typo, and a typo that silently did
+        // nothing would be worse than one that says so. Both spellings of the
+        // failure are handled: modify() returned false before PHP 8.3 and
+        // throws from 8.3 on.
+        if (!self::isValidOffset($configured)) {
+            Logger::warning('APP_CLOCK_OFFSET is not a relative time PHP understands; ignoring it.', [
+                'offset' => $configured,
+            ]);
+
+            return self::$offset = '';
+        }
+
+        return self::$offset = $configured;
+    }
+
+    /** Whether a string is something DateTimeImmutable::modify() accepts. */
+    public static function isValidOffset(string $spec): bool
+    {
+        if (trim($spec) === '') {
+            return false;
+        }
+
+        try {
+            return (new DateTimeImmutable('now'))->modify($spec) !== false;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /** True when the application is deliberately not running at real time. */
+    public static function isShifted(): bool
+    {
+        return self::offset() !== '';
+    }
+
+    /** Real time, whatever the offset says. For "is the shift still on?" checks. */
+    public static function real(): DateTimeImmutable
+    {
         return new DateTimeImmutable('now', self::timezone());
     }
 
