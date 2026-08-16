@@ -99,6 +99,18 @@ static const char *CLAIM_TOKEN = "";
  * 27, or change PIN_OLED_SCL and PIN_RFID_RST in config.h to match this
  * board. Either is fine; leaving both on 22 is not. */
 #define PIN_RFID_RST       22
+/* Most ESP32 dev boards print these two as RX2 and TX2 rather than as 16 and
+ * 17, which is why they look absent — they are the same pins under the names
+ * their second serial port is known by.
+ *
+ * On a WROVER board they really are gone: its PSRAM occupies 16 and 17, and
+ * they are not brought out. UART2 is not fixed to them, though, so any free
+ * output-capable pin works. 25 and 26 are the safe pair here — nothing else
+ * in this sketch uses them, neither is a strapping pin, and both can drive
+ * output, which 34-39 cannot.
+ *
+ * Change the two numbers and nothing else; the port is opened with whatever
+ * they say. */
 #define PIN_FINGER_RX      16      /* silkscreen RX2 — sensor TX lands here */
 #define PIN_FINGER_TX      17      /* silkscreen TX2 — sensor RX lands here */
 #define FINGERPRINT_BAUD   57600
@@ -1318,9 +1330,18 @@ void setup() {
       Serial.println("  and this board will ask for the finger itself.");
     }
   } else {
-    Serial.println("R307: NOT FOUND — sensor TX must reach GPIO 16 and its RX");
-    Serial.println("  GPIO 17 (they cross), and VCC must match the module:");
-    Serial.println("  R307 wants 5 V, a bare AS608 wants 3.3 V.");
+    /* The pins are printed rather than hard-coded into the sentence, because
+     * they are configurable and a message naming 16 and 17 while the sketch
+     * uses 25 and 26 sends somebody to check wiring that is already right. */
+    Serial.printf("R307: NOT FOUND — sensor TX must reach GPIO %d and its RX GPIO %d.\n",
+                  PIN_FINGER_RX, PIN_FINGER_TX);
+    Serial.println("  They cross: the sensor's transmit goes to the pin this board");
+    Serial.println("  receives on. Wired straight through, both talk and neither listens.");
+    Serial.println("  VCC must match the module: an R307 wants 5 V on VIN, a bare");
+    Serial.println("  AS608 wants 3.3 V.");
+    Serial.println("  If your board has no 16 or 17, look for RX2 and TX2 — same pins,");
+    Serial.println("  different label. If it genuinely has neither (a WROVER uses them");
+    Serial.println("  for PSRAM), set PIN_FINGER_RX 25 and PIN_FINGER_TX 26 and rewire.");
   }
 
   /* ---- Wi-Fi ---- */
