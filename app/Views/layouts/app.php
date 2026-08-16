@@ -118,6 +118,24 @@ $photo    = $authUser['photo_path'] ?? null;
         </header>
 
         <main class="content" id="main-content">
+            <?php if (App\Core\Clock::isShifted()): ?>
+                <?php /* Every timestamp written while this is on is a time that
+                         did not happen. Impossible to leave on by accident. */ ?>
+                <div class="alert alert-warning mb-2" role="alert">
+                    <span class="alert__icon"><i class="fa-solid fa-clock-rotate-left"></i></span>
+                    <div class="alert__body">
+                        <strong>The clock is shifted for testing.</strong>
+                        This system is running at
+                        <strong><?= e(App\Core\Clock::now()->format('D d M Y, H:i')) ?></strong>
+                        while the real time is
+                        <?= e(App\Core\Clock::real()->format('D d M Y, H:i')) ?>
+                        (<span class="mono"><?= e(App\Core\Clock::offset()) ?></span>).
+                        Attendance recorded now carries the shifted time.
+                        Undo it with <span class="mono">console.bat time:shift --clear</span>.
+                    </div>
+                </div>
+            <?php endif; ?>
+
             <?php $__view->include('partials.flash', ['flashes' => $flashes ?? []]); ?>
             <?= $__view->section('content', $content ?? '') ?>
         </main>

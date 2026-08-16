@@ -16,6 +16,7 @@ declare(strict_types=1);
  *   php bin/console security:audit-keys  Static check that no weak RNG is in the key path
  *   php bin/console doctor               Diagnose a running installation
  *   php bin/console db:import <file>     Import a .sql file or phpMyAdmin export
+ *   php bin/console time:shift "+2 hours" Move the clock for schedule testing
  *   php bin/console user:create-admin    Create an administrator interactively
  */
 
@@ -109,6 +110,7 @@ try {
         'doctor'              => commandDoctor(),
         'db:import'           => commandDbImport($arguments, $flags),
         'backup:decrypt'      => commandBackupDecrypt($arguments),
+        'time:shift'          => commandTimeShift($arguments, $flags),
         'schema:dump'         => commandSchemaDump(),
         'user:create-admin'   => commandCreateAdmin(),
         default               => commandHelp(),
@@ -143,6 +145,7 @@ function commandHelp(): void
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
     out('    db:import <file.sql>    Import a .sql file or phpMyAdmin export (--fresh drops first)');
     out('    backup:decrypt <file>   Turn a .sql.gz.enc backup back into readable SQL');
+    out('    time:shift ["+2 hours"]  Move the clock to test a schedule (--clear to undo)');
     out('');
 }
 
@@ -1268,6 +1271,83 @@ function commandDbImport(array $arguments, array $flags): void
 
         out('');
         out('  Apply them now:  php bin/console migrate', 'cyan');
+    }
+}
+
+/**
+ * Move the application's clock, for testing a schedule without waiting for it.
+ *
+ *   time:shift "+2 hours"      run two hours ahead
+ *   time:shift "next monday 08:05"
+ *   time:shift --clear         back to real time
+ *   time:shift                 show where the clock currently is
+ *
+ * @param list<string> $arguments
+ * @param list<string> $flags
+ */
+function commandTimeShift(array $arguments, array $flags): void
+{
+    $envFile = BASE_PATH . '/.env';
+
+    if (!is_file($envFile)) {
+        fail('.env does not exist yet. Run install first.');
+    }
+
+    $values = array_values(array_filter($arguments, static fn (string $a): bool => !str_starts_with($a, '--')));
+    $clear  = in_array('--clear', $flags, true);
+    $spec   = $clear ? '' : trim($values[0] ?? '');
+
+    heading('Application clock');
+
+    // No argument: report, change nothing.
+    if ($spec === '' && !$clear) {
+        $current = Clock::offset();
+
+        out('  Real time         ' . Clock::real()->format('D d M Y H:i:s'));
+        out('  Application time  ' . Clock::now()->format('D d M Y H:i:s'), $current === '' ? '' : 'yellow');
+        out('');
+
+        $current === ''
+            ? ok('The clock is not shifted.')
+            : out('  Shift: ' . $current, 'yellow');
+
+        if (Env::get('APP_ENV', 'production') === 'production' && Env::get('APP_CLOCK_OFFSET', '') !== '') {
+            out('');
+            out('  APP_CLOCK_OFFSET is set but ignored — APP_ENV is production.', 'yellow');
+        }
+
+        return;
+    }
+
+    if ($spec !== '' && !Clock::isValidOffset($spec)) {
+        fail('"' . $spec . '" is not a relative time PHP understands. Try "+2 hours" or "next monday 08:05".');
+    }
+
+    $contents = (string) file_get_contents($envFile);
+
+    $contents = preg_match('/^APP_CLOCK_OFFSET=.*$/m', $contents) === 1
+        ? (string) preg_replace('/^APP_CLOCK_OFFSET=.*$/m', 'APP_CLOCK_OFFSET=' . $spec, $contents)
+        : rtrim($contents) . PHP_EOL . 'APP_CLOCK_OFFSET=' . $spec . PHP_EOL;
+
+    file_put_contents($envFile, $contents);
+    @chmod($envFile, 0600);
+
+    if ($spec === '') {
+        ok('Cleared. The application is back on real time.');
+    } else {
+        ok('Shift set to "' . $spec . '".');
+        out('  Real time is ' . Clock::real()->format('D d M Y H:i:s')
+            . ', so the application will read '
+            . Clock::real()->modify($spec)->format('D d M Y H:i:s') . '.', 'grey');
+    }
+
+    out('');
+    out('  Restart start.bat — the running server read .env when it started.', 'cyan');
+
+    if (Env::get('APP_ENV', 'production') === 'production' && $spec !== '') {
+        out('');
+        out('  APP_ENV is production, so this will be ignored. Set APP_ENV=local in', 'yellow');
+        out('  .env while you are testing, and put it back afterwards.', 'yellow');
     }
 }
 
