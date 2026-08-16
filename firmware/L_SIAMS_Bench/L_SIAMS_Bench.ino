@@ -1644,6 +1644,43 @@ void setup() {
   Serial.println(WiFi.macAddress());
   Serial.printf("Server: %s\n", SERVER_URL);
 
+  /* The IP above and the URL above it were printed next to each other and left
+   * for a person to compare. They are the commonest thing to get wrong — the
+   * PC's address is typed in by hand, and a router handing out 192.168.1.x
+   * while the URL says 192.168.0.100 produces a terminal that joins the Wi-Fi,
+   * reports nothing, and shows as Offline with no error anywhere. Comparing
+   * them costs nothing and turns that into a sentence. */
+  {
+    String host = String(SERVER_URL);
+    int    from = host.indexOf("//");
+
+    if (from >= 0) host = host.substring(from + 2);
+
+    int cut = host.indexOf(':');
+    if (cut < 0) cut = host.indexOf('/');
+    if (cut >= 0) host = host.substring(0, cut);
+
+    IPAddress serverIp;
+
+    if (serverIp.fromString(host)) {
+      IPAddress mine = WiFi.localIP();
+
+      if (serverIp[0] != mine[0] || serverIp[1] != mine[1] || serverIp[2] != mine[2]) {
+        Serial.println();
+        Serial.println("  *** The server address is on a different network from this board. ***");
+        Serial.printf("      This ESP32 is %d.%d.%d.%d and the URL points at %s.\n",
+                      mine[0], mine[1], mine[2], mine[3], host.c_str());
+        Serial.println("      Nothing this board sends can reach that address, so the terminal");
+        Serial.println("      will stay Offline however long you wait.");
+        Serial.println("      start.bat prints the right address as \"On other devices\".");
+        Serial.println("      Put that in SERVER_URL, keep the :8080, and re-upload.");
+        Serial.println();
+      } else {
+        Serial.println("Server is on this network — good.");
+      }
+    }
+  }
+
   Serial.println("Claiming...");
   if (!claimDevice()) {
     Serial.println("Cannot continue: every signed request is refused until the");
