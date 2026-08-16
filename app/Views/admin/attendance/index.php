@@ -93,7 +93,7 @@ $__view->start('content');
 <div class="card">
     <div class="card__header">
         <h2 class="card__title">Attendance records</h2>
-        <span class="text-sm text-muted"><?= e(number_format($pagination['total'])) ?> total</span>
+        <span class="text-sm text-muted" id="attendance-total"><?= e(number_format($pagination['total'])) ?> total</span>
     </div>
 
     <div class="card__body--flush">
@@ -355,10 +355,21 @@ $__view->start('scripts');
         });
     }
 
-    /* Live inserts at the top of the table. */
+    /* Taps land in the table as they happen. */
     if (LS.realtime) {
-        LS.realtime.on('attendance.time_in', () => {
-            LS.toast.info('New attendance recorded — refresh to see it in this table.');
+        // This used to say "refresh to see it in this table", which described
+        // the gap accurately and left the reader to close it by hand. The rows
+        // are re-requested instead, carrying whatever filters and page are
+        // currently applied.
+        //
+        // Debounced: a section taps in together, and thirty taps in a minute
+        // should cost a few refreshes rather than thirty.
+        const refreshRows = LS.util.debounce(() => {
+            LS.util.swapFromServer(['attendance-body', 'attendance-total']);
+        }, 700);
+
+        ['attendance.time_in', 'attendance.time_out'].forEach((event) => {
+            LS.realtime.on(event, refreshRows);
         });
     }
 })();

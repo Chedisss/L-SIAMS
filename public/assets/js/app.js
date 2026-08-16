@@ -459,6 +459,49 @@
             return days + (days === 1 ? ' day' : ' days');
         },
 
+        /**
+         * Re-fetch this page and swap named regions in from the response.
+         *
+         * Used by the tables that have to react to a tap. Re-requesting the
+         * page the browser is already on means the current filters, sort and
+         * page number come back applied without being restated, and the rows
+         * are rendered by the same template that rendered them the first time
+         * — there is no second copy of the markup in JavaScript to drift.
+         *
+         * Two headers matter. X-Passive-Request keeps a background refresh
+         * from extending the session, which is the whole point of an idle
+         * timeout. Accept must stay text/html and X-Requested-With must not be
+         * sent at all, or wantsJson() answers with JSON and there is nothing
+         * to swap.
+         *
+         * A failed refresh is silent: the next tap tries again, and a toast
+         * every time the network hiccups would be worse than a table that is a
+         * few seconds stale.
+         */
+        async swapFromServer(ids) {
+            try {
+                const response = await fetch(window.location.href, {
+                    headers: { 'X-Passive-Request': 'true', 'Accept': 'text/html' },
+                    credentials: 'same-origin',
+                });
+
+                if (!response.ok) return false;
+
+                const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
+
+                ids.forEach((id) => {
+                    const to   = document.getElementById(id);
+                    const from = fresh.getElementById(id);
+
+                    if (to && from) to.innerHTML = from.innerHTML;
+                });
+
+                return true;
+            } catch (error) {
+                return false;
+            }
+        },
+
         debounce(fn, wait = 300) {
             let timer = null;
             return function (...args) {
