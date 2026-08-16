@@ -150,7 +150,13 @@ $__view->start('content');
                             <td class="numeric <?= $short ? 'text-danger fw-600' : '' ?>">
                                 <?= $duration === null ? '—' : e($duration) . ' min' ?>
                             </td>
-                            <td><span class="badge <?= e(status_badge($record['arrival_status'])) ?>"><?= e(ucfirst(str_replace('_', ' ', (string) $record['arrival_status']))) ?></span></td>
+                            <?php /* Same wording and the same green/red split as the teacher's table.
+                                     status_badge() puts late in amber along with everything merely
+                                     unusual; an arrival is one yes-or-no question and reads better
+                                     answered in two colours. */ ?>
+                            <td><span class="badge <?= e(AttendanceStatusResolver::arrivalBadgeClass((string) $record['arrival_status'])) ?>">
+                                <?= e(ucfirst(AttendanceStatusResolver::arrivalLabel((string) $record['arrival_status']))) ?>
+                            </span></td>
                             <td><span class="badge <?= e(status_badge($record['departure_status'])) ?>"><?= e(ucfirst(str_replace('_', ' ', (string) $record['departure_status']))) ?></span></td>
                             <td><span class="badge <?= e(AttendanceStatusResolver::badgeClass((string) $record['final_status'])) ?>"><?= e($record['final_status']) ?></span></td>
                             <td>

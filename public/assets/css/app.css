@@ -799,6 +799,7 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 .text-danger  { color: var(--danger); }
 .text-success { color: var(--success); }
 .text-warning { color: var(--warning); }
+.text-info    { color: var(--info); }
 .text-sm      { font-size: 12px; }
 .text-xs      { font-size: 11px; }
 .text-right   { text-align: right; }

@@ -150,6 +150,61 @@ final class AttendanceStatusResolver
         ];
     }
 
+    /**
+     * How an arrival reads to a person.
+     *
+     * The column stores `present`, which is the opposite of `absent` — but the
+     * question the column actually answers is whether the student got here in
+     * time, and next to a `late` in the row below, "present" reads as though it
+     * is describing something else entirely. "on time" is the same fact said in
+     * the terms the reader is comparing.
+     */
+    public static function arrivalLabel(string $arrivalStatus): string
+    {
+        return match ($arrivalStatus) {
+            self::ARRIVAL_PRESENT           => 'on time',
+            self::ARRIVAL_LATE              => 'late',
+            self::ARRIVAL_ABSENT            => 'absent',
+            self::ARRIVAL_EXCUSED           => 'excused',
+            self::ARRIVAL_OFFICIAL_BUSINESS => 'official business',
+            default                          => str_replace('_', ' ', $arrivalStatus),
+        };
+    }
+
+    /**
+     * Colour for an arrival.
+     *
+     * Deliberately harder than the final-status palette, where Late is amber.
+     * A final status is a summary of the whole meeting and amber says "not
+     * clean, look closer". An arrival is one yes-or-no question asked at one
+     * moment — the student was here in time or was not — so it is green or red
+     * with nothing in between.
+     */
+    public static function arrivalClass(string $arrivalStatus): string
+    {
+        return match ($arrivalStatus) {
+            self::ARRIVAL_PRESENT           => 'text-success',
+            self::ARRIVAL_LATE              => 'text-danger',
+            self::ARRIVAL_ABSENT            => 'text-danger',
+            self::ARRIVAL_EXCUSED           => 'text-info',
+            self::ARRIVAL_OFFICIAL_BUSINESS => 'text-info',
+            default                          => 'text-muted',
+        };
+    }
+
+    /** The same two-colour split as arrivalClass(), for tables that use badges. */
+    public static function arrivalBadgeClass(string $arrivalStatus): string
+    {
+        return match ($arrivalStatus) {
+            self::ARRIVAL_PRESENT           => 'badge-success',
+            self::ARRIVAL_LATE              => 'badge-danger',
+            self::ARRIVAL_ABSENT            => 'badge-danger',
+            self::ARRIVAL_EXCUSED           => 'badge-info',
+            self::ARRIVAL_OFFICIAL_BUSINESS => 'badge-info',
+            default                          => 'badge-neutral',
+        };
+    }
+
     public static function badgeClass(string $finalStatus): string
     {
         return match ($finalStatus) {
