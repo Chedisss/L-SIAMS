@@ -3,6 +3,13 @@ declare(strict_types=1);
 
 use App\Core\Env;
 
+/*
+ * Requests a terminal may make per minute. 0 switches the limit off, which is
+ * the default — see the note beside the 'device' bucket below for why, and for
+ * what to set before deploying.
+ */
+$deviceRateLimit = Env::int('DEVICE_RATE_LIMIT', 0);
+
 return [
     // --- Passwords ---------------------------------------------------------
     'password' => [
@@ -99,15 +106,26 @@ return [
         // adds a tap per student arriving and another leaving, so a busy
         // minute reaches roughly 110.
         //
-        // 240 leaves better than 2x headroom over that peak while still
-        // catching what the limit is actually for: a terminal stuck in a retry
-        // loop, which sends thousands a minute, not hundreds.
+        // It is off by default now. The limit catches exactly one thing — a
+        // terminal stuck in a retry loop — and while switched on it made every
+        // other problem harder to see. A throttled heartbeat marks the device
+        // offline, a throttled poll misses an enrolment request, and a
+        // throttled verify leaves a teacher unable to open a session, all of
+        // which look like the fault you were already chasing.
         //
-        // The cost of getting this wrong is not a slow terminal. A throttled
-        // heartbeat marks the device offline, a throttled poll misses an
-        // enrolment request, and a throttled verify leaves the teacher unable
-        // to open a session at all.
-        'device'   => ['limit' => 240, 'window' => 60],
+        // Nothing else is relaxed by this. Every device endpoint still demands
+        // an HMAC signature over the request, a device id the server issued,
+        // and a source address inside the device allowlist, so the cap only
+        // ever governed how often a terminal that had already proved itself
+        // could speak.
+        //
+        // Set DEVICE_RATE_LIMIT=240 before a real deployment, where terminals
+        // run unattended and a wedged one should not be able to saturate the
+        // server. 240 was the working value: comfortably above the ~110 a busy
+        // minute reaches, far below the thousands a retry loop produces.
+        'device'   => $deviceRateLimit > 0
+            ? ['limit' => $deviceRateLimit, 'window' => 60]
+            : null,
         'login'    => ['limit' => 10,  'window' => 300],
         'api_user' => ['limit' => 300, 'window' => 60],
         'web'      => ['limit' => 600, 'window' => 60],
