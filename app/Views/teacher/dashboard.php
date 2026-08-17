@@ -155,6 +155,72 @@ $counters = $overview['current_counters'];
     </div>
 </div>
 
+<?php
+// The class whose scan window is open right now, if any. DashboardService has
+// already decided that against the application clock, so this only picks the
+// first one rather than working out the times again.
+$liveClass = null;
+
+foreach ($overview['todays_schedule'] as $slot) {
+    if ($slot['scan_state'] === 'now') { $liveClass = $slot; break; }
+}
+?>
+
+<?php if ($liveClass !== null): ?>
+    <!-- Open a session ------------------------------------------------------->
+    <!--
+        The terminal is already scanning; nothing here tells it to start. What
+        this adds is sight of the result. Putting a finger on the reader gives a
+        beep the person at a computer cannot hear, and until now the outcome
+        only appeared in the terminal's serial log, which nobody in a classroom
+        is watching. This shows the same answer the server gave.
+    -->
+    <div class="card" id="start-session" data-schedule="<?= e($liveClass['schedule_id']) ?>">
+        <div class="card__header">
+            <h2 class="card__title">
+                <i class="fa-solid fa-fingerprint"></i>
+                Open <?= e($liveClass['subject_code']) ?> with <?= e($liveClass['section_code']) ?>
+            </h2>
+            <span class="badge badge-success">window open</span>
+        </div>
+
+        <div class="card__body">
+            <div class="enrol-scan">
+                <div class="enrol-scan__icon is-waiting" id="ss-icon"><i class="fa-solid fa-fingerprint"></i></div>
+                <div class="enrol-scan__stage" id="ss-stage">Ready when you are</div>
+                <div class="enrol-scan__detail text-sm text-muted" id="ss-detail">
+                    Scan your fingerprint on the terminal in Room <?= e($liveClass['room_number']) ?>.
+                </div>
+
+                <ol class="enrol-scan__steps" id="ss-steps">
+                    <li data-stage="window">Class window is open</li>
+                    <li data-stage="scan">Scan your fingerprint at the terminal</li>
+                    <li data-stage="open">Session opens and students may tap</li>
+                </ol>
+
+                <div class="alert alert-warning mt-2 hidden" id="ss-warning">
+                    <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+                    <div class="alert__body" id="ss-warning-text"></div>
+                </div>
+
+                <div class="flex gap-1 mt-2" style="justify-content:center">
+                    <button class="btn btn-primary" id="ss-watch">
+                        <i class="fa-solid fa-eye"></i> I am scanning now
+                    </button>
+                    <a class="btn btn-secondary hidden" id="ss-goto" href="/teacher/sessions">
+                        <i class="fa-solid fa-arrow-right"></i> Open the session
+                    </a>
+                </div>
+
+                <div class="text-xs text-muted mt-2">
+                    Terminal <?= e($liveClass['device_id'] ?? 'not assigned') ?>
+                    · scan window <?= e(substr((string) $liveClass['scan_opens'], 0, 5)) ?>–<?= e(substr((string) $liveClass['scan_closes'], 0, 5)) ?>
+                </div>
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
+
 <div class="grid grid--2">
     <!-- Today's schedule --------------------------------------------------- -->
     <div class="card">
@@ -392,6 +458,111 @@ $__view->start('scripts');
             if (node && value !== undefined) node.textContent = value;
         });
     }
+})();
+</script>
+<script nonce="<?= e(csp_nonce()) ?>">
+(function () {
+    const LS   = window.LSIAMS;
+    const card = document.getElementById('start-session');
+
+    if (card === null) return;
+
+    const icon    = document.getElementById('ss-icon');
+    const stage   = document.getElementById('ss-stage');
+    const detail  = document.getElementById('ss-detail');
+    const warning = document.getElementById('ss-warning');
+    const warnText = document.getElementById('ss-warning-text');
+    const watch   = document.getElementById('ss-watch');
+    const goto    = document.getElementById('ss-goto');
+
+    let timer = null;
+    let since = null;
+
+    function step(name, state) {
+        document.querySelectorAll('#ss-steps li').forEach((li) => {
+            const order = ['window', 'scan', 'open'];
+            const at    = order.indexOf(li.dataset.stage);
+            const now   = order.indexOf(name);
+
+            li.classList.toggle('is-done', at < now || state === 'done');
+            li.classList.toggle('is-current', at === now && state !== 'done');
+        });
+    }
+
+    function stop() {
+        if (timer) { clearInterval(timer); timer = null; }
+    }
+
+    async function poll() {
+        try {
+            // poll() is get() with the passive header: a panel watching itself
+            // is not activity, and must not hold the idle timeout open while
+            // nobody is at the desk.
+            const response = await LS.http.poll('/teacher/session-state',
+                since ? { since: since } : {});
+
+            const data = response.data || {};
+
+            if (data.state === 'open') {
+                stop();
+                icon.className = 'enrol-scan__icon is-success';
+                stage.textContent = 'Session open';
+                detail.textContent = data.message || '';
+                warning.classList.add('hidden');
+                watch.classList.add('hidden');
+                goto.classList.remove('hidden');
+                goto.href = '/teacher/sessions';
+                step('open', 'done');
+                LS.toast.success('Attendance session opened. Students may tap now.');
+                return;
+            }
+
+            if (data.state === 'refused') {
+                // The server's own reason, not a guess. This is the whole point
+                // of the panel: the refusal used to exist only in the serial log.
+                icon.className = 'enrol-scan__icon is-error';
+                stage.textContent = 'That scan was refused';
+                detail.textContent = '';
+                warnText.textContent = data.message || 'The terminal refused the scan.';
+                warning.classList.remove('hidden');
+                step('scan');
+                return;
+            }
+
+            if (data.state === 'verified') {
+                icon.className = 'enrol-scan__icon is-waiting';
+                stage.textContent = 'Fingerprint accepted — opening…';
+                warning.classList.add('hidden');
+                step('open');
+                return;
+            }
+
+            stage.textContent = 'Waiting for your fingerprint…';
+            step('scan');
+        } catch (error) {
+            /* A failed poll is not worth a toast; the next one is a second away. */
+        }
+    }
+
+    watch.addEventListener('click', function () {
+        // Attempts are counted from this moment, so a failure from earlier in
+        // the day does not open the panel already looking like a fresh one.
+        since = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+        icon.className = 'enrol-scan__icon is-waiting';
+        stage.textContent = 'Waiting for your fingerprint…';
+        detail.textContent = 'Place your finger on the terminal now.';
+        warning.classList.add('hidden');
+        step('scan');
+
+        stop();
+        poll();
+        timer = setInterval(poll, 2000);
+    });
+
+    // A session opened from the terminal without anybody pressing the button
+    // still belongs on this card, so one quiet check runs on load.
+    poll();
 })();
 </script>
 <?php $__view->stop(); ?>

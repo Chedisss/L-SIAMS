@@ -254,6 +254,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
 $router->group('/teacher', $teacherChain, static function ($router): void {
     $router->get('', TeacherPortalController::class . '@dashboard', [], 'teacher.dashboard');
     $router->get('/schedule', TeacherPortalController::class . '@schedule');
+    $router->get('/session-state', TeacherPortalController::class . '@sessionState');
     $router->get('/sections', TeacherPortalController::class . '@sections');
     $router->get('/sections/{id:\d+}', TeacherPortalController::class . '@sectionRoster');
     $router->get('/attendance', TeacherPortalController::class . '@attendance');
