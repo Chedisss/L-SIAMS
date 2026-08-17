@@ -90,7 +90,11 @@ final class DeviceController extends Controller
             'device_id'     => 'nullable|string|max:32|code',
             'mac_address'   => 'required|mac',
             'serial_number' => 'nullable|string|max:60|slug',
-            'classroom_id'  => 'nullable|int',
+            // Required now that every terminal is a classroom terminal. A
+            // device registered without one looks fine on the list and then
+            // refuses every attendance and fingerprint call with
+            // DEVICE_CLASSROOM_MISMATCH, which reads as a hardware fault.
+            'classroom_id'  => 'required|int|exists:classrooms,classroom_id',
             'device_role'   => 'nullable|in:entry,exit,both',
             'firmware_version' => 'nullable|string|max:20',
             'ip_allowlist'  => 'nullable|string|max:255',

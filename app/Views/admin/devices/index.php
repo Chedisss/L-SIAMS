@@ -69,16 +69,23 @@ $__view->start('content');
                 </div>
 
                 <div class="text-sm text-muted">
-                    <?php if ($device['enrollment_station']): ?>
-                        <i class="fa-solid fa-fingerprint"></i> Enrolment scanner
-                        · <span class="badge badge-neutral">no attendance</span>
-                    <?php elseif ($device['room_number']): ?>
+                    <?php /* No enrolment-scanner branch any more: every terminal does
+                             everything. A missing classroom is now a fault to fix
+                             rather than a legitimate shape, so it falls through to
+                             the warning below. */ ?>
+                    <?php if ($device['room_number']): ?>
                         <i class="fa-solid fa-door-open"></i> Room <?= e($device['room_number']) ?>
                         <?= $device['building'] ? '· ' . e($device['building']) : '' ?>
                         · <span class="badge badge-neutral"><?= e($device['device_role']) ?></span>
                     <?php else: ?>
-                        <span class="text-warning"><i class="fa-solid fa-triangle-exclamation"></i> No classroom assigned</span>
-                        · <span class="badge badge-neutral"><?= e($device['device_role']) ?></span>
+                        <span class="text-danger">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                            No classroom — cannot open sessions
+                        </span>
+                        <div class="text-xs text-muted">
+                            Edit this terminal and set the room it is in. Until then every attendance
+                            and fingerprint call from it is refused with DEVICE_CLASSROOM_MISMATCH.
+                        </div>
                     <?php endif; ?>
                 </div>
 
@@ -143,25 +150,13 @@ $__view->start('content');
 
         <form id="device-form">
             <div class="modal__body">
-                <div class="form-group form-group--full">
-                    <label class="required">What is this for?</label>
-                    <div class="grid grid--2" style="gap:.6rem">
-                        <label class="choice-card">
-                            <input type="radio" name="purpose" value="classroom" checked>
-                            <span>
-                                <strong><i class="fa-solid fa-door-open"></i> Classroom terminal</strong>
-                                <span class="text-xs text-muted">Mounted in a room. Teachers open sessions on it and
-                                    students tap their cards.</span>
-                            </span>
-                        </label>
-                        <label class="choice-card">
-                            <input type="radio" name="purpose" value="enrollment">
-                            <span>
-                                <strong><i class="fa-solid fa-fingerprint"></i> Enrolment scanner</strong>
-                                <span class="text-xs text-muted">Sits on your desk. Used only to take fingerprints
-                                    while you register teachers here. No classroom, no attendance.</span>
-                            </span>
-                        </label>
+                <div class="alert alert-info">
+                    <span class="alert__icon"><i class="fa-solid fa-door-open"></i></span>
+                    <div class="alert__body">
+                        Every terminal does everything: teachers open sessions on it, students tap their
+                        cards, and it takes fingerprints and issues cards during registration. Assign it
+                        the classroom it is mounted in — a terminal with no classroom cannot open a
+                        session, because a session belongs to a room.
                     </div>
                 </div>
 
@@ -185,15 +180,19 @@ $__view->start('content');
                     </div>
 
                     <div class="form-group" data-classroom-only>
-                        <label for="d-classroom">Classroom</label>
-                        <select id="d-classroom" name="classroom_id">
-                            <option value="">Unassigned</option>
+                        <label for="d-classroom" class="required">Classroom</label>
+                        <select id="d-classroom" name="classroom_id" required>
+                            <option value="">Select the room this terminal is in…</option>
                             <?php foreach ($classrooms as $room): ?>
                                 <option value="<?= e($room['classroom_id']) ?>">
                                     Room <?= e($room['room_number']) ?><?= $room['building'] ? ' — ' . e($room['building']) : '' ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
+                        <span class="field-help">
+                            Required. A session belongs to a room, so a terminal with no classroom can
+                            never open one — it is refused with DEVICE_CLASSROOM_MISMATCH.
+                        </span>
                     </div>
 
                     <div class="form-group" data-classroom-only>
@@ -296,31 +295,10 @@ $__view->start('scripts');
     const LS = window.LSIAMS;
     let provisioning = null;
 
-    /* An enrolment scanner has no classroom and no reader role — it records no
-       taps, so there is no in/out decision for a role to describe. Hiding the
-       two fields keeps them from being filled in and then quietly ignored. */
-    const purposeInputs = document.querySelectorAll('[name="purpose"]');
-    const stationField  = document.getElementById('d-station');
-
-    function applyPurpose() {
-        const station = document.querySelector('[name="purpose"]:checked').value === 'enrollment';
-
-        stationField.value = station ? '1' : '0';
-
-        document.querySelectorAll('[data-classroom-only]').forEach((group) => {
-            group.classList.toggle('hidden', station);
-        });
-
-        const name = document.getElementById('d-name');
-        name.placeholder = station ? 'Enrolment scanner (front office)' : 'Room 204 Terminal';
-
-        if (station) {
-            document.getElementById('d-classroom').value = '';
-        }
-    }
-
-    purposeInputs.forEach((input) => input.addEventListener('change', applyPurpose));
-    applyPurpose();
+    /* There is one kind of terminal now. The two-way choice split one device's
+       job in half and let a board be registered in a shape that could never
+       open a session — no classroom, so no schedule could ever match it. Every
+       terminal is a classroom terminal and does enrolment as well. */
 
     document.getElementById('device-form').addEventListener('submit', async function (event) {
         event.preventDefault();
