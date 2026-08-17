@@ -672,6 +672,89 @@ final class TeacherService
      *
      * @return list<array<string,mixed>>
      */
+    /**
+     * What is happening to this teacher's attempt to open a session.
+     *
+     * The terminal is already scanning; it does not need telling to start. What
+     * was missing was any way for the teacher to see the result of putting a
+     * finger down — the reader gives a beep the person at a computer cannot
+     * hear, and the outcome only ever appeared in the terminal's serial log,
+     * which nobody in a classroom is watching.
+     *
+     * Every verification attempt is already written to fingerprint_logs with
+     * its result and message, so this reads that rather than inventing a
+     * parallel channel the device would have to be taught to feed. Nothing on
+     * the board changes, and the reasons shown are the real ones the server
+     * gave, not a UI approximation of them.
+     *
+     * $since bounds the search to attempts made after the teacher started
+     * watching. Without it the panel would open already showing this morning's
+     * failure and look like a fresh one.
+     *
+     * @return array<string,mixed>
+     */
+    public static function sessionStartState(int $teacherId, ?string $since = null): array
+    {
+        $db = Database::instance();
+
+        $open = $db->selectOne(
+            "SELECT s.session_id, s.session_code, sub.subject_code, sec.section_code,
+                    c.room_number, s.opened_at, s.expires_at
+               FROM attendance_sessions s
+               JOIN subjects sub  ON sub.subject_id = s.subject_id
+               JOIN sections sec  ON sec.section_id = s.section_id
+               JOIN classrooms c  ON c.classroom_id = s.classroom_id
+              WHERE s.teacher_id = :teacher AND s.status = 'open'
+              ORDER BY s.opened_at DESC LIMIT 1",
+            ['teacher' => $teacherId]
+        );
+
+        if ($open !== null) {
+            return [
+                'state'        => 'open',
+                'session_id'   => (int) $open['session_id'],
+                'session_code' => (string) $open['session_code'],
+                'subject_code' => (string) $open['subject_code'],
+                'section_code' => (string) $open['section_code'],
+                'room_number'  => (string) $open['room_number'],
+                'message'      => sprintf(
+                    'Session %s is open for %s with %s in Room %s.',
+                    $open['session_code'],
+                    $open['subject_code'],
+                    $open['section_code'],
+                    $open['room_number']
+                ),
+            ];
+        }
+
+        // The most recent attempt since watching began, whatever its outcome.
+        // A failure is the useful case: it carries the server's own reason.
+        $attempt = $db->selectOne(
+            "SELECT result, message, confidence, created_at
+               FROM fingerprint_logs
+              WHERE teacher_id = :teacher
+                AND (:since IS NULL OR created_at >= :since2)
+              ORDER BY log_id DESC LIMIT 1",
+            ['teacher' => $teacherId, 'since' => $since, 'since2' => $since]
+        );
+
+        if ($attempt === null) {
+            return ['state' => 'waiting', 'message' => null];
+        }
+
+        // 'verified' with no open session means the scan was accepted and the
+        // session opened and closed again inside the poll interval, or another
+        // room already had one. Reported as an attempt rather than success, so
+        // the panel never claims a session that is not there.
+        return [
+            'state'      => (string) $attempt['result'] === 'verified' ? 'verified' : 'refused',
+            'result'     => (string) $attempt['result'],
+            'message'    => (string) ($attempt['message'] ?? ''),
+            'confidence' => $attempt['confidence'] === null ? null : (int) $attempt['confidence'],
+            'at'         => (string) $attempt['created_at'],
+        ];
+    }
+
     public static function sectionsForTeacher(int $teacherId): array
     {
         return Database::instance()->select(

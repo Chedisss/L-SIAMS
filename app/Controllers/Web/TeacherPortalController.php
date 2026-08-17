@@ -56,6 +56,28 @@ final class TeacherPortalController extends Controller
      * answers who is in the room, which is the question asked when no class is
      * running.
      */
+    /**
+     * Live state of this teacher's attempt to open a session.
+     *
+     * Polled by the dashboard panel while somebody stands at the reader. It
+     * opens nothing and asks the terminal for nothing — the terminal is already
+     * scanning — it reports what the server has been told, so the teacher sees
+     * the outcome of a scan without walking back to a serial monitor.
+     *
+     * Scoped to the teacher in the session, so the `since` parameter is the
+     * only input and it can only narrow what a teacher already sees about
+     * themselves.
+     */
+    public function sessionState(Request $request): Response
+    {
+        $since = $request->string('since', '');
+
+        return $this->json(TeacherService::sessionStartState(
+            $this->requireTeacherId(),
+            $since === '' ? null : $since
+        ));
+    }
+
     public function sections(Request $request): Response
     {
         $teacherId = $this->requireTeacherId();
