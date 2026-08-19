@@ -1026,6 +1026,15 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
     .enrol-scan__icon.is-waiting { animation: none; }
 }
 
+/* Which class the panel is about. Sits above the scan graphic, quiet enough
+   not to compete with it and permanent enough to still be there when the
+   stage line below has changed four times. */
+.enrol-scan__subject {
+    font-size: 13px; color: var(--text-muted);
+    margin-bottom: .85rem;
+}
+.enrol-scan__subject strong { color: var(--text); }
+
 .enrol-scan__stage  { font-size: 17px; font-weight: 600; }
 .enrol-scan__detail { margin-top: .3rem; min-height: 2.4em; }
 
