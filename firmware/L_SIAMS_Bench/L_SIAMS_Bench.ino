@@ -1480,7 +1480,14 @@ static bool findFingerprintSensor() {
 
   static const uint32_t bauds[] = { 57600, 9600 };
 
+  /* Each failing pair costs the library's one-second packet timeout, and there
+   * are twenty-odd of them, so this goes quiet for around half a minute. That
+   * silence read as a hang — it arrives right after a wall of wiring advice,
+   * which is exactly when somebody is deciding whether the board has died. A
+   * dot per pair costs nothing and turns a hang into a progress bar. */
   Serial.println("Sensor: not on the configured pins — looking for it...");
+  Serial.println("        Trying every likely pin pair at two baud rates.");
+  Serial.print("        This takes about 30 seconds: ");
 
   for (uint8_t b = 0; b < sizeof(bauds) / sizeof(bauds[0]); b++) {
     for (uint8_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
@@ -1496,8 +1503,11 @@ static bool findFingerprintSensor() {
       fingerSerial.begin(bauds[b], SERIAL_8N1, p.rx, p.tx);
       delay(120);
 
+      Serial.print('.');
+
       if (!finger.verifyPassword()) continue;
 
+      Serial.println();
       Serial.println();
       Serial.printf("Sensor: FOUND on RX %d, TX %d at %lu baud.\n",
                     p.rx, p.tx, (unsigned long) bauds[b]);
@@ -1525,6 +1535,7 @@ static bool findFingerprintSensor() {
   fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
   delay(100);
 
+  Serial.println();
   Serial.println("Sensor: no answer on any pin pair tried.");
 
   return false;
