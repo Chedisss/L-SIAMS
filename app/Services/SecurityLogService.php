@@ -55,6 +55,14 @@ final class SecurityLogService
     public const UNKNOWN_RFID                        = 'UNKNOWN_RFID';
     public const SECTION_MISMATCH_REPEATED           = 'SECTION_MISMATCH_REPEATED';
 
+    // Biometric override. Not a failure — a teacher whose finger will not read
+    // is meant to be able to open their class — but a session opened without a
+    // scan is a control that did not run, and controls that did not run belong
+    // where somebody reviews them rather than only in the audit trail among
+    // the routine record edits.
+    public const BIOMETRIC_OVERRIDE_USED             = 'BIOMETRIC_OVERRIDE_USED';
+    public const BIOMETRIC_OVERRIDE_REFUSED          = 'BIOMETRIC_OVERRIDE_REFUSED';
+
     /** @param array<string,mixed> $context */
     public static function log(
         string $event,

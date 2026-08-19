@@ -183,6 +183,14 @@ foreach ($roster as $entry) {
                     'Building'        => (string) ($session['building'] ?? '—'),
                     'Scheduled'       => format_time($session['start_time']) . ' – ' . format_time($session['end_time']),
                     'Opened'          => format_datetime($session['opened_at']),
+                    // Which proof the teacher gave. 'password' means the
+                    // fingerprint could not be read and the failover was used;
+                    // it belongs on the record rather than only in the audit
+                    // trail, because the person asking "was this teacher
+                    // actually in the room" is reading this page.
+                    'Opened by'       => (string) ($session['opened_method'] ?? 'fingerprint') === 'password'
+                        ? 'Password (no fingerprint)'
+                        : 'Fingerprint',
                     'Auto-close'      => $session['expires_at'] ? format_datetime($session['expires_at']) : '—',
                     'Closed'          => $session['closed_at'] ? format_datetime($session['closed_at']) : '—',
                     'Closed by'       => (string) ($session['closed_by_type'] ?? '—'),

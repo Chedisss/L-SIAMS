@@ -127,6 +127,24 @@ return [
             ? ['limit' => $deviceRateLimit, 'window' => 60]
             : null,
         'login'    => ['limit' => 10,  'window' => 300],
+        // Opening an attendance session on a password instead of a
+        // fingerprint. Counted per account rather than per IP, because a
+        // school runs behind one NAT address and one teacher mistyping their
+        // password must not throttle the staffroom.
+        //
+        // The middleware counts requests, not failures, so the budget has to
+        // cover the ways a teacher legitimately spends one: a mistype, a
+        // caps-lock, an attempt made two minutes before the window opens, a
+        // second class that needed disambiguating. Five ran out during
+        // testing without a single wrong password being typed, and a failover
+        // that locks out the person it exists for is not a failover.
+        //
+        // Ten still bounds guessing hard. An attacker here already holds the
+        // teacher's signed-in browser — this gate is re-authentication, the
+        // same thing requirePasswordConfirmation does elsewhere in the app
+        // with no limit at all — and bcrypt at cost 12 makes ten guesses per
+        // five minutes worth nothing against a 12-character minimum.
+        'session_override' => ['limit' => 10, 'window' => 300],
         'api_user' => ['limit' => 300, 'window' => 60],
         'web'      => ['limit' => 600, 'window' => 60],
     ],

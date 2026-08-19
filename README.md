@@ -17,7 +17,7 @@ no cloud service, no external API, and no internet dependency at runtime.
 | | |
 |---|---|
 | **Attendance capture** | RFID tap-in and tap-out on ESP32 terminals, with the server deciding intent, not the device |
-| **Session control** | A session opens only when a teacher's fingerprint verifies on the terminal for a class they are actually scheduled to teach |
+| **Session control** | A session opens only when the teacher proves they are there — a fingerprint on the terminal, or their own password as a failover when the reader cannot read them — and only for a class they are actually scheduled to teach |
 | **Offline tolerance** | Terminals queue taps in flash when the network drops and replay them with their original timestamps and idempotency keys |
 | **Status model** | Separate arrival, departure and final statuses, so "arrived late and left early" is not flattened into one ambiguous word |
 | **Reporting** | 15 report types, exported as PDF, Excel or CSV, all generated without any third-party library |

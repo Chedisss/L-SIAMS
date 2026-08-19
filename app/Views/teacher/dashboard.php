@@ -23,9 +23,10 @@ $counters = $overview['current_counters'];
         <span class="alert__icon"><i class="fa-solid fa-fingerprint"></i></span>
         <div class="alert__body">
             <div class="alert__title">Your fingerprint is not enrolled</div>
-            You cannot open attendance sessions until an administrator enrols your fingerprint
-            on a classroom terminal. Attendance always begins with your fingerprint — there is no
-            way to start one without it.
+            Ask an administrator to enrol your fingerprint on a classroom terminal. Until then you
+            can still open a session from this dashboard using your account password, during the
+            class's scan window — but the reader is the normal way in, and every session opened
+            without it is recorded as such.
         </div>
     </div>
 <?php endif; ?>
@@ -216,6 +217,62 @@ foreach ($overview['todays_schedule'] as $slot) {
                     Terminal <?= e($liveClass['device_id'] ?? 'not assigned') ?>
                     · scan window <?= e(substr((string) $liveClass['scan_opens'], 0, 5)) ?>–<?= e(substr((string) $liveClass['scan_closes'], 0, 5)) ?>
                 </div>
+            </div>
+
+            <?php /*
+                The failover.
+
+                A fingerprint is the right primary control and the wrong only
+                control. Wet hands, a cut, a burn, a plaster, a reader that
+                died overnight — any one of them used to end with a full class
+                whose attendance was never recorded, because there was no
+                second way in.
+
+                It stays folded away behind one click. The scan is what should
+                happen, and a button of equal weight beside it would invite
+                teachers to skip the reader on an ordinary morning.
+            */ ?>
+            <div class="session-fallback" id="ss-fallback">
+                <button type="button" class="btn btn-ghost btn-sm" id="ss-fallback-toggle"
+                        aria-expanded="false" aria-controls="ss-fallback-form">
+                    <i class="fa-solid fa-key"></i> The reader will not read my finger
+                </button>
+
+                <form class="session-fallback__form hidden" id="ss-fallback-form" autocomplete="off" novalidate>
+                    <p class="text-sm">
+                        Open <strong><?= e($liveClass['subject_code']) ?></strong> with
+                        <strong><?= e($liveClass['section_code']) ?></strong> using your account
+                        password instead of a scan. Everything else is unchanged: students still
+                        tap their cards on the terminal in Room <?= e($liveClass['room_number']) ?>.
+                    </p>
+                    <p class="text-xs text-muted">
+                        The session is recorded as opened without a fingerprint, and an
+                        administrator is notified. Use it when the reader cannot read you —
+                        not instead of it.
+                    </p>
+
+                    <div class="form-group">
+                        <label for="ss-password" class="required">Password</label>
+                        <input type="password" id="ss-password" name="password"
+                               autocomplete="current-password" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="ss-password-confirm" class="required">Confirmation of password</label>
+                        <input type="password" id="ss-password-confirm" name="password_confirmation"
+                               autocomplete="current-password" required>
+                    </div>
+
+                    <div class="alert alert-danger hidden" id="ss-fallback-error">
+                        <span class="alert__icon"><i class="fa-solid fa-circle-exclamation"></i></span>
+                        <div class="alert__body" id="ss-fallback-error-text"></div>
+                    </div>
+
+                    <button type="submit" class="btn btn-warning btn-block" id="ss-fallback-submit">
+                        <i class="fa-solid fa-door-open"></i>
+                        Start the session without scanning
+                    </button>
+                </form>
             </div>
         </div>
     </div>
@@ -513,6 +570,13 @@ $__view->start('scripts');
                 goto.classList.remove('hidden');
                 goto.href = '/teacher/sessions';
                 step('open', 'done');
+
+                // The scan won. Take the failover away rather than leaving a
+                // password form open on a screen at the front of a classroom.
+                fallback.classList.add('hidden');
+                fbPass.value    = '';
+                fbConfirm.value = '';
+
                 LS.toast.success('Attendance session opened. Students may tap now.');
                 return;
             }
@@ -558,6 +622,100 @@ $__view->start('scripts');
         stop();
         poll();
         timer = setInterval(poll, 2000);
+    });
+
+    /* ------------------------------------------------------- the failover -- */
+
+    const fallback  = document.getElementById('ss-fallback');
+    const fbToggle  = document.getElementById('ss-fallback-toggle');
+    const fbForm    = document.getElementById('ss-fallback-form');
+    const fbSubmit  = document.getElementById('ss-fallback-submit');
+    const fbError   = document.getElementById('ss-fallback-error');
+    const fbErrText = document.getElementById('ss-fallback-error-text');
+    const fbPass    = document.getElementById('ss-password');
+    const fbConfirm = document.getElementById('ss-password-confirm');
+
+    function fbFail(message) {
+        fbErrText.textContent = message;
+        fbError.classList.remove('hidden');
+    }
+
+    fbToggle.addEventListener('click', function () {
+        const open = fbForm.classList.toggle('hidden') === false;
+
+        fbToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+        if (open) fbPass.focus();
+    });
+
+    fbForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        fbError.classList.add('hidden');
+
+        // Checked here as well as on the server. The server's answer is the
+        // one that counts — this only spares a teacher a round trip to be
+        // told they mistyped the second box.
+        if (fbPass.value === '' || fbConfirm.value === '') {
+            fbFail('Enter your password in both boxes.');
+            return;
+        }
+
+        if (fbPass.value !== fbConfirm.value) {
+            fbFail('The two passwords do not match.');
+            fbConfirm.value = '';
+            fbConfirm.focus();
+            return;
+        }
+
+        fbSubmit.disabled  = true;
+        fbSubmit.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Opening…';
+
+        try {
+            const response = await LS.http.post('/teacher/start-session', {
+                password: fbPass.value,
+                password_confirmation: fbConfirm.value,
+                schedule_id: card.dataset.schedule,
+            });
+
+            // Clear the fields before anything else. The session is open; the
+            // password has no reason to stay in the DOM of a machine that is
+            // about to be left on a classroom desk.
+            fbPass.value    = '';
+            fbConfirm.value = '';
+
+            stop();
+
+            const session = (response && response.data) || {};
+
+            icon.className     = 'enrol-scan__icon is-success';
+            stage.textContent  = 'Session open';
+            detail.textContent = response.message || '';
+            warning.classList.add('hidden');
+            watch.classList.add('hidden');
+            goto.classList.remove('hidden');
+            goto.href = session.session_id ? '/teacher/sessions/' + session.session_id : '/teacher/sessions';
+            step('open', 'done');
+
+            // The whole block goes, not just the form. Leaving the toggle's
+            // divider behind draws a rule under a panel with nothing below it.
+            fallback.classList.add('hidden');
+
+            // Step two says a finger was scanned. It was not, and a green tick
+            // beside that sentence is the panel telling the teacher something
+            // untrue about the record they just created.
+            const scanStep = document.querySelector('#ss-steps li[data-stage="scan"]');
+            if (scanStep) scanStep.textContent = 'Opened with your password — no fingerprint';
+
+            LS.toast.success('Session opened without a scan. Students may tap now.');
+        } catch (error) {
+            fbPass.value    = '';
+            fbConfirm.value = '';
+            fbFail((error && error.message) || 'The session could not be opened.');
+            fbPass.focus();
+        } finally {
+            fbSubmit.disabled  = false;
+            fbSubmit.innerHTML = '<i class="fa-solid fa-door-open"></i> Start the session without scanning';
+        }
     });
 
     // A session opened from the terminal without anybody pressing the button

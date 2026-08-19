@@ -111,6 +111,10 @@ final class RateLimitMiddleware extends Middleware
             // may legitimately share a NAT address on a school LAN.
             'device'   => (string) ($request->header((string) Config::get('security.request.headers.device_id', 'X-LSIAMS-Device-Id')) ?? $request->ip()),
             'login'    => $request->ip() . '|' . $request->string('username', ''),
+            // Per signed-in account. The endpoint is already behind auth, so
+            // there is always an id; the IP fallback only exists so a bucket
+            // key is never empty.
+            'session_override' => 'user:' . (Auth::id() ?? $request->ip()),
             'api_user' => (string) (Auth::id() ?? $request->ip()),
             default    => $request->ip(),
         };

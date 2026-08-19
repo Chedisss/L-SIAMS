@@ -1045,6 +1045,31 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 .enrol-scan__steps li.is-current         { color: var(--primary); font-weight: 600; }
 .enrol-scan__steps li.is-current::before { content: '●'; color: var(--primary); }
 
+/* ---------------------------------------------------------------------------
+   The fingerprint failover.
+
+   Deliberately quiet, and deliberately below the scan panel. A teacher whose
+   finger will not read has to be able to find it; a teacher whose finger reads
+   perfectly well should never be tempted by it. So: a ghost button of the
+   smallest size, separated by a rule, and the form itself hidden until asked
+   for.
+   --------------------------------------------------------------------------- */
+
+.session-fallback {
+    margin-top: 1rem;
+    padding-top: .85rem;
+    border-top: 1px solid var(--border);
+    text-align: center;
+}
+
+.session-fallback__form {
+    max-width: 340px;
+    margin: .85rem auto 0;
+    text-align: left;
+}
+
+.session-fallback__form p { margin: 0 0 .6rem; }
+
 /* Radio cards for a choice that changes what the rest of a form means, where a
    plain <select> would bury the consequence in an option label. */
 .choice-card {
