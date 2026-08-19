@@ -71,23 +71,53 @@ $counters = $overview['current_counters'];
     </div>
 </div>
 
+<?php
+// The class whose scan window is open right now, if any. DashboardService has
+// already decided that against the application clock, so this only picks the
+// first one rather than working out the times again.
+$liveClass = null;
+
+foreach ($overview['todays_schedule'] as $slot) {
+    if ($slot['scan_state'] === 'now') { $liveClass = $slot; break; }
+}
+?>
+
 <!-- Current class -------------------------------------------------------- -->
-<div class="card">
+<?php /*
+    One card, three states, in the order a teacher meets them: a session is
+    open, or one can be opened right now, or neither.
+
+    The middle state used to live in a separate card further down the page.
+    That put "Go to your classroom and place your finger on the sensor" — with
+    no way to do anything else — directly under the heading a teacher reads
+    first, and the controls that could actually open the class below the fold.
+    A teacher whose finger will not read was told to go and scan it.
+*/ ?>
+<div class="card"<?= $current === null && $liveClass !== null
+    ? ' id="start-session" data-schedule="' . e($liveClass['schedule_id']) . '"'
+    : '' ?>>
     <div class="card__header">
         <h2 class="card__title"><i class="fa-solid fa-bolt text-warning"></i> Current class</h2>
         <?php if ($current !== null): ?>
             <span class="badge badge-success badge-dot">Session open</span>
+        <?php elseif ($liveClass !== null): ?>
+            <span class="badge badge-success">window open</span>
         <?php endif; ?>
     </div>
 
     <div class="card__body">
-        <?php if ($current === null): ?>
+        <?php if ($current === null && $liveClass !== null): ?>
+            <?php $__view->include('teacher.partials.session-start', ['liveClass' => $liveClass]); ?>
+        <?php elseif ($current === null): ?>
             <div class="empty-state" style="padding:2rem">
                 <div class="empty-state__icon"><i class="fa-solid fa-door-closed"></i></div>
                 <div class="empty-state__title">No attendance session open</div>
                 <p class="empty-state__text">
-                    Go to your classroom and place your finger on the terminal's sensor. Once your
-                    fingerprint is verified against the schedule, attendance opens and students can tap in.
+                    <?php /* Why there is nothing to press: not "scan your finger", which is
+                             advice a teacher cannot act on when no class is running. */ ?>
+                    None of your classes is inside its attendance window at the moment. The
+                    controls for opening a session appear here from ten minutes before a class
+                    starts.
                 </p>
             </div>
         <?php else: ?>
@@ -156,127 +186,6 @@ $counters = $overview['current_counters'];
     </div>
 </div>
 
-<?php
-// The class whose scan window is open right now, if any. DashboardService has
-// already decided that against the application clock, so this only picks the
-// first one rather than working out the times again.
-$liveClass = null;
-
-foreach ($overview['todays_schedule'] as $slot) {
-    if ($slot['scan_state'] === 'now') { $liveClass = $slot; break; }
-}
-?>
-
-<?php if ($liveClass !== null): ?>
-    <!-- Open a session ------------------------------------------------------->
-    <!--
-        The terminal is already scanning; nothing here tells it to start. What
-        this adds is sight of the result. Putting a finger on the reader gives a
-        beep the person at a computer cannot hear, and until now the outcome
-        only appeared in the terminal's serial log, which nobody in a classroom
-        is watching. This shows the same answer the server gave.
-    -->
-    <div class="card" id="start-session" data-schedule="<?= e($liveClass['schedule_id']) ?>">
-        <div class="card__header">
-            <h2 class="card__title">
-                <i class="fa-solid fa-fingerprint"></i>
-                Open <?= e($liveClass['subject_code']) ?> with <?= e($liveClass['section_code']) ?>
-            </h2>
-            <span class="badge badge-success">window open</span>
-        </div>
-
-        <div class="card__body">
-            <div class="enrol-scan">
-                <div class="enrol-scan__icon is-waiting" id="ss-icon"><i class="fa-solid fa-fingerprint"></i></div>
-                <div class="enrol-scan__stage" id="ss-stage">Ready when you are</div>
-                <div class="enrol-scan__detail text-sm text-muted" id="ss-detail">
-                    Scan your fingerprint on the terminal in Room <?= e($liveClass['room_number']) ?>.
-                </div>
-
-                <ol class="enrol-scan__steps" id="ss-steps">
-                    <li data-stage="window">Class window is open</li>
-                    <li data-stage="scan">Scan your fingerprint at the terminal</li>
-                    <li data-stage="open">Session opens and students may tap</li>
-                </ol>
-
-                <div class="alert alert-warning mt-2 hidden" id="ss-warning">
-                    <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
-                    <div class="alert__body" id="ss-warning-text"></div>
-                </div>
-
-                <div class="flex gap-1 mt-2" style="justify-content:center">
-                    <button class="btn btn-primary" id="ss-watch">
-                        <i class="fa-solid fa-eye"></i> I am scanning now
-                    </button>
-                    <a class="btn btn-secondary hidden" id="ss-goto" href="/teacher/sessions">
-                        <i class="fa-solid fa-arrow-right"></i> Open the session
-                    </a>
-                </div>
-
-                <div class="text-xs text-muted mt-2">
-                    Terminal <?= e($liveClass['device_id'] ?? 'not assigned') ?>
-                    · scan window <?= e(substr((string) $liveClass['scan_opens'], 0, 5)) ?>–<?= e(substr((string) $liveClass['scan_closes'], 0, 5)) ?>
-                </div>
-            </div>
-
-            <?php /*
-                The failover.
-
-                A fingerprint is the right primary control and the wrong only
-                control. Wet hands, a cut, a burn, a plaster, a reader that
-                died overnight — any one of them used to end with a full class
-                whose attendance was never recorded, because there was no
-                second way in.
-
-                It stays folded away behind one click. The scan is what should
-                happen, and a button of equal weight beside it would invite
-                teachers to skip the reader on an ordinary morning.
-            */ ?>
-            <div class="session-fallback" id="ss-fallback">
-                <button type="button" class="btn btn-ghost btn-sm" id="ss-fallback-toggle"
-                        aria-expanded="false" aria-controls="ss-fallback-form">
-                    <i class="fa-solid fa-key"></i> The reader will not read my finger
-                </button>
-
-                <form class="session-fallback__form hidden" id="ss-fallback-form" autocomplete="off" novalidate>
-                    <p class="text-sm">
-                        Open <strong><?= e($liveClass['subject_code']) ?></strong> with
-                        <strong><?= e($liveClass['section_code']) ?></strong> using your account
-                        password instead of a scan. Everything else is unchanged: students still
-                        tap their cards on the terminal in Room <?= e($liveClass['room_number']) ?>.
-                    </p>
-                    <p class="text-xs text-muted">
-                        The session is recorded as opened without a fingerprint, and an
-                        administrator is notified. Use it when the reader cannot read you —
-                        not instead of it.
-                    </p>
-
-                    <div class="form-group">
-                        <label for="ss-password" class="required">Password</label>
-                        <input type="password" id="ss-password" name="password"
-                               autocomplete="current-password" required>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="ss-password-confirm" class="required">Confirmation of password</label>
-                        <input type="password" id="ss-password-confirm" name="password_confirmation"
-                               autocomplete="current-password" required>
-                    </div>
-
-                    <div class="alert alert-danger hidden" id="ss-fallback-error">
-                        <span class="alert__icon"><i class="fa-solid fa-circle-exclamation"></i></span>
-                        <div class="alert__body" id="ss-fallback-error-text"></div>
-                    </div>
-
-                    <button type="submit" class="btn btn-warning btn-block" id="ss-fallback-submit">
-                        <i class="fa-solid fa-door-open"></i>
-                        Start the session without scanning
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-<?php endif; ?>
 
 <div class="grid grid--2">
     <!-- Today's schedule --------------------------------------------------- -->
@@ -668,7 +577,10 @@ $__view->start('scripts');
         }
 
         fbSubmit.disabled  = true;
-        fbSubmit.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Opening…';
+        // fa-arrows-rotate, not fa-spinner: icons.css carries a hand-drawn
+        // subset of Font Awesome and has no spinner glyph, so that one renders
+        // as a blank box for the whole time the button is busy.
+        fbSubmit.innerHTML = '<i class="fa-solid fa-arrows-rotate fa-spin"></i> Opening…';
 
         try {
             const response = await LS.http.post('/teacher/start-session', {
