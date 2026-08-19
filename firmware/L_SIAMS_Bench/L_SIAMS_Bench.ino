@@ -13,10 +13,14 @@
  *      3.3V   -> 3V3   (NEVER 5V; 5 V destroys this module)
  *      GND    -> GND
  *
- * Wiring — R307 fingerprint (UART2, 57600):
+ * Wiring — AS608 fingerprint (UART2, 57600):
  *      TX  -> GPIO 16  (silkscreen RX2)   sensor transmits, ESP32 receives
  *      RX  -> GPIO 17  (silkscreen TX2)   ESP32 transmits, sensor receives
- *      VCC -> VIN (5V)     GND -> GND
+ *      VCC -> 3V3  (3.3 V — a bare AS608 has NO regulator; 5 V destroys it)
+ *      GND -> GND
+ *
+ *      An R307 is the same sensor in a 5 V housing with a regulator on
+ *      board. If you swap back to one, that VCC moves to VIN.
  *      WAKEUP and the 3.3 V touch feed stay disconnected.
  *
  * Libraries, by the exact name Library Manager shows:
@@ -547,7 +551,7 @@ static void watchReader() {
  * to exactly that slot and reports back which slot it actually used. The server
  * refuses the result if those two disagree.
  *
- * Still no template on the wire: it is built inside the R307 from two images
+ * Still no template on the wire: it is built inside the sensor from two images
  * and stored in the sensor's own flash. What crosses the network is a slot
  * number and a quality score.
  */
@@ -674,7 +678,7 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
     Serial.printf("Enrol: the sensor accepted the write but slot %d reads back empty (code %d)\n",
                   slot, readBack);
     Serial.println("       The template is not really stored. This is a sensor fault, not a bad scan.");
-    Serial.println("       Power the R307 off and on — a full power cycle, not just the ESP32 reset —");
+    Serial.println("       Power the sensor off and on — a full power cycle, not just the ESP32 reset —");
     Serial.println("       then type 'wipe' and enrol again.");
 
     reportEnrollFailed(requestId,
@@ -785,7 +789,7 @@ static void pollEnrollment() {
   }
 
   /* A finger can still be matched against templates already in the sensor's
-   * flash without any of this — matching is local to the R307. So verification
+   * flash without any of this — matching is local to the sensor. So verification
    * keeps working and printing while enrolment is dead, which is exactly how
    * this failure hides. */
   if (!clockSet) {
@@ -882,7 +886,7 @@ static void handleFingerprint() {
   /* Two different failures were being reported as one.
    *
    * fingerFastSearch() sends HighSpeedSearch (0x1B). Plenty of sensors sold as
-   * R307 are clones that either do not implement it or implement it over a
+   * AS608 or R307 are clones that either do not implement it or implement it over a
    * narrower page range than they claim, and they answer with an error rather
    * than a polite "no match". The ordinary Search (0x04) is the same operation
    * without the optimisation and is supported everywhere, so an error from the
@@ -895,15 +899,15 @@ static void handleFingerprint() {
    * finger".
    *
    * fingerFastSearch() sends HighSpeedSearch (0x1B). Plenty of sensors sold as
-   * R307 are clones that do not implement it, or cover a narrower page range
+   * AS608 or R307 are clones that do not implement it, or cover a narrower page range
    * than they claim, and answer with an error rather than a polite "no match".
    * The ordinary Search (0x04) is the same operation without the optimisation
    * and is supported everywhere.
    *
    * Beyond that, a search is the longest and most power-hungry thing the
-   * sensor does, and it is where a marginal 5 V rail or a noisy UART pair
+   * sensor does, and it is where a marginal supply rail or a noisy UART pair
    * shows up first. The give-away is a confirmation code outside the
-   * datasheet's table — 0x17 is not a code the R307 defines, so a reply
+   * datasheet's table — 0x17 is not a code the AS608/R307 family defines, so a reply
    * carrying it was corrupted in transit rather than sent deliberately.
    * Corruption is transient, so it is worth asking again.
    *
@@ -922,7 +926,7 @@ static void handleFingerprint() {
 
   if (search == FINGERPRINT_OK && usedSlow) {
     Serial.println("\nFinger: the fast search failed but the ordinary one worked.");
-    Serial.println("        Harmless in itself, but it usually means the sensor's 5 V rail");
+    Serial.println("        Harmless in itself, but it usually means the sensor's supply rail");
     Serial.println("        or its RX/TX pair is marginal. Worth tightening before it bites.");
   }
 
@@ -940,7 +944,8 @@ static void handleFingerprint() {
     Serial.println("        Codes outside the datasheet's table mean the reply was corrupted,");
     Serial.println("        not that the finger is unknown. Enrolling again will not help.");
     Serial.println("        Check, in this order:");
-    Serial.println("          1. The R307's red wire on VIN (5 V), not 3V3 — it browns out mid-search.");
+    Serial.println("          1. The sensor's VCC on 3V3 for an AS608 (5 V destroys it), or on VIN");
+    Serial.println("             for an R307. The wrong one browns out mid-search or kills the module.");
     Serial.println("          2. A shared GND between the sensor and the ESP32.");
     Serial.println("          3. The RX/TX pair re-seated; breadboard contacts are the usual culprit.");
     Serial.println("          4. Powering the ESP32 from a wall charger rather than a laptop port.");
@@ -1453,7 +1458,7 @@ static void checkConfig() {
  * Rather than asking which pins were used, try the plausible ones. Each pair
  * is tried both ways round, so a reversed connection is found and named
  * instead of reported as a missing sensor. Both baud rates are tried too:
- * 57600 is the R307's default, but modules ship configured at 9600 and the
+ * 57600 is the AS608's default, but modules ship configured at 9600 and the
  * symptom is identical.
  *
  * Only runs when the configured pins fail, so a correctly wired board never
@@ -1475,7 +1480,7 @@ static bool findFingerprintSensor() {
 
   static const uint32_t bauds[] = { 57600, 9600 };
 
-  Serial.println("R307: not on the configured pins — looking for it...");
+  Serial.println("Sensor: not on the configured pins — looking for it...");
 
   for (uint8_t b = 0; b < sizeof(bauds) / sizeof(bauds[0]); b++) {
     for (uint8_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
@@ -1494,7 +1499,7 @@ static bool findFingerprintSensor() {
       if (!finger.verifyPassword()) continue;
 
       Serial.println();
-      Serial.printf("R307: FOUND on RX %d, TX %d at %lu baud.\n",
+      Serial.printf("Sensor: FOUND on RX %d, TX %d at %lu baud.\n",
                     p.rx, p.tx, (unsigned long) bauds[b]);
       Serial.println();
       Serial.println("  It works from here, but the sketch is still configured for");
@@ -1520,7 +1525,7 @@ static bool findFingerprintSensor() {
   fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
   delay(100);
 
-  Serial.println("R307: no answer on any pin pair tried.");
+  Serial.println("Sensor: no answer on any pin pair tried.");
 
   return false;
 }
@@ -1605,7 +1610,7 @@ void setup() {
     Serial.println("    3. MISO 19, MOSI 23, SCK 18, SDA/SS 5, RST 22 - MISO and MOSI");
     Serial.println("       are the pair people swap.");
     Serial.println("    4. Re-seat every jumper. Breadboard contacts are the usual cause.");
-    Serial.println("    5. Unplug the R307 and reboot. It shares the supply and draws");
+    Serial.println("    5. Unplug the fingerprint sensor and reboot. It shares the supply and draws");
     Serial.println("       bursts; if the version steadies without it, the rail is weak.");
   }
 
@@ -1624,7 +1629,7 @@ void setup() {
   if (finger.verifyPassword()) {
     finger.getTemplateCount();
     fingerReady = true;
-    Serial.printf("R307: found — %d template(s) enrolled on this sensor\n",
+    Serial.printf("Sensor: found — %d template(s) enrolled on this sensor\n",
                   finger.templateCount);
     Serial.println("       console: type count, slots or wipe into the Serial Monitor");
     if (finger.templateCount == 0) {
@@ -1636,12 +1641,12 @@ void setup() {
     /* The pins are printed rather than hard-coded into the sentence, because
      * they are configurable and a message naming 16 and 17 while the sketch
      * uses 25 and 26 sends somebody to check wiring that is already right. */
-    Serial.printf("R307: NOT FOUND — sensor TX must reach GPIO %d and its RX GPIO %d.\n",
+    Serial.printf("Sensor: NOT FOUND — sensor TX must reach GPIO %d and its RX GPIO %d.\n",
                   PIN_FINGER_RX, PIN_FINGER_TX);
     Serial.println("  They cross: the sensor's transmit goes to the pin this board");
     Serial.println("  receives on. Wired straight through, both talk and neither listens.");
-    Serial.println("  VCC must match the module: an R307 wants 5 V on VIN, a bare");
-    Serial.println("  AS608 wants 3.3 V.");
+    Serial.println("  VCC must match the module: a bare AS608 wants 3.3 V on 3V3, an");
+    Serial.println("  R307 wants 5 V on VIN. 5 V on a bare AS608 destroys it.");
     Serial.println("  If your board has no 16 or 17, look for RX2 and TX2 — same pins,");
     Serial.println("  different label. If it genuinely has neither (a WROVER uses them");
     Serial.println("  for PSRAM), set PIN_FINGER_RX 25 and PIN_FINGER_TX 26 and rewire.");
@@ -1780,7 +1785,7 @@ void handleConsole() {
     Serial.println("\nOccupied slots:");
     int found = 0;
 
-    /* No bulk "list" exists in the R307 protocol, so each slot is probed by
+    /* No bulk "list" exists in the AS608/R307 protocol, so each slot is probed by
      * asking the sensor to load it. Capped at 200 to keep this quick — a
      * bench sensor never holds more. */
     for (uint16_t slot = 1; slot <= 200; slot++) {
@@ -1831,7 +1836,7 @@ void handleConsole() {
     Serial.println();
     Serial.println("Try once: unplug the sensor's power completely, wait five seconds,");
     Serial.println("reconnect, and run wipe again. If the count still will not reach 0,");
-    Serial.println("this R307 needs replacing — no change to the code or the wiring");
+    Serial.println("this sensor needs replacing — no change to the code or the wiring");
     Serial.println("will fix it.");
 
     return;
