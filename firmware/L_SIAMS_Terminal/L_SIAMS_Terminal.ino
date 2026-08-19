@@ -127,25 +127,69 @@ using LsJson = JsonDocument;
 #include "mbedtls/md.h"
 
 /* ---------------------------------------------------------------- config -- */
-/* All six come from the provisioning JSON downloaded when the terminal was
- * registered. That download is the only copy of the key and secret that will
- * ever exist, and every download rotates them — so use one file, and do not
- * download again after pasting. */
+/* Four of these come from the provisioning JSON downloaded when the terminal
+ * was registered. That download is the only copy of the key and secret that
+ * will ever exist, and every download rotates them — so use one file, and do
+ * not download again after pasting.
+ *
+ * PUT THEM IN secrets.h, NOT HERE.
+ *
+ * Copy secrets.h.example to secrets.h and fill that in. secrets.h is
+ * gitignored; this file is not. update.bat updates by `git reset --hard`,
+ * which replaces every tracked file with the official version — so credentials
+ * typed in below survive exactly until the next update, and then silently
+ * revert to the placeholders. That failure looks like a terminal that worked
+ * yesterday and cannot find the Wi-Fi today.
+ *
+ * It is also the difference between a key that lives on one bench machine and
+ * a key committed to a public repository.
+ *
+ * Editing the defaults below still works if you would rather not keep a
+ * separate file — the sketch compiles either way. It is simply the option that
+ * loses your values on every update. */
 
-static const char *WIFI_SSID   = "YOUR_WIFI_NAME";
-static const char *WIFI_PASS   = "YOUR_WIFI_PASSWORD";
+#if defined(__has_include)
+#  if __has_include("secrets.h")
+#    include "secrets.h"
+#  endif
+#endif
+
+#ifndef LS_WIFI_SSID
+#define LS_WIFI_SSID    "YOUR_WIFI_NAME"
+#endif
+#ifndef LS_WIFI_PASS
+#define LS_WIFI_PASS    "YOUR_WIFI_PASSWORD"
+#endif
 
 /* The host PC's LAN address WITH the port. Never localhost — to the ESP32
  * that means the ESP32. On the PC:
  *   (Get-NetIPConfiguration | Where-Object {$_.IPv4DefaultGateway -ne $null}).IPv4Address.IPAddress */
-static const char *SERVER_URL  = "http://192.168.0.100:8080";
+#ifndef LS_SERVER_URL
+#define LS_SERVER_URL   "http://192.168.0.100:8080"
+#endif
 
-static const char *DEVICE_ID   = "DEV-2026-0001";
-static const char *API_KEY     = "lsk_xxxxxxxx.yyyyyyyy";
-static const char *HMAC_SECRET = "zzzzzzzzzzzzzzzz";
+#ifndef LS_DEVICE_ID
+#define LS_DEVICE_ID    "DEV-2026-0001"
+#endif
+#ifndef LS_API_KEY
+#define LS_API_KEY      "lsk_xxxxxxxx.yyyyyyyy"
+#endif
+#ifndef LS_HMAC_SECRET
+#define LS_HMAC_SECRET  "zzzzzzzzzzzzzzzz"
+#endif
 
 /* Leave CLAIM_TOKEN empty once the device is claimed. */
-static const char *CLAIM_TOKEN = "";
+#ifndef LS_CLAIM_TOKEN
+#define LS_CLAIM_TOKEN  ""
+#endif
+
+static const char *WIFI_SSID   = LS_WIFI_SSID;
+static const char *WIFI_PASS   = LS_WIFI_PASS;
+static const char *SERVER_URL  = LS_SERVER_URL;
+static const char *DEVICE_ID   = LS_DEVICE_ID;
+static const char *API_KEY     = LS_API_KEY;
+static const char *HMAC_SECRET = LS_HMAC_SECRET;
+static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
 
 /* The MAC is NOT configured here. The claim sends WiFi.macAddress() — the
  * address this board actually has — and the server checks it against the one
