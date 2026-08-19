@@ -29,10 +29,24 @@ Stated plainly so nobody assumes a guarantee that is not there.
 
 ### A teacher opens a session for a class they do not teach
 
-Blocked. A session opens only on fingerprint verification, and the server then
-checks that the identified teacher is scheduled to teach *in that classroom, at
-that time*. There is no override, no admin button and no API that opens a session
-some other way. Failures return `NO_ACTIVE_SCHEDULE` and are logged.
+Blocked. A session opens on one of exactly two proofs of identity — a fingerprint
+matched at the room's terminal, or the teacher's own account password typed at
+their own dashboard — and in both cases the server then checks that the
+identified teacher is scheduled to teach *in that classroom, at that time*. The
+schedule check is the same code path either way, so neither proof opens a class
+somebody else teaches. Failures return `NO_ACTIVE_SCHEDULE` and are logged.
+
+The password route is a failover, not a convenience: a sweaty or injured finger,
+or a dead sensor, otherwise costs a whole class its attendance for the day. It
+gives up nothing to an attacker who does not already hold the teacher's
+credentials, and it is deliberately not silent — `attendance_sessions.opened_method`
+records which proof was used, the session detail page shows it, a
+`BIOMETRIC_OVERRIDE_USED` security-log entry is written, and administrators are
+notified. A wrong password is logged as `BIOMETRIC_OVERRIDE_REFUSED` at high
+severity, and the endpoint is rate limited per account.
+
+There is still no administrator button and no API that opens a session on
+somebody else's behalf.
 
 ### Someone replays a captured tap request
 

@@ -15,6 +15,7 @@ use App\Services\DashboardService;
 use App\Services\FingerprintService;
 use App\Services\NotificationService;
 use App\Services\ScheduleService;
+use App\Services\SessionOverrideService;
 use App\Services\TeacherService;
 
 /**
@@ -75,6 +76,37 @@ final class TeacherPortalController extends Controller
         return $this->json(TeacherService::sessionStartState(
             $this->requireTeacherId(),
             $since === '' ? null : $since
+        ));
+    }
+
+    /**
+     * Open the current class without a fingerprint, on the teacher's password.
+     *
+     * The failover for a finger the sensor will not read — sweat, a cut, a
+     * burn, a plaster — and for a sensor that has failed outright. Without it,
+     * any of those costs an entire class its attendance record for the day.
+     *
+     * Nothing here decides anything. Both identifiers come from the session,
+     * never from the request, and every rule the fingerprint path enforces is
+     * enforced again inside SessionOverrideService: right teacher, right room,
+     * right minute. The only input this action accepts is the password, its
+     * confirmation, and an optional schedule id used to disambiguate when two
+     * of the teacher's own classes overlap.
+     */
+    public function startWithPassword(Request $request): Response
+    {
+        $session = SessionOverrideService::openWithPassword(
+            $this->requireTeacherId(),
+            $this->requireUserId(),
+            $request->string('password', ''),
+            $request->string('password_confirmation', ''),
+            $request->int('schedule_id', 0) ?: null
+        );
+
+        return $this->json($session, sprintf(
+            'Session %s is open. %d student(s) may now tap in.',
+            (string) $session['session_code'],
+            (int) $session['roster_count']
         ));
     }
 

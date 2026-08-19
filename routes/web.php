@@ -255,6 +255,12 @@ $router->group('/teacher', $teacherChain, static function ($router): void {
     $router->get('', TeacherPortalController::class . '@dashboard', [], 'teacher.dashboard');
     $router->get('/schedule', TeacherPortalController::class . '@schedule');
     $router->get('/session-state', TeacherPortalController::class . '@sessionState');
+    // Opening a session without a fingerprint. Rate limited per account, not
+    // per IP: this endpoint takes a password, and a password endpoint that
+    // will answer indefinitely is a password endpoint that will eventually be
+    // guessed. Five attempts in five minutes is far more than a teacher
+    // typing their own password needs.
+    $router->post('/start-session', TeacherPortalController::class . '@startWithPassword', ['rate-limit:session_override']);
     $router->get('/sections', TeacherPortalController::class . '@sections');
     $router->get('/sections/{id:\d+}', TeacherPortalController::class . '@sectionRoster');
     $router->get('/attendance', TeacherPortalController::class . '@attendance');

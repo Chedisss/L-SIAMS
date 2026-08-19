@@ -14,21 +14,28 @@ use PDOException;
 /**
  * Attendance session lifecycle.
  *
- * Opening a session is gated on fingerprint verification — there is no code
- * path in this class, or anywhere else, that opens one without a verified
- * fingerprint log entry. Closing is a single transaction that stamps missing
- * time-outs, generates absences for the whole roster and computes the rollups;
- * any failure rolls the entire close back, because a half-closed session would
- * misreport an entire class.
+ * Opening a session requires the teacher to prove they are present. There are
+ * exactly two proofs, and both arrive here already verified: a fingerprint
+ * matched at the room's terminal (FingerprintService) or the teacher's own
+ * account password typed at their own dashboard (SessionOverrideService). This
+ * class verifies neither — it records which one was used, in opened_method, so
+ * a session opened without a scan is never mistaken for one that was.
+ *
+ * Closing is a single transaction that stamps missing time-outs, generates
+ * absences for the whole roster and computes the rollups; any failure rolls
+ * the entire close back, because a half-closed session would misreport an
+ * entire class.
  */
 final class AttendanceSessionService
 {
     /**
-     * Open a session after the teacher's fingerprint has been verified.
+     * Open a session once the teacher's identity has been proved.
      *
      * @param  array<string,mixed> $device
      * @param  array<string,mixed> $teacher
      * @param  array<string,mixed> $schedule
+     * @param  'fingerprint'|'password' $openedMethod which proof the caller verified
+     * @param  int|null $openedByUserId               the account behind a password override
      * @return array<string,mixed>
      */
     public static function open(
@@ -36,7 +43,9 @@ final class AttendanceSessionService
         array $teacher,
         array $schedule,
         ?int $fingerprintLogId = null,
-        ?int $apiKeyId = null
+        ?int $apiKeyId = null,
+        string $openedMethod = 'fingerprint',
+        ?int $openedByUserId = null
     ): array {
         $db  = Database::instance();
         $now = Clock::now();
@@ -51,6 +60,19 @@ final class AttendanceSessionService
             ? $fingerprintLogId
             : null;
 
+        // An unrecognised value would be silently coerced by the ENUM, and the
+        // one thing this column exists to do is tell the truth about how a
+        // session was opened.
+        $openedMethod = $openedMethod === 'password' ? 'password' : 'fingerprint';
+
+        $openedByUserId = $openedMethod === 'password' && $openedByUserId !== null && $openedByUserId > 0
+            ? $openedByUserId
+            : null;
+
+        $proof = $openedMethod === 'password'
+            ? 'after password verification (fingerprint override)'
+            : 'after fingerprint verification';
+
         $date  = $now->format('Y-m-d');
         $start = Clock::combine($date, (string) $schedule['start_time']);
         $end   = Clock::combine($date, (string) $schedule['end_time']);
@@ -59,7 +81,8 @@ final class AttendanceSessionService
 
         try {
             return $db->transaction(static function (Database $db) use (
-                $device, $teacher, $schedule, $fingerprintLogId, $apiKeyId, $now, $date, $start, $end, $expiresAt
+                $device, $teacher, $schedule, $fingerprintLogId, $apiKeyId, $now, $date, $start, $end, $expiresAt,
+                $openedMethod, $openedByUserId, $proof
             ): array {
                 // The unique keys uq_one_open_session_per_classroom and
                 // uq_one_open_session_per_device make a second concurrent open
@@ -127,6 +150,14 @@ final class AttendanceSessionService
                         'closed_by_type' => null,
                         'expires_at'     => $expiresAt->format('Y-m-d H:i:s'),
                         'device_row_id'  => (int) $device['id'],
+                        // The reopening is its own act of identification, so
+                        // the columns describe how *this* one was authorised.
+                        // A session first opened at the reader and reopened by
+                        // password reads as a password opening, which is the
+                        // honest answer to "was a finger scanned to get into
+                        // this room today".
+                        'opened_method'     => $openedMethod,
+                        'opened_by_user_id' => $openedByUserId,
                         'updated_at'     => Clock::nowString(),
                     ], ['session_id' => (int) $earlier['session_id']]);
 
@@ -140,14 +171,19 @@ final class AttendanceSessionService
                         'attendance_session',
                         (int) $earlier['session_id'],
                         ['status' => (string) $earlier['status'], 'closed_at' => $earlier['closed_at']],
-                        ['status' => 'open', 'expires_at' => $expiresAt->format('Y-m-d H:i:s')],
+                        [
+                            'status'        => 'open',
+                            'expires_at'    => $expiresAt->format('Y-m-d H:i:s'),
+                            'opened_method' => $openedMethod,
+                        ],
                         sprintf(
-                            'Attendance session %s reopened by %s %s in room %s after fingerprint verification. '
+                            'Attendance session %s reopened by %s %s in room %s %s. '
                             . 'It had been closed by %s.',
                             (string) $earlier['session_code'],
                             $teacher['first_name'],
                             $teacher['last_name'],
                             $schedule['room_number'] ?? '?',
+                            $proof,
                             (string) ($earlier['closed_by_type'] ?? 'unknown')
                         )
                     );
@@ -172,6 +208,8 @@ final class AttendanceSessionService
                     'expires_at'      => $expiresAt->format('Y-m-d H:i:s'),
                     'status'          => 'open',
                     'fingerprint_log_id' => $fingerprintLogId,
+                    'opened_method'      => $openedMethod,
+                    'opened_by_user_id'  => $openedByUserId,
                     'api_key_id'      => $apiKeyId,
                     'open_ip'         => RequestContext::ip(),
                     'open_mac'        => (string) $device['mac_address'],
@@ -212,23 +250,26 @@ final class AttendanceSessionService
                     $sessionId,
                     null,
                     [
-                        'session_code' => $sessionCode,
-                        'teacher_id'   => (int) $teacher['teacher_id'],
-                        'schedule_id'  => (int) $schedule['schedule_id'],
-                        'device_id'    => (string) $device['device_id'],
+                        'session_code'  => $sessionCode,
+                        'teacher_id'    => (int) $teacher['teacher_id'],
+                        'schedule_id'   => (int) $schedule['schedule_id'],
+                        'device_id'     => (string) $device['device_id'],
+                        'opened_method' => $openedMethod,
                     ],
                     sprintf(
-                        'Attendance session %s opened by %s %s in room %s after fingerprint verification.',
+                        'Attendance session %s opened by %s %s in room %s %s.',
                         $sessionCode,
                         $teacher['first_name'],
                         $teacher['last_name'],
-                        $schedule['room_number'] ?? '?'
+                        $schedule['room_number'] ?? '?',
+                        $proof
                     )
                 );
 
                 return [
                     'session_id'      => $sessionId,
                     'session_code'    => $sessionCode,
+                    'opened_method'   => $openedMethod,
                     'teacher_name'    => sprintf('%s %s', $teacher['first_name'], $teacher['last_name']),
                     'subject_code'    => (string) ($schedule['subject_code'] ?? ''),
                     'subject_name'    => (string) ($schedule['subject_name'] ?? ''),
@@ -618,6 +659,7 @@ final class AttendanceSessionService
         return [
             'session_id'      => $sessionId,
             'session_code'    => (string) $session['session_code'],
+            'opened_method'   => (string) ($session['opened_method'] ?? 'fingerprint'),
             'teacher_name'    => sprintf('%s %s', $teacher['first_name'], $teacher['last_name']),
             'subject_code'    => (string) ($schedule['subject_code'] ?? ''),
             'subject_name'    => (string) ($schedule['subject_name'] ?? ''),
