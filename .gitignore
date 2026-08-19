@@ -14,3 +14,8 @@
 .DS_Store
 *.swp
 node_modules/
+
+# Terminal credentials. The sketch is tracked and update.bat replaces every
+# tracked file, so the API key and Wi-Fi password live beside it in a file
+# that is not — see firmware/L_SIAMS_Terminal/secrets.h.example.
+/firmware/*/secrets.h

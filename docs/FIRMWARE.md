@@ -167,20 +167,30 @@ download again after you have flashed it.
 For a batch, use Devices → **Bulk register** and download the ZIP of one JSON per
 terminal. The same rule applies: that download is the only copy.
 
-### Step 2 — put the six values into the sketch
+### Step 2 — put the values into `secrets.h`
 
-Open `firmware/L_SIAMS_Terminal/L_SIAMS_Terminal.ino` and edit the config block
-at the top. Four come from the provisioning JSON, two are your network:
+Copy `firmware/L_SIAMS_Terminal/secrets.h.example` to `secrets.h` beside it and
+fill that in. Four values come from the provisioning JSON, three are your
+network and server:
 
 ```cpp
-static const char *WIFI_SSID   = "YOUR_WIFI_NAME";
-static const char *WIFI_PASS   = "YOUR_WIFI_PASSWORD";
-static const char *SERVER_URL  = "http://192.168.0.100:8080";
-static const char *DEVICE_ID   = "DEV-2026-0001";
-static const char *API_KEY     = "lsk_xxxxxxxx.yyyyyyyy";
-static const char *HMAC_SECRET = "zzzzzzzzzzzzzzzz";
-static const char *CLAIM_TOKEN = "…";
+#define LS_WIFI_SSID    "YOUR_WIFI_NAME"
+#define LS_WIFI_PASS    "YOUR_WIFI_PASSWORD"
+#define LS_SERVER_URL   "http://192.168.0.100:8080"
+#define LS_DEVICE_ID    "DEV-2026-0001"
+#define LS_API_KEY      "lsk_xxxxxxxx.yyyyyyyy"
+#define LS_HMAC_SECRET  "zzzzzzzzzzzzzzzz"
+#define LS_CLAIM_TOKEN  "…"
 ```
+
+> **Not into the `.ino`.** `secrets.h` is gitignored; the sketch is tracked, and
+> `update.bat` updates by `git reset --hard`, which replaces every tracked file
+> with the official version. Credentials typed into the sketch survive until the
+> next update and then revert to placeholders without a word — which presents as
+> a terminal that worked yesterday and cannot find the Wi-Fi today.
+>
+> The sketch compiles with or without `secrets.h`; without one it falls back to
+> the placeholders and refuses to start, naming the value that is unset.
 
 `SERVER_URL` is the host PC's LAN address **with the port** — never `localhost`,
 which to the ESP32 means the ESP32. On the PC:

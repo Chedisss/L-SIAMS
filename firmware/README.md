@@ -70,10 +70,25 @@ Board: **ESP32 Dev Module**. Serial Monitor: **115200**.
 
 ### Before flashing
 
-Set the four values at the top of the sketch: your Wi-Fi SSID and password, the
-server URL, and the provisioning token from **Devices → Register terminal** in
-the web interface. The sketch refuses to start with the placeholders still in
-place and says which one is unset.
+Copy `secrets.h.example` to `secrets.h` in the same folder and fill it in — your
+Wi-Fi name and password, the server's LAN address with its port, and the four
+values from the provisioning JSON you downloaded at **Devices → Register
+terminal**.
+
+```
+cd firmware\L_SIAMS_Terminal
+copy secrets.h.example secrets.h
+```
+
+**Put them in `secrets.h`, not in the `.ino`.** `secrets.h` is gitignored;
+the sketch is not, and `update.bat` updates by replacing every tracked file. A
+key typed into the sketch survives until the next update and then silently
+reverts to the placeholder — which presents as a terminal that worked yesterday
+and cannot find the Wi-Fi today.
+
+The sketch refuses to start with placeholders still in place and names the one
+that is unset, rather than failing later in a way that looks like a network
+fault.
 
 ### Serial console
 
