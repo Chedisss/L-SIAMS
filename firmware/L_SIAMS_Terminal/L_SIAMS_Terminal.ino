@@ -1,45 +1,109 @@
 /* ===========================================================================
- * L-SIAMS Attendance Terminal
- * ESP32 + MFRC522 + R307 + SSD1306
- * ---------------------------------------------------------------------------
- * State machine (Part 4 startup sequence, Part 16 tap handling):
+ * L-SIAMS classroom terminal
  *
- *   BOOT ─► PROVISION ─► CONNECTING ─► CLAIMING ─► AUTHENTICATING
- *                                                        │
- *                                                        ▼
- *                                          ┌──────► READY ◄──────┐
- *                                          │          │          │
- *                                    (fingerprint)    │      (session
- *                                          │          │       closed)
- *                                          ▼          │          │
- *                                    SESSION_OPEN ────┴──────────┘
+ * THIS IS THE SKETCH TO FLASH. One ESP32 runs the whole loop: a teacher's
+ * finger opens the attendance session, a student's card records against it,
+ * and the server decides every outcome. Everything the web interface can ask
+ * a terminal to do, this sketch answers:
  *
- *   OFFLINE is entered from any state on network loss. Attendance keeps being
- *   recorded into the local queue — that is the whole point of the mode.
+ *      claim its API key from a provisioning token   /api/device/claim
+ *      report in every 30 s, with its sensor count   /api/device/heartbeat
+ *      take its clock from the server                /api/device/time
+ *      enrol a teacher's fingerprint on request      /api/fingerprint/...
+ *      open a session when a known finger verifies   /api/attendance/start
+ *      issue a student's card on request             /api/rfid/enrollment/...
+ *      record a tap                                  /api/attendance/tap
  *
- * Design notes worth knowing before changing anything:
+ * Hardware is deliberately the minimum that does the job: the ESP32, the
+ * reader and the sensor. No display, no buzzer, no LEDs, no button — the
+ * Serial Monitor at 115200 is the console, and the web interface is the
+ * screen. Adding those parts later changes what a person standing at the
+ * terminal sees; it changes nothing about what gets recorded.
  *
- *  · The device never decides whether a tap is an arrival or a departure. It
- *    reports "card X tapped at time Z"; the server resolves intent from the
- *    record state (Part 16.2). This is what keeps two terminals in one room
- *    consistent with each other.
+ * One thing it does NOT do: queue taps while the network is down. A tap
+ * during an outage is refused at the terminal and not recorded. For a bench,
+ * a pilot, or a room on a stable LAN that is a fair trade for a sketch small
+ * enough to read in one sitting. Before this runs unattended in a school,
+ * that queue is the gap to close — firmware/reference/L_SIAMS_Terminal_OLED
+ * carries an implementation of it, against an older server API.
  *
- *  · Every request is HMAC-signed over method, path, device id, timestamp,
- *    nonce and a hash of the body. A replayed request is refused by the server
- *    because the nonce is single-use.
+ * Wiring — MFRC522 (SPI):
+ *      SDA/SS -> GPIO 5      SCK -> GPIO 18     MOSI -> GPIO 23
+ *      MISO   -> GPIO 19     RST -> GPIO 22
+ *      3.3V   -> 3V3   (NEVER 5V; 5 V destroys this module)
+ *      GND    -> GND
  *
- *  · Every attendance request carries a UUIDv4 request_id that is persisted
- *    with the queued record. Retrying after a timeout is therefore safe: the
- *    server returns the original response instead of recording a second tap.
- * =========================================================================== */
+ * Wiring — AS608 fingerprint (UART2, 57600):
+ *      TX  -> GPIO 16  (silkscreen RX2)   sensor transmits, ESP32 receives
+ *      RX  -> GPIO 17  (silkscreen TX2)   ESP32 transmits, sensor receives
+ *      VCC -> 3V3  (3.3 V — a bare AS608 has NO regulator; 5 V destroys it)
+ *      GND -> GND
+ *
+ *      An R307 is the same sensor in a 5 V housing with a regulator on
+ *      board. If you swap back to one, that VCC moves to VIN.
+ *      WAKEUP and the 3.3 V touch feed stay disconnected.
+ *
+ * Sharing the 3V3 pin between both modules:
+ *
+ *      The ESP32 has one 3V3 output and both modules want 3.3 V, so they
+ *      share it. That is fine electrically. What is not fine is stacking two
+ *      solder joints on the same header pin: the upper joint carries all the
+ *      mechanical strain, and it cracks. The result is a connection that
+ *      works on the bench and fails when the board is moved — which reads as
+ *      a dead module, not a dead joint, and costs a day.
+ *
+ *      Make the junction off the board instead:
+ *
+ *          MFRC522 VCC ──┐
+ *                        ├── one wire ── ESP32 3V3
+ *          AS608   VCC ──┘
+ *                   twist, solder, heatshrink
+ *
+ *      Same for GND. Better still, a scrap of perfboard with a 3V3 rail and
+ *      a GND rail: everything lands there, two wires go to the ESP32.
+ *
+ *      Signal pins are never shared. The reader is on SPI and the sensor is
+ *      on UART2 — separate buses, no conflict, nothing to arbitrate.
+ *
+ * Decoupling — fit these, they are not optional on a shared rail:
+ *
+ *      100 uF electrolytic + 100 nF ceramic across 3V3 and GND, as close to
+ *      each module as the leads allow.
+ *
+ *      What they are for, in numbers:
+ *
+ *          MFRC522     ~26 mA idle,   ~100 mA peak while the RF field drives
+ *          AS608       ~50 mA idle,   ~150 mA peak during capture
+ *          ESP32      ~80-160 mA,     ~500 mA peak on a Wi-Fi transmit burst
+ *
+ *      The AMS1117 on a typical dev board is rated near 1 A, so the average
+ *      is comfortable and the *peaks* are the problem. When all three coincide
+ *      the 3.3 V rail dips, and a dip is what produces a brownout reset, an
+ *      MFRC522 that reports a different version every read, and a sensor that
+ *      fails its handshake for no reason visible in any log. The capacitors
+ *      supply those bursts locally so the rail never sees them.
+ *
+ *      Power the board from a 1 A (or better) wall supply, not a laptop USB
+ *      port. Board resets on this bench have far more often been the supply
+ *      than the sketch.
+ *
+ *      Bring up ONE module at a time. Two unknown-good modules on one rail
+ *      makes it impossible to tell which is at fault — or whether either is,
+ *      rather than the rail they share.
+ *
+ * Libraries, by the exact name Library Manager shows:
+ *      "MFRC522" by GithubCommunity              (NOT MFRC522v2 - different API)
+ *      "Adafruit Fingerprint Sensor Library" by Adafruit
+ *      "ArduinoJson" by Benoit Blanchon          (6 or 7; both compile)
+ * Board: ESP32 Dev Module.  Serial Monitor: 115200.
+ * ======================================================================== */
 
-#include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <SPI.h>
-#include <Wire.h>
-#include <Preferences.h>
+#include <MFRC522.h>
+#include <Adafruit_Fingerprint.h>
 #include <ArduinoJson.h>
 
 /* ArduinoJson 7 made JsonDocument a concrete, self-sizing type. In 6 it is an
@@ -57,840 +121,509 @@ struct LsJson : public DynamicJsonDocument {
 #else
 using LsJson = JsonDocument;
 #endif
-#include <MFRC522.h>
-#include <Adafruit_Fingerprint.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <mbedtls/md.h>
+#include <sys/time.h>
 #include <esp_system.h>
-#include <time.h>
+#include <esp_attr.h>   /* RTC_DATA_ATTR — survives a reset, not a power cycle */
+#include "mbedtls/md.h"
 
-#include "config.h"
+/* ---------------------------------------------------------------- config -- */
+/* All six come from the provisioning JSON downloaded when the terminal was
+ * registered. That download is the only copy of the key and secret that will
+ * ever exist, and every download rotates them — so use one file, and do not
+ * download again after pasting. */
 
-/* ------------------------------------------------------------- state ----- */
+static const char *WIFI_SSID   = "YOUR_WIFI_NAME";
+static const char *WIFI_PASS   = "YOUR_WIFI_PASSWORD";
 
-enum TerminalState {
-  STATE_BOOT,
-  STATE_PROVISION,
-  STATE_CONNECTING,
-  STATE_CLAIMING,
-  STATE_AUTHENTICATING,
-  STATE_READY,
-  STATE_ENROLLING,
-  STATE_SESSION_OPEN,
-  STATE_OFFLINE,
-  STATE_LOCKED,
-  STATE_ERROR
-};
+/* The host PC's LAN address WITH the port. Never localhost — to the ESP32
+ * that means the ESP32. On the PC:
+ *   (Get-NetIPConfiguration | Where-Object {$_.IPv4DefaultGateway -ne $null}).IPv4Address.IPAddress */
+static const char *SERVER_URL  = "http://192.168.0.100:8080";
 
-static TerminalState state = STATE_BOOT;
+static const char *DEVICE_ID   = "DEV-2026-0001";
+static const char *API_KEY     = "lsk_xxxxxxxx.yyyyyyyy";
+static const char *HMAC_SECRET = "zzzzzzzzzzzzzzzz";
 
-/* --------------------------------------------------------- peripherals --- */
+/* Leave CLAIM_TOKEN empty once the device is claimed. */
+static const char *CLAIM_TOKEN = "";
 
-MFRC522              rfid(PIN_RFID_SS, PIN_RFID_RST);
-HardwareSerial       fingerSerial(2);
+/* The MAC is NOT configured here. The claim sends WiFi.macAddress() — the
+ * address this board actually has — and the server checks it against the one
+ * registered, refusing the claim if they differ.
+ *
+ * Reading it from the radio rather than from a constant is deliberate. A
+ * constant is a second place for the same value to be wrong, and the resulting
+ * CLAIM_IDENTITY_MISMATCH says nothing about which of the two copies is the
+ * mistaken one. It is also the weaker check: the point of comparing MACs is to
+ * prove a leaked provisioning file is being presented by the hardware it was
+ * issued for, and a value the flasher types in proves nothing at all.
+ *
+ * The MAC to register is printed at boot, right below the IP. */
+
+/* ------------------------------------------------------------------ pins -- */
+
+#define PIN_RFID_SS        5
+
+/* RST on GPIO 22, because nothing else on this build claims it.
+ *
+ * Worth knowing before a display goes on: an SSD1306's SCL wants GPIO 22 too,
+ * and the reference firmware under firmware/reference/ assigns it there. Two
+ * options when you get there — move RST to 27, or move the display's SCL.
+ * Either is fine; leaving both on 22 is not. */
+#define PIN_RFID_RST       22
+/* Most ESP32 dev boards print these two as RX2 and TX2 rather than as 16 and
+ * 17, which is why they look absent — they are the same pins under the names
+ * their second serial port is known by.
+ *
+ * On a WROVER board they really are gone: its PSRAM occupies 16 and 17, and
+ * they are not brought out. UART2 is not fixed to them, though, so any free
+ * output-capable pin works. 25 and 26 are the safe pair here — nothing else
+ * in this sketch uses them, neither is a strapping pin, and both can drive
+ * output, which 34-39 cannot.
+ *
+ * Change the two numbers and nothing else; the port is opened with whatever
+ * they say. */
+#define PIN_FINGER_RX      16      /* silkscreen RX2 — sensor TX lands here */
+#define PIN_FINGER_TX      17      /* silkscreen TX2 — sensor RX lands here */
+#define FINGERPRINT_BAUD   57600
+
+#define CARD_DEBOUNCE_MS       2500
+#define HEARTBEAT_INTERVAL_MS  30000   /* server marks offline after 90 s */
+#define READER_WATCH_MS        2000
+#define FINGER_COOLDOWN_MS     1500
+
+/* How often an idle terminal asks whether somebody has been queued for
+ * enrolment on the Fingerprints page. Two seconds is what makes pressing
+ * "Start scan" feel immediate to whoever is standing at the sensor; the board
+ * has nothing else to do between taps, and the reply is a few hundred bytes.
+ * Polling stops while a session is open — the sensor is busy then. */
+#define ENROLL_POLL_MS         2000
+#define CARD_POLL_MS           2000
+#define ENROLL_STEP_TIMEOUT_MS 20000   /* per finger placement */
+
+MFRC522        rfid(PIN_RFID_SS, PIN_RFID_RST);
+HardwareSerial fingerSerial(2);
 Adafruit_Fingerprint finger(&fingerSerial);
-Adafruit_SSD1306     display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
-Preferences          prefs;
 
-/* ------------------------------------------------------ device identity -- */
+static String   lastUid;
+static uint32_t lastTapAt         = 0;
+static bool     clockSet          = false;
+static String   lastDateHeader;
+static uint32_t lastHeartbeatAt   = 0;
+static bool     heartbeatLogged   = false;
+static uint32_t lastReaderCheck   = 0;
+static byte     lastReaderVersion = 0xEE;    /* neither 0x00 nor a real version */
+static bool     fingerReady       = false;
+static uint32_t lastFingerAt      = 0;
+static bool     sessionOpen       = false;
+static uint32_t lastEnrollPoll    = 0;
+static bool     enrolling         = false;
+static uint32_t lastCardPoll      = 0;
+static bool     enrollingCard     = false;
 
-struct DeviceConfig {
-  String deviceId;
-  String apiKey;
-  String hmacSecret;
-  String serverUrl;
-  String wifiSsid;
-  String wifiPassword;
-  String claimToken;
-  String serverFingerprint;
-  bool   claimed              = false;
-  uint16_t heartbeatInterval  = DEFAULT_HEARTBEAT_INTERVAL_S;
-  uint16_t syncInterval       = DEFAULT_SYNC_INTERVAL_S;
-  uint16_t queueLimit         = DEFAULT_QUEUE_LIMIT;
-} cfg;
+/* --------------------------------------------------------------- helpers -- */
 
-/* ------------------------------------------------------ session context -- */
-
-struct SessionContext {
-  bool   open = false;
-  String sessionId;
-  String subject;
-  String section;
-  uint16_t timedIn  = 0;
-  uint16_t timedOut = 0;
-  uint16_t roster   = 0;
-  time_t expiresAt  = 0;
-} session;
-
-/* ----------------------------------------------------------- timers ------ */
-
-static uint32_t lastHeartbeat  = 0;
-static uint32_t lastSync       = 0;
-static uint32_t lastTimeSync   = 0;
-static uint32_t lastWifiRetry  = 0;
-static uint32_t displayUntil   = 0;
-static uint32_t lockUntil      = 0;
-static uint32_t bootMillis     = 0;
-static uint32_t lastEnrollPoll = 0;
-
-static String   lastCardUid    = "";
-static uint32_t lastCardAt     = 0;
-static uint8_t  fingerFailures = 0;
-static uint16_t queueCount     = 0;
-static bool     displayBusy    = false;
-
-/* =========================================================================
- * Utilities
- * ========================================================================= */
-
-/** UUIDv4 from the ESP32 hardware RNG. Used as the idempotency handle. */
-String generateUuid() {
-  uint8_t bytes[16];
-  esp_fill_random(bytes, sizeof(bytes));
-
-  bytes[6] = (bytes[6] & 0x0F) | 0x40;  /* version 4  */
-  bytes[8] = (bytes[8] & 0x3F) | 0x80;  /* variant 10 */
-
-  char buffer[37];
-  snprintf(buffer, sizeof(buffer),
-           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-           bytes[0], bytes[1], bytes[2],  bytes[3],  bytes[4],  bytes[5],
-           bytes[6], bytes[7], bytes[8],  bytes[9],  bytes[10], bytes[11],
-           bytes[12], bytes[13], bytes[14], bytes[15]);
-
-  return String(buffer);
-}
-
-/** Single-use nonce for replay protection. */
-String generateNonce() {
-  uint8_t bytes[NONCE_BYTES];
-  esp_fill_random(bytes, sizeof(bytes));
-
+static String toHexLower(const uint8_t *data, size_t len) {
   String out;
-  out.reserve(NONCE_BYTES * 2);
-
-  for (size_t i = 0; i < sizeof(bytes); i++) {
-    char pair[3];
-    snprintf(pair, sizeof(pair), "%02x", bytes[i]);
-    out += pair;
-  }
-
-  return out;
-}
-
-String toHex(const uint8_t *data, size_t length) {
-  String out;
-  out.reserve(length * 2);
-
-  for (size_t i = 0; i < length; i++) {
+  out.reserve(len * 2);
+  for (size_t i = 0; i < len; i++) {
     char pair[3];
     snprintf(pair, sizeof(pair), "%02x", data[i]);
     out += pair;
   }
-
   return out;
 }
 
-String sha256Hex(const String &input) {
-  uint8_t hash[32];
+/* SHA-256 and HMAC both go through the generic message-digest interface.
+ * mbedtls_sha256()'s signature changed between mbedtls 2.x and 3.x, so the
+ * direct call compiles on some ESP32 cores and not others; this spelling
+ * works on both. Lowercase hex, because the server rebuilds the same string
+ * with PHP's hash()/hash_hmac() and compares with hash_equals() — byte
+ * exact, so uppercase fails exactly like a wrong key. */
+static String sha256Hex(const String &data) {
+  uint8_t digest[32];
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   mbedtls_md_context_t ctx;
-
   mbedtls_md_init(&ctx);
-  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+  mbedtls_md_setup(&ctx, info, 0);
   mbedtls_md_starts(&ctx);
-  mbedtls_md_update(&ctx, (const unsigned char *) input.c_str(), input.length());
-  mbedtls_md_finish(&ctx, hash);
+  mbedtls_md_update(&ctx, (const unsigned char *) data.c_str(), data.length());
+  mbedtls_md_finish(&ctx, digest);
   mbedtls_md_free(&ctx);
-
-  return toHex(hash, sizeof(hash));
+  return toHexLower(digest, sizeof(digest));
 }
 
-String hmacSha256Hex(const String &message, const String &key) {
-  uint8_t hmac[32];
+/* The secret is used as raw key bytes exactly as it appears in the
+ * provisioning JSON: no base64 decode, no hex decode, no trimming. */
+static String hmacSha256Hex(const String &message, const char *key) {
+  uint8_t out[32];
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   mbedtls_md_context_t ctx;
-
   mbedtls_md_init(&ctx);
-  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-  mbedtls_md_hmac_starts(&ctx, (const unsigned char *) key.c_str(), key.length());
+  mbedtls_md_setup(&ctx, info, 1);
+  mbedtls_md_hmac_starts(&ctx, (const unsigned char *) key, strlen(key));
   mbedtls_md_hmac_update(&ctx, (const unsigned char *) message.c_str(), message.length());
-  mbedtls_md_hmac_finish(&ctx, hmac);
+  mbedtls_md_hmac_finish(&ctx, out);
   mbedtls_md_free(&ctx);
-
-  return toHex(hmac, sizeof(hmac));
+  return toHexLower(out, sizeof(out));
 }
 
-/** Server-synchronised epoch seconds. */
-time_t serverNow() {
-  time_t now;
-  time(&now);
-  return now;
+static String randomHex(size_t bytes) {
+  String out;
+  out.reserve(bytes * 2);
+  for (size_t i = 0; i < bytes; i++) {
+    char pair[3];
+    snprintf(pair, sizeof(pair), "%02x", (uint8_t) (esp_random() & 0xFF));
+    out += pair;
+  }
+  return out;
 }
 
-String isoTimestamp(time_t moment) {
-  struct tm timeinfo;
-  localtime_r(&moment, &timeinfo);
-
-  char buffer[32];
-  strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
-
-  return String(buffer);
+/* Days since 1970-01-01, by Howard Hinnant's algorithm. Written out rather
+ * than using timegm() (missing from some ESP32 toolchains) or
+ * strptime()+mktime() (depends on the process timezone, which is not UTC). */
+static long daysFromCivil(long y, unsigned m, unsigned d) {
+  y -= (m <= 2);
+  const long     era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned) (y - era * 400);
+  const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097L + (long) doe - 719468L;
 }
 
-/* =========================================================================
- * Display
- * ========================================================================= */
-
-void showLines(const String &line1, const String &line2 = "",
-               const String &line3 = "", uint32_t holdMs = DISPLAY_HOLD_MS) {
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.print(cfg.deviceId.length() ? cfg.deviceId : "L-SIAMS");
-
-  /* Connectivity marker in the corner, always visible. */
-  display.setCursor(OLED_WIDTH - 24, 0);
-  display.print(WiFi.status() == WL_CONNECTED ? "ON" : "OFF");
-
-  display.drawLine(0, 10, OLED_WIDTH, 10, SSD1306_WHITE);
-
-  display.setTextSize(line1.length() <= 12 ? 2 : 1);
-  display.setCursor(0, 16);
-  display.print(line1);
-
-  display.setTextSize(1);
-
-  if (line2.length()) {
-    display.setCursor(0, line1.length() <= 12 ? 38 : 30);
-    display.print(line2.substring(0, 21));
-  }
-
-  if (line3.length()) {
-    display.setCursor(0, line1.length() <= 12 ? 50 : 42);
-    display.print(line3.substring(0, 21));
-  }
-
-  /* Session counters on the bottom row while attendance is open. */
-  if (session.open && line1 != "SESSION OPEN") {
-    display.setCursor(0, 56);
-    display.printf("In:%d Out:%d/%d", session.timedIn, session.timedOut, session.roster);
-  } else if (queueCount > 0) {
-    display.setCursor(0, 56);
-    display.printf("Queued: %d", queueCount);
-  }
-
-  display.display();
-
-  displayUntil = millis() + holdMs;
-  displayBusy  = holdMs > 0;
+/* RFC 7231 date: "Sat, 08 Aug 2026 14:42:16 GMT". Always GMT by spec. */
+static time_t parseHttpDate(const String &value) {
+  char monthName[4] = {0};
+  int  day = 0, year = 0, hour = 0, minute = 0, second = 0;
+  int comma = value.indexOf(',');
+  String rest = (comma >= 0) ? value.substring(comma + 1) : value;
+  rest.trim();
+  if (sscanf(rest.c_str(), "%d %3s %d %d:%d:%d",
+             &day, monthName, &year, &hour, &minute, &second) != 6) return 0;
+  static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  const char *found = strstr(months, monthName);
+  if (found == nullptr) return 0;
+  unsigned month = (unsigned) ((found - months) / 3) + 1;
+  return (time_t) (daysFromCivil(year, month, (unsigned) day) * 86400L
+                   + hour * 3600L + minute * 60L + second);
 }
 
-void showIdle() {
-  displayBusy = false;
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.print(cfg.deviceId);
-  display.setCursor(OLED_WIDTH - 24, 0);
-  display.print(WiFi.status() == WL_CONNECTED ? "ON" : "OFF");
-  display.drawLine(0, 10, OLED_WIDTH, 10, SSD1306_WHITE);
-
-  if (state == STATE_SESSION_OPEN) {
-    display.setTextSize(1);
-    display.setCursor(0, 16);
-    display.print("TAP YOUR CARD");
-    display.setCursor(0, 28);
-    display.print(session.subject + " " + session.section);
-    display.setCursor(0, 40);
-    display.printf("In:%d  Out:%d  /%d", session.timedIn, session.timedOut, session.roster);
-  } else if (state == STATE_READY) {
-    display.setTextSize(1);
-    display.setCursor(0, 16);
-    display.print("READY");
-    display.setCursor(0, 30);
-    display.print("Teacher: place");
-    display.setCursor(0, 40);
-    display.print("finger on sensor");
-  } else if (state == STATE_OFFLINE) {
-    display.setTextSize(1);
-    display.setCursor(0, 16);
-    display.print("OFFLINE MODE");
-    display.setCursor(0, 30);
-    display.print("Attendance is being");
-    display.setCursor(0, 40);
-    display.print("saved locally.");
-  } else if (state == STATE_LOCKED) {
-    uint32_t remaining = lockUntil > millis() ? (lockUntil - millis()) / 1000 : 0;
-    display.setTextSize(1);
-    display.setCursor(0, 16);
-    display.print("DEVICE LOCKED");
-    display.setCursor(0, 32);
-    display.printf("Unlocks in %lus", (unsigned long) remaining);
-  }
-
-  if (queueCount > 0) {
-    display.setCursor(0, 56);
-    display.printf("Queued: %d", queueCount);
-  }
-
-  display.display();
+/* Version-4 UUID. The server validates the shape and uses it to make a tap
+ * idempotent: the same request_id replayed never records attendance twice. */
+static String generateUuid() {
+  uint8_t b[16];
+  for (int i = 0; i < 16; i++) b[i] = (uint8_t) (esp_random() & 0xFF);
+  b[6] = (b[6] & 0x0F) | 0x40;
+  b[8] = (b[8] & 0x3F) | 0x80;
+  char buf[37];
+  snprintf(buf, sizeof(buf),
+           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+           b[0], b[1], b[2],  b[3],  b[4],  b[5],  b[6],  b[7],
+           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+  return String(buf);
 }
 
-/* =========================================================================
- * Feedback — the Part 16.9 buzzer and LED map, expressed as named patterns
- * rather than magic numbers scattered through the code.
- * ========================================================================= */
-
-void allLedsOff() {
-  digitalWrite(PIN_LED_GREEN, LOW);
-  digitalWrite(PIN_LED_RED, LOW);
-  digitalWrite(PIN_LED_BLUE, LOW);
-  digitalWrite(PIN_LED_AMBER, LOW);
-}
-
-void beep(uint16_t durationMs, uint8_t times = 1, uint16_t gapMs = 90) {
-  for (uint8_t i = 0; i < times; i++) {
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(durationMs);
-    digitalWrite(PIN_BUZZER, LOW);
-    if (i + 1 < times) delay(gapMs);
-  }
-}
-
-void feedback(const String &led, const String &buzzer) {
-  allLedsOff();
-
-  uint8_t pin = PIN_LED_GREEN;
-  bool    blink = led.endsWith("-blink");
-  String  colour = blink ? led.substring(0, led.indexOf('-')) : led;
-
-  if (colour == "green")      pin = PIN_LED_GREEN;
-  else if (colour == "red")   pin = PIN_LED_RED;
-  else if (colour == "blue")  pin = PIN_LED_BLUE;
-  else if (colour == "amber") pin = PIN_LED_AMBER;
-
-  if (buzzer == "short")             beep(90, 1);
-  else if (buzzer == "double_short") beep(90, 2);
-  else if (buzzer == "triple_short") beep(80, 3);
-  else if (buzzer == "long")         beep(650, 1);
-  else if (buzzer == "rapid")        beep(60, 4, 60);
-  else if (buzzer == "rapid5")       beep(55, 5, 55);
-  else if (buzzer == "offline")    { beep(90, 1); delay(120); beep(500, 1); }
-
-  if (blink) {
-    for (uint8_t i = 0; i < 6; i++) {
-      digitalWrite(pin, HIGH); delay(140);
-      digitalWrite(pin, LOW);  delay(140);
-    }
-  } else {
-    digitalWrite(pin, HIGH);
-    delay(1200);
-    digitalWrite(pin, LOW);
-  }
-}
-
-/* =========================================================================
- * Offline queue — NVS-backed so it survives a power cut mid-class
- * ========================================================================= */
-
-void loadQueueCount() {
-  queueCount = prefs.getUShort(NVS_KEY_QUEUE_COUNT, 0);
-}
-
-bool enqueueTap(const String &cardUid, time_t occurredAt, const String &requestId) {
-  if (queueCount >= cfg.queueLimit) {
-    LOGLN("Queue full — refusing to enqueue");
-    return false;
-  }
-
-  StaticJsonDocument<192> doc;
-  doc["uid"]        = cardUid;
-  doc["timestamp"]  = isoTimestamp(occurredAt);
-  doc["request_id"] = requestId;
-
-  String payload;
-  serializeJson(doc, payload);
-
-  String key = String(NVS_KEY_QUEUE_PREFIX) + String(queueCount);
-
-  if (!prefs.putString(key.c_str(), payload)) {
-    LOGLN("NVS write failed — queue not extended");
-    return false;
-  }
-
-  queueCount++;
-  prefs.putUShort(NVS_KEY_QUEUE_COUNT, queueCount);
-
-  LOG("Queued tap %s (%d/%d)\n", cardUid.c_str(), queueCount, cfg.queueLimit);
-  return true;
-}
-
-/** Remove the first `count` records and shift the rest down. */
-void dequeueFront(uint16_t count) {
-  if (count == 0) return;
-  if (count >= queueCount) {
-    for (uint16_t i = 0; i < queueCount; i++) {
-      prefs.remove((String(NVS_KEY_QUEUE_PREFIX) + String(i)).c_str());
-    }
-    queueCount = 0;
-    prefs.putUShort(NVS_KEY_QUEUE_COUNT, 0);
-    return;
-  }
-
-  for (uint16_t i = 0; i + count < queueCount; i++) {
-    String source = String(NVS_KEY_QUEUE_PREFIX) + String(i + count);
-    String target = String(NVS_KEY_QUEUE_PREFIX) + String(i);
-    prefs.putString(target.c_str(), prefs.getString(source.c_str(), ""));
-  }
-
-  for (uint16_t i = queueCount - count; i < queueCount; i++) {
-    prefs.remove((String(NVS_KEY_QUEUE_PREFIX) + String(i)).c_str());
-  }
-
-  queueCount -= count;
-  prefs.putUShort(NVS_KEY_QUEUE_COUNT, queueCount);
-}
-
-/* =========================================================================
- * HTTP — every request signed, timestamped and nonced
- * ========================================================================= */
+/* ------------------------------------------------------------- transport -- */
 
 /**
- * @param  responseOut  parsed JSON response, when the caller needs it
- * @return HTTP status, or a negative value on transport failure
+ * One signed request. The server rebuilds this canonical string byte for byte
+ * before checking the signature (ApiKeyService::canonicalString):
+ *
+ *     METHOD \n path \n device_id \n timestamp \n nonce \n sha256_hex(body)
+ *
+ * `path` is the path alone — no scheme, no host, no query. Any one of those
+ * six fields being wrong gives SIGNATURE_INVALID with no hint as to which, so
+ * they are assembled in exactly one place, here.
  */
-int apiRequest(const String &path, const String &body, JsonDocument *responseOut = nullptr,
-               const String &requestId = "", const char *method = "POST") {
+static int signedRequest(const char *method, const String &path, const String &body,
+                         JsonDocument *responseOut, const String &requestId = "") {
   if (WiFi.status() != WL_CONNECTED) return -1;
 
-  WiFiClientSecure client;
+  String url  = String(SERVER_URL) + path;
+  bool  isTls = url.startsWith("https://");
 
-  /* The provisioning file carries the server certificate fingerprint, which
-   * pins the connection and defeats a LAN man-in-the-middle. Without one we
-   * still use TLS, but cannot verify the peer — acceptable only for the
-   * self-signed prototype described in Part 6. */
-  if (cfg.serverFingerprint.length() > 0) {
-    client.setInsecure();  /* fingerprint checked below against the peer cert */
-  } else {
-    client.setInsecure();
-  }
-
-  client.setTimeout(HTTP_TIMEOUT_MS / 1000);
-
+  WiFiClient       plain;
+  WiFiClientSecure secure;
   HTTPClient http;
-  String url = cfg.serverUrl + path;
 
-  if (!http.begin(client, url)) {
-    LOGLN("HTTP begin failed");
-    return -2;
+  if (isTls) {
+    secure.setInsecure();
+    if (!http.begin(secure, url)) return -2;
+  } else {
+    if (!http.begin(plain, url)) return -2;
   }
 
-  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setTimeout(8000);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("User-Agent", "L-SIAMS-Terminal/" FIRMWARE_VERSION " (ESP32)");
 
-  String timestamp = String((long) serverNow());
-  String nonce     = generateNonce();
+  /* Declared before the request or HTTPClient discards it. This is the clock
+   * bootstrap: Date arrives even on the 401 that rejects a bad timestamp. */
+  static const char *wanted[] = { "Date" };
+  http.collectHeaders(wanted, 1);
 
-  /* Canonical string, exactly as the server rebuilds it (Part 19.4):
-   *   METHOD \n path \n device_id \n timestamp \n nonce \n sha256(body) */
-  String canonical = String(method) + "\n" + path + "\n" + cfg.deviceId + "\n"
+  String timestamp = String((long) time(nullptr));
+  String nonce     = randomHex(16);
+  String canonical = String(method) + "\n" + path + "\n" + DEVICE_ID + "\n"
                    + timestamp + "\n" + nonce + "\n" + sha256Hex(body);
 
-  http.addHeader(API_HEADER_DEVICE_ID, cfg.deviceId);
-  http.addHeader(API_HEADER_API_KEY,   cfg.apiKey);
-  http.addHeader(API_HEADER_TIMESTAMP, timestamp);
-  http.addHeader(API_HEADER_NONCE,     nonce);
-  http.addHeader(API_HEADER_SIGNATURE, hmacSha256Hex(canonical, cfg.hmacSecret));
+  http.addHeader("X-LSIAMS-Device-Id", DEVICE_ID);
+  http.addHeader("X-LSIAMS-Api-Key",   API_KEY);
+  http.addHeader("X-LSIAMS-Timestamp", timestamp);
+  http.addHeader("X-LSIAMS-Nonce",     nonce);
+  http.addHeader("X-LSIAMS-Signature", hmacSha256Hex(canonical, HMAC_SECRET));
+  if (requestId.length()) http.addHeader("X-LSIAMS-Request-Id", requestId);
 
-  if (requestId.length()) {
-    http.addHeader(API_HEADER_REQUEST_ID, requestId);
-  }
-
-  /* A GET carries no body, and the canonical string above already hashes the
-   * empty string for it — sending one anyway would sign something the server
-   * never sees. */
   int status = (strcmp(method, "GET") == 0) ? http.GET() : http.POST(body);
 
-  if (status > 0 && responseOut != nullptr) {
-    DeserializationError error = deserializeJson(*responseOut, http.getString());
-
-    if (error) {
-      LOG("JSON parse failed: %s\n", error.c_str());
-    }
+  if (status > 0) {
+    lastDateHeader = http.header("Date");
+    if (responseOut != nullptr) deserializeJson(*responseOut, http.getString());
   }
 
   http.end();
-
-  LOG("%s %s -> %d\n", method, path.c_str(), status);
   return status;
 }
 
-/* =========================================================================
- * Provisioning and claiming
- * ========================================================================= */
+/** Unsigned POST — only the claim call, which runs before this device has
+ *  anything to sign with and before the clock is set. */
+static int unsignedPost(const String &path, const String &body, JsonDocument *responseOut) {
+  if (WiFi.status() != WL_CONNECTED) return -1;
 
-bool loadProvisioning() {
-  if (!prefs.getBool(NVS_KEY_PROVISIONED, false)) return false;
+  String url  = String(SERVER_URL) + path;
+  bool  isTls = url.startsWith("https://");
 
-  cfg.deviceId          = prefs.getString(NVS_KEY_DEVICE_ID, "");
-  cfg.apiKey            = prefs.getString(NVS_KEY_API_KEY, "");
-  cfg.hmacSecret        = prefs.getString(NVS_KEY_HMAC_SECRET, "");
-  cfg.serverUrl         = prefs.getString(NVS_KEY_SERVER_URL, "");
-  cfg.wifiSsid          = prefs.getString(NVS_KEY_WIFI_SSID, "");
-  cfg.wifiPassword      = prefs.getString(NVS_KEY_WIFI_PASS, "");
-  cfg.claimToken        = prefs.getString(NVS_KEY_CLAIM_TOKEN, "");
-  cfg.serverFingerprint = prefs.getString(NVS_KEY_FINGERPRINT, "");
-  cfg.claimed           = prefs.getBool(NVS_KEY_CLAIMED, false);
+  WiFiClient       plain;
+  WiFiClientSecure secure;
+  HTTPClient http;
 
-  return cfg.deviceId.length() > 0 && cfg.apiKey.length() > 0;
-}
-
-/**
- * Accept a provisioning JSON document over serial during installation.
- *
- * Paste the file the server generated, then press Enter. Nothing is echoed
- * back, and the secrets go straight into NVS.
- */
-bool provisionFromSerial() {
-  showLines("PROVISION", "Paste config JSON", "over serial", 0);
-  LOGLN("\n=== L-SIAMS provisioning ===");
-  LOGLN("Paste the provisioning JSON and press Enter.\n");
-
-  uint32_t deadline = millis() + 120000;
-  String   buffer;
-
-  while (millis() < deadline) {
-    while (Serial.available()) {
-      char c = (char) Serial.read();
-
-      if (c == '\n' || c == '\r') {
-        if (buffer.length() < 20) { buffer = ""; continue; }
-
-        StaticJsonDocument<1536> doc;
-
-        if (deserializeJson(doc, buffer)) {
-          LOGLN("Invalid JSON — try again.");
-          buffer = "";
-          continue;
-        }
-
-        if (!doc.containsKey("device_id") || !doc.containsKey("api_key")) {
-          LOGLN("Missing device_id or api_key — try again.");
-          buffer = "";
-          continue;
-        }
-
-        prefs.putString(NVS_KEY_DEVICE_ID,   doc["device_id"].as<String>());
-        prefs.putString(NVS_KEY_API_KEY,     doc["api_key"].as<String>());
-        prefs.putString(NVS_KEY_HMAC_SECRET, doc["hmac_secret"].as<String>());
-        prefs.putString(NVS_KEY_SERVER_URL,  doc["server_url"].as<String>());
-        prefs.putString(NVS_KEY_CLAIM_TOKEN, doc["claim_token"] | "");
-        prefs.putString(NVS_KEY_FINGERPRINT, doc["server_fingerprint"] | "");
-        prefs.putBool(NVS_KEY_PROVISIONED, true);
-        prefs.putBool(NVS_KEY_CLAIMED, false);
-
-        /* WiFi credentials are not in the provisioning file — they are the
-         * school's, not the device's — so ask for them separately. */
-        LOGLN("\nWiFi SSID:");
-        String ssid = "";
-        while (ssid.length() == 0) {
-          if (Serial.available()) ssid = Serial.readStringUntil('\n');
-          ssid.trim();
-          delay(10);
-        }
-
-        LOGLN("WiFi password:");
-        String pass = "";
-        uint32_t passDeadline = millis() + 60000;
-        while (pass.length() == 0 && millis() < passDeadline) {
-          if (Serial.available()) pass = Serial.readStringUntil('\n');
-          pass.trim();
-          delay(10);
-        }
-
-        prefs.putString(NVS_KEY_WIFI_SSID, ssid);
-        prefs.putString(NVS_KEY_WIFI_PASS, pass);
-
-        LOGLN("\nProvisioned. Restarting…");
-        showLines("PROVISIONED", "Restarting", "", 2000);
-        delay(2000);
-        ESP.restart();
-        return true;
-      }
-
-      buffer += c;
-
-      if (buffer.length() > 4096) buffer = "";
-    }
-
-    delay(10);
+  if (isTls) {
+    secure.setInsecure();
+    if (!http.begin(secure, url)) return -2;
+  } else {
+    if (!http.begin(plain, url)) return -2;
   }
 
-  return false;
+  http.setTimeout(8000);
+  http.addHeader("Content-Type", "application/json");
+  static const char *wanted[] = { "Date" };
+  http.collectHeaders(wanted, 1);
+
+  int status = http.POST(body);
+
+  if (status > 0) {
+    lastDateHeader = http.header("Date");
+    if (responseOut != nullptr) deserializeJson(*responseOut, http.getString());
+  }
+
+  http.end();
+  return status;
 }
 
-/** First-boot credential activation. Single use; the token then expires. */
-bool claimDevice() {
-  if (cfg.claimed || cfg.claimToken.length() == 0) return cfg.claimed;
+/* ------------------------------------------------------------ activation -- */
 
-  showLines("ACTIVATING", "First boot", "", 0);
+/**
+ * A freshly registered terminal is `unclaimed`, and DeviceAuthMiddleware
+ * refuses every signed request from one — including the clock sync. The claim
+ * endpoint is the one device route with no signature requirement.
+ *
+ * CLAIM_TOKEN_USED means an earlier boot already claimed it, which is the
+ * state we want, so it counts as success.
+ */
+static bool claimDevice() {
+  if (strlen(CLAIM_TOKEN) == 0) {
+    Serial.println("  no claim token set — skipping (fine if already claimed)");
+    return true;
+  }
 
-  StaticJsonDocument<256> request;
-  request["claim_token"] = cfg.claimToken;
-  request["device_id"]   = cfg.deviceId;
+  LsJson request;
+  request["claim_token"] = CLAIM_TOKEN;
+  request["device_id"]   = DEVICE_ID;
   request["mac_address"] = WiFi.macAddress();
 
   String body;
   serializeJson(request, body);
 
-  StaticJsonDocument<512> response;
-  int status = apiRequest(EP_DEVICE_CLAIM, body, &response);
+  LsJson response;
+  int status = unsignedPost("/api/device/claim", body, &response);
+  const char *code = response["code"] | "";
 
-  if (status == 200 && response["success"] == true) {
-    cfg.claimed = true;
-    prefs.putBool(NVS_KEY_CLAIMED, true);
-    prefs.remove(NVS_KEY_CLAIM_TOKEN);  /* it is single-use; do not keep it */
-
-    LOGLN("Device activated.");
-    showLines("ACTIVATED", "Ready to use", "", 2000);
-    feedback("green", "double_short");
+  if (status == 200 || status == 201) {
+    Serial.println("  device claimed — now active");
     return true;
   }
 
-  String message = response["message"] | "Activation failed";
-  LOG("Claim failed (%d): %s\n", status, message.c_str());
-  showLines("ACTIVATION", "FAILED", message.substring(0, 21), 4000);
-  feedback("red", "long");
+  if (strcmp(code, "CLAIM_TOKEN_USED") == 0) {
+    Serial.println("  already claimed on an earlier boot (fine)");
+    return true;
+  }
+
+  Serial.printf("  claim FAILED (HTTP %d, %s): %s\n",
+                status, code, (const char *) (response["message"] | ""));
+
+  if (strcmp(code, "CLAIM_IDENTITY_MISMATCH") == 0) {
+    Serial.println("  -> the registration does not match this board. Compare both:");
+    Serial.printf("       DEVICE_ID in this sketch : %s\n", DEVICE_ID);
+    Serial.printf("       this board's MAC         : %s\n", WiFi.macAddress().c_str());
+    Serial.println("     against the device page in L-SIAMS, or run: console.bat doctor");
+    Serial.println("     A terminal that has never claimed can have its MAC corrected");
+    Serial.println("     there; one that has already claimed cannot, by design.");
+  }
 
   return false;
 }
 
-/* =========================================================================
- * Network
- * ========================================================================= */
+/* ----------------------------------------------------------------- clock -- */
 
-bool connectWifi() {
-  if (cfg.wifiSsid.length() == 0) return false;
-
-  showLines("CONNECTING", cfg.wifiSsid.substring(0, 20), "", 0);
-  LOG("Connecting to %s…\n", cfg.wifiSsid.c_str());
-
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);   /* latency matters more than power here */
-  WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPassword.c_str());
-
-  uint32_t deadline = millis() + WIFI_CONNECT_TIMEOUT_MS;
-
-  while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-    digitalWrite(PIN_LED_BLUE, !digitalRead(PIN_LED_BLUE));
-    delay(300);
-  }
-
-  digitalWrite(PIN_LED_BLUE, WiFi.status() == WL_CONNECTED ? HIGH : LOW);
-
-  if (WiFi.status() == WL_CONNECTED) {
-    LOG("Connected: %s  RSSI %d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-    return true;
-  }
-
-  LOGLN("WiFi connection failed.");
-  return false;
-}
-
-/** Pull authoritative time from the server. Attendance must not depend on a
- *  drifting local RTC (Part 4, time synchronisation). */
-bool syncTime() {
-  StaticJsonDocument<256> response;
-  int status = apiRequest(EP_DEVICE_TIME, "{}", &response);
-
-  if (status != 200) return false;
-
-  long epoch = response["data"]["server_epoch"] | 0L;
-
-  if (epoch <= 0) return false;
-
-  struct timeval tv = { .tv_sec = (time_t) epoch, .tv_usec = 0 };
+static void setClock(time_t epoch) {
+  struct timeval tv;
+  tv.tv_sec  = epoch;
+  tv.tv_usec = 0;
   settimeofday(&tv, nullptr);
-
-  lastTimeSync = millis();
-  LOG("Clock synchronised: %ld\n", epoch);
-
-  return true;
-}
-
-bool authenticateDevice() {
-  showLines("AUTH", "Verifying device", "", 0);
-
-  StaticJsonDocument<1024> response;
-  int status = apiRequest(EP_DEVICE_AUTH, "{}", &response);
-
-  if (status != 200 || response["success"] != true) {
-    String message = response["message"] | "Authentication failed";
-    LOG("Auth failed (%d): %s\n", status, message.c_str());
-    showLines("AUTH FAILED", message.substring(0, 21), "", 4000);
-    feedback("red", "long");
-    return false;
-  }
-
-  JsonObject data = response["data"];
-
-  cfg.heartbeatInterval = data["heartbeat_interval_sec"] | DEFAULT_HEARTBEAT_INTERVAL_S;
-  cfg.syncInterval      = data["sync_interval_sec"]      | DEFAULT_SYNC_INTERVAL_S;
-  cfg.queueLimit        = data["offline_queue_limit"]    | DEFAULT_QUEUE_LIMIT;
-
-  /* A session may already be open — the terminal rebooted mid-class. */
-  if (!data["active_session"].isNull()) {
-    session.open      = true;
-    session.sessionId = data["active_session"]["session_id"].as<String>();
-    state             = STATE_SESSION_OPEN;
-    LOG("Resumed session %s\n", session.sessionId.c_str());
-  }
-
-  LOGLN("Device authenticated.");
-  return true;
-}
-
-/* =========================================================================
- * Heartbeat and synchronisation
- * ========================================================================= */
-
-void sendHeartbeat() {
-  StaticJsonDocument<384> request;
-  request["firmware"]    = FIRMWARE_VERSION;
-  request["wifi_signal"] = WiFi.RSSI();
-  request["queue"]       = queueCount;
-  request["uptime"]      = (millis() - bootMillis) / 1000;
-  request["free_heap"]   = ESP.getFreeHeap();
-
-  String body;
-  serializeJson(request, body);
-
-  StaticJsonDocument<768> response;
-  int status = apiRequest(EP_DEVICE_HEARTBEAT, body, &response);
-
-  if (status != 200) {
-    if (state != STATE_OFFLINE) {
-      LOGLN("Heartbeat failed — entering offline mode");
-      state = STATE_OFFLINE;
-      feedback("amber-blink", "offline");
-    }
-    return;
-  }
-
-  if (state == STATE_OFFLINE) {
-    LOGLN("Server reachable again");
-    state = session.open ? STATE_SESSION_OPEN : STATE_READY;
-  }
-
-  JsonObject data = response["data"];
-
-  /* The server is authoritative about session state; a terminal that missed a
-   * close event learns about it here. */
-  if (data["active_session"].isNull()) {
-    if (session.open) {
-      LOGLN("Session closed server-side");
-      session.open = false;
-      session.sessionId = "";
-      state = STATE_READY;
-      showLines("SESSION", "CLOSED", "", 2500);
-    }
-  } else {
-    session.open      = true;
-    session.sessionId = data["active_session"]["session_id"].as<String>();
-    if (state == STATE_READY) state = STATE_SESSION_OPEN;
-  }
-
-  if (data["device_locked"] | false) {
-    state     = STATE_LOCKED;
-    lockUntil = millis() + FP_LOCK_DURATION_MS;
-  }
-
-  cfg.heartbeatInterval = data["heartbeat_interval_sec"] | cfg.heartbeatInterval;
-
-  if (data["should_sync"] | false) {
-    lastSync = 0;  /* trigger a sync on the next loop */
-  }
+  clockSet = true;
 }
 
 /**
- * Upload the offline queue.
+ * Signed requests must land within 30 seconds of server time, and an ESP32
+ * boots believing it is 1970 — so the first request is unsignable, and NTP is
+ * not available on a LAN with no route to the internet.
  *
- * Oldest first, in bounded batches. Original timestamps are preserved, and the
- * request_id on each record means a batch that times out mid-flight can be
- * safely resent (Part 17.3).
+ * The signed call is tried first and gives the exact epoch when the clock is
+ * already close. When it is not, the 401 still carries an HTTP Date header,
+ * which is good to the second and enough to make the retry succeed.
  */
-void syncQueue() {
-  if (queueCount == 0 || WiFi.status() != WL_CONNECTED) return;
+static bool syncClockFromServer() {
+  LsJson response;
+  int status = signedRequest("GET", "/api/device/time", "", &response);
 
-  uint16_t batch = queueCount < QUEUE_SYNC_BATCH ? queueCount : QUEUE_SYNC_BATCH;
+  if (status == 200) {
+    long epoch = response["data"]["server_epoch"] | 0L;
+    if (epoch > 0) {
+      setClock((time_t) epoch);
+      Serial.printf("  clock set from /api/device/time: %ld\n", epoch);
+      return true;
+    }
+  }
 
-  LOG("Synchronising %d of %d queued record(s)…\n", batch, queueCount);
-  showLines("SYNCING", String(batch) + " records", "", 0);
+  time_t fromHeader = lastDateHeader.length() ? parseHttpDate(lastDateHeader) : 0;
 
-  DynamicJsonDocument request(4096);
-  JsonArray records = request.createNestedArray("records");
+  if (fromHeader <= 0) {
+    Serial.printf("  clock sync failed (HTTP %d, code %s, no usable Date header)\n",
+                  status, (const char *) (response["code"] | "-"));
+    return false;
+  }
 
-  for (uint16_t i = 0; i < batch; i++) {
-    String stored = prefs.getString((String(NVS_KEY_QUEUE_PREFIX) + String(i)).c_str(), "");
+  setClock(fromHeader);
+  Serial.printf("  clock set from HTTP Date: %ld\n", (long) fromHeader);
 
-    if (stored.length() == 0) continue;
+  status = signedRequest("GET", "/api/device/time", "", &response);
+  if (status == 200) {
+    long epoch = response["data"]["server_epoch"] | 0L;
+    if (epoch > 0) {
+      setClock((time_t) epoch);
+      Serial.printf("  refined from /api/device/time: %ld\n", epoch);
+    }
+  }
 
-    StaticJsonDocument<192> record;
+  return true;
+}
 
-    if (deserializeJson(record, stored)) continue;
+/* ------------------------------------------------------------- heartbeat -- */
 
-    records.add(record);
+/**
+ * Without this the dashboard shows Offline for ever with "never sent a
+ * heartbeat", even while the device is claimed and signing correctly — the
+ * status column is driven by last_heartbeat_at and nothing else. The worker
+ * flips a terminal offline 90 seconds after the last one.
+ *
+ * Only the first success is logged; a line every thirty seconds would bury
+ * the taps this sketch exists to show.
+ */
+static void sendHeartbeat() {
+  if (!clockSet) return;
+
+  LsJson request;
+  request["firmware"]    = "1.0.0-bench";
+  request["wifi_signal"] = WiFi.RSSI();
+  request["queue"]       = 0;
+  request["uptime"]      = (int) (millis() / 1000);
+  request["free_heap"]   = (int) ESP.getFreeHeap();
+
+  /* What the sensor is actually holding. The server records which teacher owns
+   * which slot but has never been able to see the templates themselves, so the
+   * two could disagree — a sensor erased, or one holding a print whose
+   * enrolment never finished — with nothing on any screen saying so, and the
+   * only symptom a reader that recognises nobody. Sending the count lets the
+   * Fingerprints page compare the two and say which way they differ. */
+  if (finger.getTemplateCount() == FINGERPRINT_OK) {
+    request["fp_templates"] = (int) finger.templateCount;
   }
 
   String body;
   serializeJson(request, body);
 
-  DynamicJsonDocument response(2048);
-  int status = apiRequest(EP_DEVICE_SYNC, body, &response);
+  LsJson response;
+  int status = signedRequest("POST", "/api/device/heartbeat", body, &response);
 
-  if (status != 200) {
-    LOGLN("Sync failed — records retained for the next attempt");
-    showLines("SYNC FAILED", "Will retry", "", 2000);
+  if (status == 200 || status == 201) {
+    if (!heartbeatLogged) {
+      Serial.println("Heartbeat accepted — the dashboard should show Online.");
+      heartbeatLogged = true;
+    }
     return;
   }
 
-  int accepted  = response["data"]["accepted"]  | 0;
-  int duplicate = response["data"]["duplicate"] | 0;
-
-  /* Duplicates are counted as handled: the server already has them, so keeping
-   * them queued would mean retrying forever. */
-  dequeueFront(batch);
-
-  LOG("Synced: %d accepted, %d duplicate. %d remaining.\n", accepted, duplicate, queueCount);
-
-  showLines("SYNC COMPLETE", String(accepted) + " uploaded",
-            queueCount > 0 ? String(queueCount) + " remaining" : "", 2500);
-  feedback("blue-blink", "triple_short");
+  Serial.printf("Heartbeat failed (HTTP %d, %s)\n",
+                status, (const char *) (response["code"] | "-"));
+  heartbeatLogged = false;
 }
 
-/* =========================================================================
- * Fingerprint enrolment — driven from the Fingerprints page
- * =========================================================================
- * The administrator picks a teacher and this terminal in the browser; the
- * server allocates a sensor slot and this board performs the capture, writes
- * the template to that slot and reports which slot it actually used.
- *
- * The slot is allocated server-side because only the server can see which slots
- * are free across every terminal in the school, and it is echoed back because a
- * sensor that stored the template somewhere else would otherwise leave a teacher
- * bound to whatever finger already occupied the slot we asked for. The server
- * discards the enrolment when the two disagree.
- *
- * No template crosses the network. It is built inside the R307 from two images
- * and lives in the sensor's own flash; what travels is a slot number.
- * ========================================================================= */
+/* ---------------------------------------------------------- reader watch -- */
 
-void reportEnrollStage(int requestId, const char *stage) {
+/**
+ * 0x00 means the SPI read came back as all-zero bits — the module is not
+ * answering, which is wiring or power rather than code. Polling it means a
+ * reseated wire shows up within two seconds instead of needing a reflash.
+ */
+static void watchReader() {
+  if (millis() - lastReaderCheck < READER_WATCH_MS) return;
+  lastReaderCheck = millis();
+
+  byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  if (version == lastReaderVersion) return;
+  lastReaderVersion = version;
+
+  if (version == 0x00 || version == 0xFF) {
+    Serial.printf("READER: 0x%02X — not responding.\n", version);
+    Serial.println("  MISO -> GPIO 19, MOSI -> GPIO 23, SCK -> GPIO 18,");
+    Serial.println("  SDA/SS -> GPIO 5, RST -> GPIO 22, and 3.3V (never 5V).");
+    return;
+  }
+
+  Serial.printf("READER: 0x%02X — responding.\n", version);
+  rfid.PCD_Init();
+  rfid.PCD_AntennaOn();
+}
+
+/* ------------------------------------------------------------- enrolment -- */
+
+/**
+ * Enrolment, driven from the Fingerprints page.
+ *
+ * The old way was to flash the Adafruit `enroll` example, read a slot number
+ * off the serial monitor and type it into a form. Nothing tied the two halves
+ * together, so a typo bound a teacher to somebody else's finger and nothing
+ * anywhere would have noticed.
+ *
+ * Here the server allocates the slot — it is the only party that can see which
+ * slots are free across the whole school — and this board writes the template
+ * to exactly that slot and reports back which slot it actually used. The server
+ * refuses the result if those two disagree.
+ *
+ * Still no template on the wire: it is built inside the sensor from two images
+ * and stored in the sensor's own flash. What crosses the network is a slot
+ * number and a quality score.
+ */
+static void reportEnrollStage(int requestId, const char *stage) {
   LsJson request;
   request["request_id"] = requestId;
   request["stage"]      = stage;
@@ -898,11 +631,12 @@ void reportEnrollStage(int requestId, const char *stage) {
   String body;
   serializeJson(request, body);
 
-  apiRequest(EP_ENROLL_PROGRESS, body);
+  LsJson response;
+  signedRequest("POST", "/api/fingerprint/enrollment/progress", body, &response);
 }
 
-void reportEnrollFailed(int requestId, const char *reason) {
-  LOG("Enrolment failed: %s\n", reason);
+static void reportEnrollFailed(int requestId, const char *reason) {
+  Serial.printf("Enrol: FAILED — %s\n", reason);
 
   LsJson request;
   request["request_id"] = requestId;
@@ -911,23 +645,20 @@ void reportEnrollFailed(int requestId, const char *reason) {
   String body;
   serializeJson(request, body);
 
-  apiRequest(EP_ENROLL_FAILED, body);
-
-  showLines("ENROLL FAILED", "", "", DISPLAY_HOLD_MS);
-  feedback("red", "rapid");
+  LsJson response;
+  signedRequest("POST", "/api/fingerprint/enrollment/failed", body, &response);
 }
 
 /**
- * Wait for a usable image, or give up.
+ * Block until a finger is on the sensor, or the step times out.
  *
- * Imaging errors are retried inside the window because they are ordinary — a
- * smudge, a partial contact, a finger placed at an angle. The timeout exists
- * for the other case: whoever was standing here has walked away, and holding
- * the slot open would stop the next teacher being enrolled at this terminal.
+ * A person who has walked away is the common case, not an error to retry
+ * forever: holding the slot open would stop the next teacher being enrolled at
+ * this terminal at all.
  */
-bool waitForEnrollImage(int requestId, const char *stage, const char *prompt, uint8_t buffer) {
+static bool waitForFinger(int requestId, const char *stage, uint8_t buffer) {
   reportEnrollStage(requestId, stage);
-  showLines("ENROLL", prompt, "", 0);
+  Serial.printf("Enrol: %s\n", stage);
 
   uint32_t startedAt = millis();
 
@@ -936,12 +667,17 @@ bool waitForEnrollImage(int requestId, const char *stage, const char *prompt, ui
 
     if (result == FINGERPRINT_NOFINGER) { delay(60); continue; }
 
-    if (result != FINGERPRINT_OK) { delay(120); continue; }
+    if (result != FINGERPRINT_OK) {
+      /* Imaging errors are transient — a smudge, a partial contact. Retrying
+       * inside the window is what a person expects; failing the whole
+       * enrolment on the first bad frame is not. */
+      delay(120);
+      continue;
+    }
 
     if (finger.image2Tz(buffer) != FINGERPRINT_OK) {
-      showLines("ENROLL", "Press flatter", "and hold still", 900);
+      Serial.println("  print not clear enough — press flatter and hold still");
       delay(400);
-      showLines("ENROLL", prompt, "", 0);
       continue;
     }
 
@@ -952,51 +688,76 @@ bool waitForEnrollImage(int requestId, const char *stage, const char *prompt, ui
   return false;
 }
 
-void runEnrollment(int requestId, int slot, const String &teacherName) {
-  LOG("Enrolment: %s -> slot %d\n", teacherName.c_str(), slot);
-
-  state = STATE_ENROLLING;
-  feedback("blue-blink", "short");
-
-  if (!waitForEnrollImage(requestId, "place_finger", "Place finger", 1)) {
-    state = STATE_READY;
-    showIdle();
-    return;
-  }
-
+static void waitForFingerRemoved(int requestId) {
   reportEnrollStage(requestId, "remove_finger");
-  showLines("ENROLL", "Lift finger", "", 0);
+  Serial.println("Enrol: lift the finger off");
 
   uint32_t startedAt = millis();
+
   while (millis() - startedAt < ENROLL_STEP_TIMEOUT_MS) {
-    if (finger.getImage() == FINGERPRINT_NOFINGER) break;
+    if (finger.getImage() == FINGERPRINT_NOFINGER) return;
     delay(80);
   }
+}
 
-  if (!waitForEnrollImage(requestId, "place_again", "Same finger again", 2)) {
-    state = STATE_READY;
-    showIdle();
-    return;
-  }
+static void runEnrollment(int requestId, int slot, const char *teacherName) {
+  Serial.println();
+  Serial.printf("=== ENROLMENT: %s -> sensor slot %d ===\n", teacherName, slot);
+
+  enrolling = true;
+
+  if (!waitForFinger(requestId, "place_finger", 1)) { enrolling = false; return; }
+
+  waitForFingerRemoved(requestId);
+
+  if (!waitForFinger(requestId, "place_again", 2)) { enrolling = false; return; }
 
   reportEnrollStage(requestId, "storing");
-  showLines("ENROLL", "Saving...", "", 0);
 
   if (finger.createModel() != FINGERPRINT_OK) {
-    /* Two images that do not agree: almost always a different finger the
+    /* Two images that do not agree. Almost always a different finger the
      * second time, or the same finger at a very different angle. */
     reportEnrollFailed(requestId, "The two scans did not match. Use the same finger, placed the same way.");
-    state = STATE_READY;
-    showIdle();
+    enrolling = false;
     return;
   }
 
   if (finger.storeModel(slot) != FINGERPRINT_OK) {
     reportEnrollFailed(requestId, "The sensor refused to store the template in that slot.");
-    state = STATE_READY;
-    showIdle();
+    enrolling = false;
     return;
   }
+
+  /* Prove the template can be read back before calling this a success.
+   *
+   * storeModel() returning OK is the sensor saying it accepted the write, not
+   * that anything is retrievable afterwards. That gap produced an enrolment
+   * that announced DONE, pushed the template count up, and then failed every
+   * search — the print reported as stored was not in the library at all, and
+   * the first sign of it was a teacher being told their finger was unknown
+   * minutes later.
+   *
+   * getTemplateCount() cannot close that gap: it counts, it does not look at
+   * this slot. loadModel() pulls the template at this specific slot back into
+   * a character buffer, so it fails when the slot is empty or unreadable. */
+  uint8_t readBack = finger.loadModel(slot);
+
+  if (readBack != FINGERPRINT_OK) {
+    Serial.printf("Enrol: the sensor accepted the write but slot %d reads back empty (code %d)\n",
+                  slot, readBack);
+    Serial.println("       The template is not really stored. This is a sensor fault, not a bad scan.");
+    Serial.println("       Power the sensor off and on — a full power cycle, not just the ESP32 reset —");
+    Serial.println("       then type 'wipe' and enrol again.");
+
+    reportEnrollFailed(requestId,
+      "The sensor reported the template as stored but cannot read it back. "
+      "Power-cycle the fingerprint sensor, wipe it, and enrol again.");
+
+    enrolling = false;
+    return;
+  }
+
+  finger.getTemplateCount();
 
   LsJson request;
   request["request_id"]         = requestId;
@@ -1007,45 +768,44 @@ void runEnrollment(int requestId, int slot, const String &teacherName) {
   serializeJson(request, body);
 
   LsJson response;
-  int status = apiRequest(EP_ENROLL_COMPLETE, body, &response);
+  int status = signedRequest("POST", "/api/fingerprint/enrollment/complete", body, &response);
 
   if (status == 200 || status == 201) {
-    showLines("ENROLLED", teacherName, "", DISPLAY_HOLD_MS);
-    feedback("green", "short");
-    LOGLN("Enrolment complete");
+    Serial.printf("Enrol: DONE — %s is enrolled in slot %d\n", teacherName, slot);
+    Serial.printf("       sensor now holds %d template(s)\n", finger.templateCount);
   } else {
     /* The template is in the sensor but the server did not record it, so the
-     * slot is now occupied by a finger nobody owns. Removing it keeps the two
-     * in step; the administrator simply starts the enrolment again. */
+     * slot now holds a finger nobody owns. Removing it keeps the two in step;
+     * the administrator just starts the enrolment again. */
     finger.deleteModel(slot);
-    showLines("ENROLL FAILED", "Server refused", "", DISPLAY_HOLD_MS);
-    feedback("red", "rapid");
-    LOG("Server refused the enrolment (HTTP %d)\n", status);
+    Serial.printf("Enrol: the server refused the result (HTTP %d, %s)\n",
+                  status, (const char *) (response["code"] | "-"));
+    Serial.println("       the template was removed from the sensor again.");
   }
 
-  state = STATE_READY;
-  showIdle();
+  enrolling = false;
 }
 
 /**
  * Delete templates the server says nothing owns.
  *
- * A registration captured here and then abandoned leaves a print in the flash
- * occupying a slot. The server cannot reach into the sensor, so it asks; and it
- * only frees the slot once this board confirms, because handing out a slot that
- * still holds a print would enrol the next person over somebody else's finger.
+ * A registration captured at this sensor and then abandoned leaves a print in
+ * the flash occupying a slot. The server cannot reach into the sensor, so it
+ * asks; and it only frees the slot once this board confirms the delete, because
+ * handing out a slot that still holds a print would enrol the next person right
+ * over the top of somebody else's finger.
  */
-void discardSlots(JsonArrayConst slots) {
+static void discardSlots(JsonArrayConst slots) {
   for (JsonVariantConst entry : slots) {
     int slot = entry.as<int>();
     if (slot <= 0) continue;
 
     uint8_t result = finger.deleteModel(slot);
 
-    /* An already-empty slot is the outcome we want, not a failure — that is
-     * what a lost confirmation looks like on the retry. */
+    /* A slot that is already empty is the outcome we want, not a failure —
+     * it happens whenever a confirmation was lost on the way back. */
     if (result != FINGERPRINT_OK && result != FINGERPRINT_DELETEFAIL) {
-      LOG("Could not clear sensor slot %d (%d)\n", slot, result);
+      Serial.printf("Enrol: could not clear slot %d (sensor said %d)\n", slot, result);
       continue;
     }
 
@@ -1055,21 +815,102 @@ void discardSlots(JsonArrayConst slots) {
     String body;
     serializeJson(request, body);
 
-    if (apiRequest(EP_ENROLL_DISCARDED, body) == 200) {
-      LOG("Sensor slot %d cleared and released\n", slot);
+    LsJson response;
+    int status = signedRequest("POST", "/api/fingerprint/enrollment/discarded", body, &response);
+
+    if (status == 200 || status == 201) {
+      Serial.printf("Enrol: slot %d cleared and released.\n", slot);
     }
   }
 }
 
 /** Ask whether the Fingerprints page has queued somebody for this terminal. */
-void pollEnrollment() {
-  if (millis() - lastEnrollPoll < ENROLL_POLL_INTERVAL_MS) return;
+/**
+ * Say why enrolment is not being picked up.
+ *
+ * Every reason this board had for skipping a poll used to be a bare return,
+ * while the web page sat on "Waiting for the terminal to pick this up…" —
+ * true, and useless. The board knows exactly why it is not picking anything
+ * up; it just was not saying. Announced once when a reason starts and once
+ * when it clears, so the Serial Monitor does not fill with it.
+ *
+ * Compared by pointer, which is why every caller passes a string literal.
+ */
+static void announceEnrollSkip(const char *reason) {
+  static const char *last = nullptr;
+
+  if (reason == last) return;
+
+  last = reason;
+
+  if (reason != nullptr) {
+    Serial.printf("\nENROLL: not polling — %s\n", reason);
+  } else {
+    Serial.println("\nENROLL: polling for enrolment requests again.");
+  }
+}
+
+static void pollEnrollment() {
+  if (!fingerReady) {
+    announceEnrollSkip("the fingerprint sensor did not start");
+    return;
+  }
+
+  /* A finger can still be matched against templates already in the sensor's
+   * flash without any of this — matching is local to the sensor. So verification
+   * keeps working and printing while enrolment is dead, which is exactly how
+   * this failure hides. */
+  if (!clockSet) {
+    announceEnrollSkip("the clock is not synced, so requests cannot be signed");
+    return;
+  }
+
+  if (enrolling) return;  // normal and brief; not worth announcing
+
+  /* The sensor cannot verify a teacher and enrol another at the same time, and
+   * an open session means it is in use. */
+  if (sessionOpen) {
+    announceEnrollSkip("an attendance session is open on this terminal");
+    return;
+  }
+
+  if (millis() - lastEnrollPoll < ENROLL_POLL_MS) return;
   lastEnrollPoll = millis();
 
   LsJson response;
-  int status = apiRequest(EP_ENROLL_PENDING, "", &response, "", "GET");
+  int status = signedRequest("GET", "/api/fingerprint/enrollment", "", &response);
 
-  if (status != 200) return;
+  if (status != 200) {
+    /* Rate-limited rather than announced once: unlike the conditions above,
+     * this one can change from request to request. */
+    static uint32_t lastComplaintAt = 0;
+
+    if (lastComplaintAt == 0 || millis() - lastComplaintAt > 15000) {
+      lastComplaintAt = millis();
+
+      const char *code = response["code"] | "";
+      Serial.printf("\nENROLL: the server refused the poll (HTTP %d%s%s)\n",
+                    status, code[0] ? ", " : "", code);
+
+      if (status == 403) {
+        Serial.println("  403 here is almost always the terminal's IP allowlist. This board");
+        Serial.printf("  is on %s. Clear the IP allowlist on the\n", WiFi.localIP().toString().c_str());
+        Serial.println("  device's Edit page unless you set it deliberately — the router");
+        Serial.println("  hands out a different address sooner or later.");
+      } else if (status == 401) {
+        Serial.println("  401 means the API key and HMAC secret do not match the pair the");
+        Serial.println("  server holds. Download the provisioning file ONCE and copy all");
+        Serial.println("  four values out of that same file — each download replaces the last.");
+      } else if (status < 0) {
+        Serial.println("  A negative number is not an HTTP status: the board could not open");
+        Serial.printf("  a connection to %s at all.\n", SERVER_URL);
+      }
+    }
+
+    return;
+  }
+
+  announceEnrollSkip(nullptr);
 
   JsonArrayConst discard = response["data"]["discard_slots"];
   if (!discard.isNull() && discard.size() > 0) discardSlots(discard);
@@ -1082,106 +923,158 @@ void pollEnrollment() {
 
   if (requestId <= 0 || slot <= 0) return;
 
-  runEnrollment(requestId, slot, String((const char *) (enrolment["teacher_name"] | "teacher")));
+  const char *name = enrolment["teacher_name"] | "teacher";
+
+  runEnrollment(requestId, slot, name);
 }
 
-/* =========================================================================
- * Fingerprint — opens the attendance session
- * ========================================================================= */
+/* ----------------------------------------------------------- fingerprint -- */
 
-void handleFingerprint() {
+/**
+ * The finger opens the session; nothing else does.
+ *
+ * Matching happens on the sensor — only a slot number and a confidence score
+ * cross the wire. The server then checks that this teacher is scheduled for
+ * THIS classroom right now, so a verified finger with no matching schedule is
+ * still refused. That check is the real authorisation step.
+ */
+static void handleFingerprint() {
+  if (!fingerReady) return;
+  if (millis() - lastFingerAt < FINGER_COOLDOWN_MS) return;
+
   if (finger.getImage() != FINGERPRINT_OK) return;
-  if (finger.image2Tz() != FINGERPRINT_OK) return;
 
-  int result = finger.fingerFastSearch();
+  lastFingerAt = millis();
 
-  if (result != FINGERPRINT_OK) {
-    fingerFailures++;
-    LOG("Fingerprint not recognised (%d/%d)\n", fingerFailures, FP_MAX_FAILURES);
-
-    showLines("NOT RECOGNIZED", "Try again", "", DISPLAY_HOLD_MS);
-    feedback("red", "rapid");
-
-    /* Lock locally as well as server-side, so a locked terminal stops making
-     * requests instead of hammering an endpoint that will refuse them. */
-    if (fingerFailures >= FP_MAX_FAILURES) {
-      state     = STATE_LOCKED;
-      lockUntil = millis() + FP_LOCK_DURATION_MS;
-      showLines("DEVICE LOCKED", "Too many failures", "", 4000);
-      feedback("red-blink", "rapid5");
-    }
-
-    delay(1200);
+  if (finger.image2Tz() != FINGERPRINT_OK) {
+    Serial.println("\nFinger: could not read the print — try again, flatter.");
     return;
   }
 
-  LOG("Fingerprint matched slot %d (confidence %d)\n", finger.fingerID, finger.confidence);
+  /* Two different failures were being reported as one.
+   *
+   * fingerFastSearch() sends HighSpeedSearch (0x1B). Plenty of sensors sold as
+   * AS608 or R307 are clones that either do not implement it or implement it over a
+   * narrower page range than they claim, and they answer with an error rather
+   * than a polite "no match". The ordinary Search (0x04) is the same operation
+   * without the optimisation and is supported everywhere, so an error from the
+   * fast path is worth retrying on the slow one before telling somebody their
+   * finger is unknown.
+   *
+   * NOTFOUND is left alone: that is the sensor doing its job and saying this
+   * print is not in its library, which no retry will change. */
+  /* Three outcomes have to be told apart, and only one of them is "unknown
+   * finger".
+   *
+   * fingerFastSearch() sends HighSpeedSearch (0x1B). Plenty of sensors sold as
+   * AS608 or R307 are clones that do not implement it, or cover a narrower page range
+   * than they claim, and answer with an error rather than a polite "no match".
+   * The ordinary Search (0x04) is the same operation without the optimisation
+   * and is supported everywhere.
+   *
+   * Beyond that, a search is the longest and most power-hungry thing the
+   * sensor does, and it is where a marginal supply rail or a noisy UART pair
+   * shows up first. The give-away is a confirmation code outside the
+   * datasheet's table — 0x17 is not a code the AS608/R307 family defines, so a reply
+   * carrying it was corrupted in transit rather than sent deliberately.
+   * Corruption is transient, so it is worth asking again.
+   *
+   * NOTFOUND is never retried: that is the sensor working correctly and saying
+   * this print is not in its library, and asking again cannot change it. */
+  uint8_t search   = finger.fingerFastSearch();
+  bool    usedSlow = false;
 
-  if (WiFi.status() != WL_CONNECTED) {
-    /* A session cannot be opened offline: only the server can confirm the
-     * teacher is assigned to this room at this time. */
-    showLines("NO NETWORK", "Cannot open", "attendance", 3000);
-    feedback("red", "long");
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (search == FINGERPRINT_OK || search == FINGERPRINT_NOTFOUND) break;
+
+    delay(60);
+    search   = finger.fingerSearch();
+    usedSlow = true;
+  }
+
+  if (search == FINGERPRINT_OK && usedSlow) {
+    Serial.println("\nFinger: the fast search failed but the ordinary one worked.");
+    Serial.println("        Harmless in itself, but it usually means the sensor's supply rail");
+    Serial.println("        or its RX/TX pair is marginal. Worth tightening before it bites.");
+  }
+
+  if (search == FINGERPRINT_NOTFOUND) {
+    Serial.println("\nFinger: NOT RECOGNISED (this print is not in the sensor's library)");
+    Serial.println("        Type 'count' to see how many templates the sensor is holding.");
     return;
   }
 
-  showLines("VERIFYING", "Please wait", "", 0);
+  if (search != FINGERPRINT_OK) {
+    /* Not "unknown finger" — the sensor could not complete the search, three
+     * times running. Saying so points at power and wiring rather than sending
+     * somebody off to enrol the same finger again, which cannot help. */
+    Serial.printf("\nFinger: the sensor could not search — 3 attempts, last code %d\n", search);
+    Serial.println("        Codes outside the datasheet's table mean the reply was corrupted,");
+    Serial.println("        not that the finger is unknown. Enrolling again will not help.");
+    Serial.println("        Check, in this order:");
+    Serial.println("          1. The sensor's VCC on 3V3 for an AS608 (5 V destroys it), or on VIN");
+    Serial.println("             for an R307. The wrong one browns out mid-search or kills the module.");
+    Serial.println("          2. A shared GND between the sensor and the ESP32.");
+    Serial.println("          3. The RX/TX pair re-seated; breadboard contacts are the usual culprit.");
+    Serial.println("          4. Powering the ESP32 from a wall charger rather than a laptop port.");
+    Serial.println("          5. 100 uF + 100 nF across 3V3/GND at the sensor. A capture is the");
+    Serial.println("             sensor's biggest current draw, and on a rail shared with the");
+    Serial.println("             reader that is exactly when the reply gets corrupted.");
+    return;
+  }
 
-  StaticJsonDocument<256> request;
+  Serial.printf("\nFinger: matched slot %d (confidence %d)\n",
+                finger.fingerID, finger.confidence);
+
+  if (!clockSet && !syncClockFromServer()) {
+    Serial.println("  no clock — cannot sign the request");
+    return;
+  }
+
+  LsJson request;
   request["fingerprint_id"] = finger.fingerID;
   request["confidence"]     = finger.confidence;
 
   String body;
   serializeJson(request, body);
 
-  DynamicJsonDocument response(1536);
-  int status = apiRequest(EP_ATTENDANCE_START, body, &response, generateUuid());
+  LsJson response;
+  int status = signedRequest("POST", "/api/attendance/start", body, &response, generateUuid());
 
-  if (status == 201 && response["success"] == true) {
-    fingerFailures = 0;
+  Serial.printf("  HTTP %d  %s\n", status, (const char *) (response["code"] | "-"));
 
-    JsonObject data = response["data"];
-
-    session.open      = true;
-    session.sessionId = data["session"]["session_code"].as<String>();
-    session.subject   = data["session"]["subject_code"].as<String>();
-    session.section   = data["session"]["section_code"].as<String>();
-    session.roster    = data["session"]["roster_count"] | 0;
-    session.timedIn   = 0;
-    session.timedOut  = 0;
-
-    state = STATE_SESSION_OPEN;
-
-    showLines(response["display_line_1"] | "SESSION OPEN",
-              response["display_line_2"] | "",
-              response["display_line_3"] | "", 3000);
-    feedback(response["led"] | "green", response["buzzer"] | "short");
-
-    LOG("Session %s opened for %s\n", session.sessionId.c_str(), session.section.c_str());
+  if (status == 201) {
+    sessionOpen = true;
+    Serial.printf("  SESSION OPEN — %s / %s, roster %d\n",
+                  (const char *) (response["data"]["session"]["subject_code"] | "?"),
+                  (const char *) (response["data"]["session"]["section_code"] | "?"),
+                  (int) (response["data"]["session"]["roster_count"] | 0));
+    Serial.println("  Now tap a student card.");
     return;
   }
 
-  fingerFailures++;
+  Serial.printf("  refused: %s\n", (const char *) (response["message"] | ""));
 
-  showLines(response["display_line_1"] | "REJECTED",
-            response["display_line_2"] | (response["message"] | "").as<String>().substring(0, 21),
-            "", DISPLAY_HOLD_LONG_MS);
-  feedback(response["led"] | "red", response["buzzer"] | "rapid");
-
-  delay(1000);
+  const char *code = response["code"] | "";
+  if (strcmp(code, "FINGERPRINT_UNKNOWN") == 0)
+    Serial.println("  -> slot not enrolled in L-SIAMS (Fingerprints -> Enrol Fingerprint)");
+  if (strcmp(code, "NO_SCHEDULE") == 0 || strcmp(code, "NOT_SCHEDULED") == 0)
+    Serial.println("  -> this teacher has no class in this room at this time");
 }
 
-/* =========================================================================
- * RFID — a tap
- * ========================================================================= */
+/* ------------------------------------------------------------------ card -- */
 
-String readCardUid() {
-  if (!rfid.PICC_IsNewCardPresent()) return "";
-  if (!rfid.PICC_ReadCardSerial())   return "";
+/**
+ * Serialise whatever card is currently selected.
+ *
+ * Split out because the two callers disagree about which cards count, and only
+ * about that — see cardPresent() and cardPresentOrResting() below.
+ */
+static String selectedCardUid() {
+  if (!rfid.PICC_ReadCardSerial()) return "";
 
   String uid;
   uid.reserve(rfid.uid.size * 2);
-
   for (byte i = 0; i < rfid.uid.size; i++) {
     char pair[3];
     snprintf(pair, sizeof(pair), "%02X", rfid.uid.uidByte[i]);
@@ -1190,329 +1083,987 @@ String readCardUid() {
 
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
-
   return uid;
 }
 
-void handleCard() {
-  String uid = readCardUid();
+/**
+ * A card that has just arrived in the field.
+ *
+ * PICC_IsNewCardPresent() sends REQA, which only cards in IDLE answer. That is
+ * exactly right for attendance: a card left lying on the reader is halted after
+ * its first read and stays halted until it leaves the field, so one tap is one
+ * record rather than a hundred.
+ */
+static String readCardUid() {
+  if (!rfid.PICC_IsNewCardPresent()) return "";
 
-  if (uid.length() == 0) return;
+  return selectedCardUid();
+}
 
-  /* Debounce: an MFRC522 will happily read the same card several times a
-   * second while it rests on the antenna. */
-  uint32_t now = millis();
+/**
+ * Any card in the field, including one already resting there.
+ *
+ * The same REQA behaviour that makes attendance sane makes enrolment fail. Put
+ * the card down, then press the button in the browser, and the card is already
+ * halted from an earlier read — REQA gets no answer, the wait window runs to
+ * nothing, and the person tapping is told no card was presented while holding
+ * one against the reader.
+ *
+ * WUPA wakes cards in HALT as well as IDLE, which is the question enrolment
+ * actually wants to ask: is there a card here, however it came to be here.
+ *
+ * Two counters come back out because "no card was presented" covers two
+ * completely different faults — nothing in the field, and a card that answers
+ * but will not select — and telling them apart from the outside is impossible.
+ */
+static String readCardUidIncludingResting(uint16_t *sawCard, uint16_t *selectFailed) {
+  bool present = rfid.PICC_IsNewCardPresent();
 
-  if (uid == lastCardUid && (now - lastCardAt) < CARD_DEBOUNCE_MS) return;
+  if (!present) {
+    /* PICC_IsNewCardPresent() resets these three before it asks; PICC_WakeupA()
+     * does not, and inherits whatever the last transaction left behind. Asking
+     * WUPA on top of stale baud-rate registers is asking it to fail. */
+    rfid.PCD_WriteRegister(MFRC522::TxModeReg, 0x00);
+    rfid.PCD_WriteRegister(MFRC522::RxModeReg, 0x00);
+    rfid.PCD_WriteRegister(MFRC522::ModWidthReg, 0x26);
 
-  lastCardUid = uid;
-  lastCardAt  = now;
+    byte atqa[2];
+    byte length = sizeof(atqa);
+    MFRC522::StatusCode status = rfid.PICC_WakeupA(atqa, &length);
 
-  LOG("Card: %s\n", uid.c_str());
+    present = (status == MFRC522::STATUS_OK || status == MFRC522::STATUS_COLLISION);
+  }
 
-  if (!session.open) {
-    showLines("NO SESSION", "Awaiting teacher", "", DISPLAY_HOLD_MS);
-    feedback("red", "long");
+  if (!present) return "";
+
+  if (sawCard != nullptr) (*sawCard)++;
+
+  /* Selecting is anticollision plus a UID read, and it is the step that fails
+   * on a marginal antenna or a card held at an angle. One retry costs nothing
+   * and turns most of those into a successful read. */
+  for (uint8_t attempt = 0; attempt < 3; attempt++) {
+    String uid = selectedCardUid();
+
+    if (uid.length() > 0) return uid;
+
+    delay(15);
+  }
+
+  if (selectFailed != nullptr) (*selectFailed)++;
+
+  return "";
+}
+
+/* ------------------------------------------------- card enrolment (issue) -- */
+
+static String jsonToString(const LsJson &document) {
+  String body;
+  serializeJson(document, body);
+  return body;
+}
+
+static void reportCardStage(int requestId, const char *stage) {
+  LsJson request;
+  request["request_id"] = requestId;
+  request["stage"]      = stage;
+
+  LsJson response;
+  signedRequest("POST", "/api/rfid/enrollment/progress", jsonToString(request), &response);
+}
+
+static void reportCardFailed(int requestId, const char *reason) {
+  LsJson request;
+  request["request_id"] = requestId;
+  request["reason"]     = reason;
+
+  LsJson response;
+  signedRequest("POST", "/api/rfid/enrollment/failed", jsonToString(request), &response);
+}
+
+/**
+ * Read one card for issuance, with the reader to ourselves.
+ *
+ * This is the whole reason the feature exists as its own mode. In the ordinary
+ * loop the board interleaves a card read with a heartbeat, an enrolment poll
+ * and a sync — every one of them a blocking HTTP request — so a card held
+ * against the reader during one of those windows is simply not seen, and the
+ * person tapping has no way to tell a missed read from a broken card.
+ *
+ * Inside this function nothing else runs. No heartbeat, no poll, no sync: just
+ * the reader, polled tightly until a card appears or the window closes. A card
+ * presented at any moment during it is read.
+ */
+static void runCardEnrollment(int requestId, const char *label, int waitSeconds) {
+  Serial.println();
+  Serial.printf("=== CARD: waiting for a card for %s ===\n", label);
+  Serial.println("    (heartbeats paused - the reader has this board to itself)");
+
+  enrollingCard = true;
+
+  reportCardStage(requestId, "present_card");
+
+  uint32_t startedAt = millis();
+  uint32_t windowMs  = (uint32_t) (waitSeconds > 0 ? waitSeconds : 45) * 1000UL;
+  String   uid;
+
+  uint32_t lastAntennaReset = millis();
+  uint32_t lastTick         = millis();
+  uint16_t sawCard          = 0;
+  uint16_t selectFailed     = 0;
+
+  /* Worth one line at the start: a reader answering with a version that is not
+   * a real one is the difference between "hold it flatter" and "check the
+   * wiring", and that is not deducible from a failed read. */
+  byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  Serial.printf("    reader version 0x%02X%s\n", version,
+                (version == 0x91 || version == 0x92 || version == 0x88 || version == 0x90 || version == 0x12)
+                  ? "" : "  <-- not a version any MFRC522 reports; suspect wiring or power");
+
+  while (millis() - startedAt < windowMs) {
+    /* Resting cards included: somebody who puts the card down and then presses
+     * the button in the browser is holding a card the reader must find. */
+    uid = readCardUidIncludingResting(&sawCard, &selectFailed);
+
+    if (uid.length() > 0) break;
+
+    /* A card held continuously never leaves the field, so it never returns to
+     * IDLE by itself. Dropping the antenna power-cycles it, which is the only
+     * way to get a wedged or stuck card back to a state that answers.
+     *
+     * 50 ms, not 5: a card's onboard capacitor holds it alive across a shorter
+     * gap, so the shorter one looks like a fix and changes nothing. */
+    if (millis() - lastAntennaReset > 4000) {
+      lastAntennaReset = millis();
+      rfid.PCD_AntennaOff();
+      delay(50);
+      rfid.PCD_AntennaOn();
+      delay(10);
+    }
+
+    /* Somebody standing at a reader that says nothing cannot tell waiting from
+     * broken, which is the whole reason this mode exists. */
+    if (millis() - lastTick > 3000) {
+      lastTick = millis();
+      Serial.printf("CARD: still waiting — %us left.%s\n",
+                    (unsigned) ((windowMs - (millis() - startedAt)) / 1000UL),
+                    sawCard == 0
+                      ? " Nothing in the field yet — hold the card flat on the reader."
+                      : "");
+
+      if (sawCard > 0) {
+        Serial.printf("      a card is answering but will not select (%u attempt(s)) — "
+                      "try it flatter, or slightly further away.\n", selectFailed);
+      }
+    }
+
+    /* Short enough that a card touched briefly still lands inside a poll, and
+     * the reader is the only thing being asked. */
+    delay(30);
+  }
+
+  if (uid.length() == 0) {
+    /* The two failures need different actions, so they get different words
+     * here and in the browser rather than one message covering both. */
+    const bool answered = sawCard > 0;
+
+    Serial.printf("CARD: gave up. Card detected %u time(s), select failed %u time(s).\n",
+                  sawCard, selectFailed);
+
+    if (answered) {
+      Serial.println("      The reader sees a card but cannot read its serial. That is an antenna");
+      Serial.println("      or power problem, not a card problem: check the module is on 3.3 V,");
+      Serial.println("      that its GND shares the ESP32's, and that the SPI leads are short.");
+    } else {
+      Serial.println("      Nothing answered at all. Either the card is not 13.56 MHz (a thick");
+      Serial.println("      white 125 kHz fob will never read), or the reader is not wired right.");
+      Serial.println("      Try the card that already works for attendance to tell those apart.");
+    }
+
+    reportCardFailed(requestId, answered
+      ? "The reader detected a card but could not read its serial — hold it flatter, or check the reader's power and wiring."
+      : "No card answered the reader. Check the card is 13.56 MHz, and that the reader is wired and powered correctly.");
+
+    enrollingCard = false;
     return;
   }
+
+  Serial.printf("CARD: read %s\n", uid.c_str());
+  reportCardStage(requestId, "reading");
+
+  LsJson request;
+  request["request_id"] = requestId;
+  request["card_uid"]   = uid;
+
+  LsJson response;
+  int status = signedRequest("POST", "/api/rfid/enrollment/captured", jsonToString(request), &response);
+
+  if (status == 200) {
+    Serial.println("CARD: reported to the server — choose the student in L-SIAMS.");
+  } else {
+    Serial.printf("CARD: the server refused the read (HTTP %d, %s)\n",
+                  status, (const char *) (response["code"] | "-"));
+  }
+
+  /* Wait for the card to be taken away. Issuing runs card after card, so
+   * without this the one just read is still in the field when the next request
+   * opens and gets captured a second time — the resting-card wakeup above
+   * makes that certain rather than merely likely.
+   *
+   * Bounded: a card genuinely left behind must not stop the terminal working.
+   */
+  Serial.println("CARD: take the card off the reader.");
+
+  uint32_t clearedAt = millis();
+  while (millis() - clearedAt < 8000 && readCardUidIncludingResting(nullptr, nullptr).length() > 0) {
+    delay(80);
+  }
+
+  enrollingCard = false;
+}
+
+/** Is a card wanted? Mirrors pollEnrollment(), and skips for the same reasons. */
+static void pollCardEnrollment() {
+  if (!clockSet || enrolling || enrollingCard) return;
+
+  if (millis() - lastCardPoll < CARD_POLL_MS) return;
+  lastCardPoll = millis();
+
+  LsJson response;
+  int status = signedRequest("GET", "/api/rfid/enrollment", "", &response);
+
+  if (status != 200) {
+    static uint32_t lastComplaintAt = 0;
+
+    if (lastComplaintAt == 0 || millis() - lastComplaintAt > 15000) {
+      lastComplaintAt = millis();
+      Serial.printf("\nCARD: the server refused the poll (HTTP %d, %s)\n",
+                    status, (const char *) (response["code"] | "-"));
+    }
+
+    return;
+  }
+
+  JsonObject enrolment = response["data"]["enrollment"];
+  if (enrolment.isNull()) return;
+
+  int requestId = enrolment["request_id"] | 0;
+  if (requestId <= 0) return;
+
+  const char *label = enrolment["label"] | "the next card";
+  int waitSeconds   = enrolment["wait_seconds"] | 45;
+
+  runCardEnrollment(requestId, label, waitSeconds);
+}
+
+static void sendTap(const String &uid) {
+  LsJson request;
+  request["rfid_uid"] = uid;
 
   String requestId = generateUuid();
-  time_t occurred  = serverNow();
-
-  if (WiFi.status() != WL_CONNECTED || state == STATE_OFFLINE) {
-    /* Offline: queue and tell the student it counted. It will, once the
-     * network returns — the record keeps this timestamp. */
-    if (enqueueTap(uid, occurred, requestId)) {
-      showLines("SAVED OFFLINE", "Will sync later",
-                String(queueCount) + " queued", DISPLAY_HOLD_MS);
-      feedback("amber-blink", "offline");
-    } else {
-      showLines("QUEUE FULL", "Call IT support", "", DISPLAY_HOLD_LONG_MS);
-      feedback("red-blink", "rapid5");
-    }
-    return;
-  }
-
-  showLines("READING", uid.substring(0, 16), "", 0);
-
-  StaticJsonDocument<256> request;
-  request["rfid_uid"]   = uid;
   request["request_id"] = requestId;
 
   String body;
   serializeJson(request, body);
 
-  DynamicJsonDocument response(1536);
-  int status = apiRequest(EP_ATTENDANCE_TAP, body, &response, requestId);
+  LsJson response;
+  int status = signedRequest("POST", "/api/attendance/tap", body, &response, requestId);
 
-  if (status < 0) {
-    /* The request never left, or the reply never arrived. Queue it: the
-     * request_id makes a later retry safe even if the server did receive it. */
-    if (enqueueTap(uid, occurred, requestId)) {
-      showLines("SAVED OFFLINE", "Network problem",
-                String(queueCount) + " queued", DISPLAY_HOLD_MS);
-      feedback("amber-blink", "offline");
-      state = STATE_OFFLINE;
+  /* One retry after a clock correction. A device powered off for a while
+   * drifts, and re-reading the epoch is cheaper than failing a real tap. */
+  if (response["code"] == "TIMESTAMP_EXPIRED") {
+    Serial.println("  timestamp rejected — resyncing clock and retrying");
+    if (syncClockFromServer()) {
+      status = signedRequest("POST", "/api/attendance/tap", body, &response, requestId);
     }
+  }
+
+  Serial.printf("  HTTP %d  %s\n", status, (const char *) (response["code"] | "-"));
+
+  const char *line1 = response["display_line_1"] | "";
+  const char *line2 = response["display_line_2"] | "";
+  if (strlen(line1)) Serial.printf("  DISPLAY: %s / %s\n", line1, line2);
+
+  if (status == 201) {
+    Serial.printf("  RECORDED: %s\n", (const char *) (response["message"] | ""));
+  } else if (strcmp(response["code"] | "", "SESSION_NOT_OPEN") == 0) {
+    sessionOpen = false;
+    Serial.println("  -> a teacher must scan their finger first");
+  }
+}
+
+/* ----------------------------------------------------------- diagnostics -- */
+
+static void diagnoseWifi() {
+  Serial.println("Wi-Fi FAILED.");
+  Serial.printf("  WiFi.status() = %d ", (int) WiFi.status());
+
+  switch (WiFi.status()) {
+    case WL_NO_SSID_AVAIL:   Serial.println("(network not found)"); break;
+    case WL_CONNECT_FAILED:  Serial.println("(rejected — usually the password)"); break;
+    case WL_CONNECTION_LOST: Serial.println("(connection lost)"); break;
+    case WL_DISCONNECTED:    Serial.println("(disconnected)"); break;
+    default:                 Serial.println(); break;
+  }
+
+  Serial.println("  Scanning to see what this board can actually reach...");
+  WiFi.disconnect();
+  delay(100);
+
+  int found = WiFi.scanNetworks();
+  if (found <= 0) {
+    Serial.println("  No networks at all — nothing here is 2.4 GHz and in range.");
     return;
   }
 
-  /* The server always answers with display/LED/buzzer instructions, whether
-   * the tap succeeded or not — so the terminal never has to interpret domain
-   * rules for itself. */
-  String line1 = response["display_line_1"] | "";
-  String line2 = response["display_line_2"] | "";
-  String line3 = response["display_line_3"] | "";
-  String led   = response["led"]    | "red";
-  String buzz  = response["buzzer"] | "long";
+  bool nameMatched = false;
+  Serial.printf("  %d network(s) visible:\n", found);
 
-  if (line1.length() == 0) {
-    line1 = (response["success"] | false) ? "RECORDED" : "REJECTED";
-    line2 = (response["message"] | "").as<String>().substring(0, 21);
+  for (int i = 0; i < found; i++) {
+    bool isTarget = (WiFi.SSID(i) == WIFI_SSID);
+    if (isTarget) nameMatched = true;
+    Serial.printf("    %-32s ch%-3d %4d dBm%s\n",
+                  WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i),
+                  isTarget ? "   <-- this is WIFI_SSID" : "");
   }
 
-  uint32_t hold = response["hold_ms"] | DISPLAY_HOLD_MS;
+  Serial.println();
+  if (!nameMatched) {
+    Serial.printf("  \"%s\" is not in that list — it is 5 GHz (the ESP32 has no\n", WIFI_SSID);
+    Serial.println("  5 GHz radio) or the name differs. Copy it from the list above.");
+    Serial.println("  iPhone: Personal Hotspot -> Maximise Compatibility.");
+    Serial.println("  Android: Hotspot -> AP Band -> 2.4 GHz.");
+    return;
+  }
 
-  showLines(line1, line2, line3, hold);
-  feedback(led, buzz);
+  Serial.println("  The name matches, so it is reachable and 2.4 GHz.");
+  Serial.println("  That leaves the password — check case, and l/1/I and O/0.");
+}
 
-  if (response["success"] | false) {
-    JsonObject counters = response["counters"];
+/* ------------------------------------------------------- config sanity -- */
 
-    if (!counters.isNull()) {
-      session.timedIn  = counters["timed_in"]  | session.timedIn;
-      session.timedOut = counters["timed_out"] | session.timedOut;
-      session.roster   = counters["total"]     | session.roster;
-    }
+/**
+ * Catch the values that were never filled in.
+ *
+ * Each one below has cost a debugging session. A placeholder SERVER_URL
+ * produces "HTTP -1" from a board that is otherwise perfect, which reads as a
+ * network fault and sends people to the firewall; a placeholder API_KEY
+ * produces a storm of 401s that reads as a rotation problem. The sketch knows
+ * the shipped defaults and can say so before anything else runs, which turns
+ * an afternoon into one line.
+ *
+ * Warnings only. A board with a placeholder still boots, still reports its
+ * MAC, and still runs its reader checks — all of which are useful while the
+ * rest is being filled in.
+ */
+static void checkConfig() {
+  uint8_t problems = 0;
+
+  if (strcmp(WIFI_SSID, "YOUR_WIFI_NAME") == 0) {
+    Serial.println("CONFIG: WIFI_SSID is still the placeholder.");
+    problems++;
+  }
+
+  /* The shipped example address. Nobody's PC is ever actually on it, and
+   * leaving it produces a connection refused that looks like a firewall. */
+  if (strstr(SERVER_URL, "192.168.0.100") != nullptr) {
+    Serial.println("CONFIG: SERVER_URL is still the example address (192.168.0.100).");
+    Serial.println("        Put your PC's own address here — start.bat prints it as");
+    Serial.println("        \"On other devices\". Every request fails with HTTP -1 until you do.");
+    problems++;
+  }
+
+  if (strstr(SERVER_URL, "localhost") != nullptr || strstr(SERVER_URL, "127.0.0.1") != nullptr) {
+    Serial.println("CONFIG: SERVER_URL points at localhost, which to this board means");
+    Serial.println("        this board. It has to be the PC's address on the network.");
+    problems++;
+  }
+
+  /* http://x.x.x.x:8080 — the colon after the host is what a missing port
+   * looks like, and a port typed as :080 is the same mistake once removed. */
+  const char *hostStart = strstr(SERVER_URL, "//");
+  const char *portMark  = hostStart == nullptr ? nullptr : strchr(hostStart + 2, ':');
+
+  if (portMark == nullptr) {
+    Serial.println("CONFIG: SERVER_URL has no port. It must end in :8080 (or whatever");
+    Serial.println("        port start.bat reports) — without it the board tries port 80.");
+    problems++;
+  } else if (portMark[1] == '0') {
+    /* :080 rather than :8080. It parses, it connects to port 80, and nothing
+     * is listening there — so it fails exactly like a wrong address. */
+    Serial.printf("CONFIG: SERVER_URL's port is \"%s\", which starts with a zero.\n", portMark + 1);
+    Serial.println("        :080 is the usual way :8080 gets mistyped, and it silently");
+    Serial.println("        connects to port 80 instead, where nothing is listening.");
+    problems++;
+  }
+
+  if (strncmp(API_KEY, "lsk_xxxx", 8) == 0 || strchr(API_KEY, '.') == nullptr) {
+    Serial.println("CONFIG: API_KEY is not a real key. It looks like lsk_<id>.<secret>");
+    Serial.println("        and comes from the provisioning file. Every signed request");
+    Serial.println("        will be refused with API_KEY_INVALID until it is right.");
+    problems++;
+  }
+
+  if (strncmp(HMAC_SECRET, "zzzz", 4) == 0) {
+    Serial.println("CONFIG: HMAC_SECRET is still the placeholder.");
+    problems++;
+  }
+
+  if (problems > 0) {
+    Serial.println("        API_KEY and HMAC_SECRET must come from the SAME download —");
+    Serial.println("        each download replaces the pair the server holds.");
+    Serial.println();
   }
 }
 
-/* =========================================================================
- * Session close button
- * ========================================================================= */
+/* ------------------------------------------------- fingerprint discovery -- */
 
-void handleButton() {
-  static uint32_t pressedAt = 0;
+/**
+ * Find the sensor when it is not on the configured pins.
+ *
+ * Two things go wrong here and neither announces itself. UART2 is not fixed
+ * to GPIO 16 and 17 — a WROVER has no such pins at all, and most boards print
+ * them as RX2 and TX2, so people wire to whatever is free. And TX/RX cross,
+ * which means a perfectly reasonable straight-through wiring leaves both ends
+ * talking and neither listening.
+ *
+ * Rather than asking which pins were used, try the plausible ones. Each pair
+ * is tried both ways round, so a reversed connection is found and named
+ * instead of reported as a missing sensor. Both baud rates are tried too:
+ * 57600 is the AS608's default, but modules ship configured at 9600 and the
+ * symptom is identical.
+ *
+ * Only runs when the configured pins fail, so a correctly wired board never
+ * waits for it.
+ */
+static bool findFingerprintSensor() {
+  struct Pair { uint8_t rx; uint8_t tx; };
 
-  if (digitalRead(PIN_BUTTON) == LOW) {
-    if (pressedAt == 0) pressedAt = millis();
+  /* Pairs worth trying: free on a typical dev board, not strapping pins, not
+   * input-only, and not already used by the reader or the USB serial. */
+  static const Pair candidates[] = {
+    { PIN_FINGER_TX, PIN_FINGER_RX },   /* configured, but crossed */
+    { 16, 17 }, { 17, 16 },
+    { 25, 26 }, { 26, 25 },
+    { 32, 33 }, { 33, 32 },
+    { 27, 14 }, { 14, 27 },
+    { 13,  4 }, {  4, 13 },
+  };
 
-    if (millis() - pressedAt > BUTTON_HOLD_MS) {
-      pressedAt = 0;
+  static const uint32_t bauds[] = { 57600, 9600 };
 
-      if (!session.open) return;
+  /* Each failing pair costs the library's one-second packet timeout, and there
+   * are twenty-odd of them, so this goes quiet for around half a minute. That
+   * silence read as a hang — it arrives right after a wall of wiring advice,
+   * which is exactly when somebody is deciding whether the board has died. A
+   * dot per pair costs nothing and turns a hang into a progress bar. */
+  Serial.println("Sensor: not on the configured pins — looking for it...");
+  Serial.println("        Trying every likely pin pair at two baud rates.");
+  Serial.print("        This takes about 30 seconds: ");
 
-      showLines("CLOSING", "Attendance", "", 0);
+  for (uint8_t b = 0; b < sizeof(bauds) / sizeof(bauds[0]); b++) {
+    for (uint8_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+      const Pair &p = candidates[i];
 
-      DynamicJsonDocument response(1024);
-      int status = apiRequest(EP_ATTENDANCE_END, "{}", &response, generateUuid());
-
-      if (status == 200 && response["success"] == true) {
-        session.open = false;
-        session.sessionId = "";
-        state = STATE_READY;
-
-        showLines(response["display_line_1"] | "SESSION CLOSED",
-                  response["display_line_2"] | "", "", 4000);
-        feedback("blue", "double_short");
-      } else {
-        showLines("CLOSE FAILED", (response["message"] | "").as<String>().substring(0, 21), "", 3000);
-        feedback("red", "long");
+      /* Skip the pair already tried by the caller, at its baud rate. */
+      if (bauds[b] == FINGERPRINT_BAUD && p.rx == PIN_FINGER_RX && p.tx == PIN_FINGER_TX) {
+        continue;
       }
+
+      fingerSerial.end();
+      delay(20);
+      fingerSerial.begin(bauds[b], SERIAL_8N1, p.rx, p.tx);
+      delay(120);
+
+      Serial.print('.');
+
+      if (!finger.verifyPassword()) continue;
+
+      Serial.println();
+      Serial.println();
+      Serial.printf("Sensor: FOUND on RX %d, TX %d at %lu baud.\n",
+                    p.rx, p.tx, (unsigned long) bauds[b]);
+      Serial.println();
+      Serial.println("  It works from here, but the sketch is still configured for");
+      Serial.println("  something else. Make it permanent so the next boot does not");
+      Serial.println("  have to search:");
+      Serial.println();
+      Serial.printf("      #define PIN_FINGER_RX      %d\n", p.rx);
+      Serial.printf("      #define PIN_FINGER_TX      %d\n", p.tx);
+
+      if (bauds[b] != FINGERPRINT_BAUD) {
+        Serial.printf("      #define FINGERPRINT_BAUD   %lu\n", (unsigned long) bauds[b]);
+      }
+
+      Serial.println();
+      return true;
     }
-  } else {
-    pressedAt = 0;
   }
+
+  /* Nothing answered anywhere — put the port back where it was configured so
+   * the failure message below describes the state the board is actually in. */
+  fingerSerial.end();
+  delay(20);
+  fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
+  delay(100);
+
+  Serial.println();
+  Serial.println("Sensor: no answer on any pin pair tried.");
+
+  return false;
 }
 
-/* =========================================================================
- * setup / loop
- * ========================================================================= */
+/* ----------------------------------------------------------------- setup -- */
 
 void setup() {
-  bootMillis = millis();
+  Serial.begin(115200);
+  delay(400);
 
-  Serial.begin(SERIAL_BAUD);
-  delay(200);
+  Serial.println();
+  Serial.println("L-SIAMS bench terminal — RFID + fingerprint");
+  Serial.println("------------------------------------------");
 
-  LOGLN("\n\n=== L-SIAMS Attendance Terminal ===");
-  LOG("Firmware %s (%s)\n", FIRMWARE_VERSION, FIRMWARE_BUILD_DATE);
-  LOG("MAC %s\n", WiFi.macAddress().c_str());
+  /* Why this boot happened, and how many there have been.
+   *
+   * A board that crashes partway through setup reboots and prints the same
+   * lines again, so the log looks like one run that stops at the same place
+   * every time rather than like a loop. That is indistinguishable from a hang
+   * unless the reset reason is printed — and the two need opposite responses:
+   * a hang means waiting longer, a crash loop means something in setup is
+   * faulting and no amount of waiting will get past it.
+   *
+   * bootCount lives in RTC memory, which survives a reset but not a power
+   * cycle, so "boot #7" after one power-up says the board has restarted itself
+   * six times. */
+  static RTC_DATA_ATTR uint32_t bootCount = 0;
+  bootCount++;
 
-  /* --- 1. GPIO --- */
-  pinMode(PIN_BUZZER, OUTPUT);
-  pinMode(PIN_LED_GREEN, OUTPUT);
-  pinMode(PIN_LED_RED, OUTPUT);
-  pinMode(PIN_LED_BLUE, OUTPUT);
-  pinMode(PIN_LED_AMBER, OUTPUT);
-  pinMode(PIN_BUTTON, INPUT_PULLUP);
-  allLedsOff();
+  esp_reset_reason_t why = esp_reset_reason();
 
-  /* --- 2. OLED --- */
-  Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL);
+  Serial.printf("Boot #%lu, reason: ", (unsigned long) bootCount);
 
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
-    LOGLN("OLED not found — continuing without a display");
+  switch (why) {
+    case ESP_RST_POWERON:  Serial.println("power on (normal)"); break;
+    case ESP_RST_SW:       Serial.println("software reset (normal after upload)"); break;
+    case ESP_RST_PANIC:    Serial.println("*** CRASH — the sketch faulted and restarted ***"); break;
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:      Serial.println("*** WATCHDOG — something blocked too long ***"); break;
+    case ESP_RST_BROWNOUT:
+      Serial.println("*** BROWNOUT — the 3.3 V rail sagged below the reset threshold ***");
+      Serial.println("      Not a sketch fault. Something drew more than the supply could");
+      Serial.println("      deliver at that instant — usually a Wi-Fi transmit burst landing");
+      Serial.println("      on top of the reader's RF field or the sensor's capture.");
+      Serial.println("      In order of effect: a 1 A wall supply instead of a laptop USB");
+      Serial.println("      port, then 100 uF + 100 nF across 3V3/GND at each module.");
+      break;
+    case ESP_RST_EXT:      Serial.println("reset button"); break;
+    default:               Serial.printf("code %d\n", (int) why); break;
   }
 
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
-  display.setCursor(0, 20);
-  display.println("L-SIAMS");
-  display.println("Starting...");
-  display.display();
+  if (bootCount > 1 && (why == ESP_RST_PANIC || why == ESP_RST_BROWNOUT
+                        || why == ESP_RST_INT_WDT || why == ESP_RST_TASK_WDT)) {
+    Serial.println();
+    Serial.println("  This board is restarting itself. Anything printed below is the");
+    Serial.println("  start of another attempt, not progress through one — which is why");
+    Serial.println("  the log appears to stop at the same line every time.");
+    Serial.println();
+  }
 
-  /* --- 3. RFID --- */
-  SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, PIN_RFID_SS);
+  checkConfig();
+
+  /* ---- RFID ---- */
+  SPI.begin();
   rfid.PCD_Init();
-  delay(50);
 
+  /* Read it several times. A reader that answers 0x92 every time is wired
+   * correctly; one that answers a different value each time has a connection
+   * problem, not a configuration problem, and no amount of retrying in the
+   * card code will change that. The two need to be told apart here, once,
+   * rather than inferred later from reads that fail. */
   byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
-  LOG("MFRC522 version 0x%02X %s\n", version,
-      (version == 0x00 || version == 0xFF) ? "(NOT DETECTED)" : "(ok)");
+  bool stable  = true;
 
-  /* --- 4. Fingerprint --- */
-  fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGERPRINT_RX, PIN_FINGERPRINT_TX);
+  for (uint8_t i = 0; i < 8; i++) {
+    delay(5);
+    if (rfid.PCD_ReadRegister(MFRC522::VersionReg) != version) stable = false;
+  }
+
+  const bool known = (version == 0x91 || version == 0x92 || version == 0x88
+                   || version == 0x90 || version == 0x12);
+
+  Serial.printf("MFRC522 version: 0x%02X %s\n", version,
+                known ? (stable ? "(ok)" : "(known version but UNSTABLE - see below)")
+                      : "<-- NOT a version any MFRC522 reports");
+
+  /* The version register alone cannot separate a faulty chip from an odd
+   * clone, and that distinction decides whether to keep debugging or buy a
+   * replacement. The chip's own self test can: it runs a known input through
+   * the internal CRC engine and compares the result against the signature NXP
+   * burned into the part. Passing it is proof the silicon works.
+   *
+   * Run here rather than in a separate sketch because this is the sketch
+   * people actually flash, and a diagnostic nobody runs answers nothing. */
+  /* The chip's own verdict outranks the version register, so this starts as
+   * the register's guess and is overwritten by the self test when one runs.
+   * An odd version that passes the self test is a working clone, and calling
+   * it faulty below would send somebody to buy a module they already have. */
+  bool rfidHealthy = known && stable;
+
+  if (!known || !stable) {
+    const bool selfTest = rfid.PCD_PerformSelfTest();
+
+    rfidHealthy = selfTest;
+
+    Serial.print("  Chip self test: ");
+    Serial.println(selfTest
+      ? "PASSED — the silicon is genuine and working, so the odd\n"
+        "                  version is cosmetic. Cards should read; if they do not,\n"
+        "                  the antenna or the 3.3 V supply is the next suspect."
+      : "FAILED — the chip cannot produce its own signature.\n"
+        "                  With the reads consistent, that means the module itself is\n"
+        "                  faulty. No wiring change will fix it.");
+
+    /* The self test leaves the chip reset and idle; without this everything
+     * afterwards fails and looks like a second, separate fault. */
+    rfid.PCD_Init();
+    delay(50);
+
+    /* A chip that answers every register read with its transmitter switched
+     * off will never see a card, and nothing else here would mention it. */
+    byte tx = rfid.PCD_ReadRegister(MFRC522::TxControlReg);
+
+    if ((tx & 0x03) != 0x03) {
+      Serial.printf("  Antenna: OFF (TxControlReg 0x%02X) — switching it on.\n", tx);
+      rfid.PCD_AntennaOn();
+      delay(10);
+    }
+
+    /* Said plainly because the alternative is hours spent on the card. */
+    Serial.println("  The reader is not talking properly, so NO card will ever read.");
+    Serial.println("  Real values are 0x91, 0x92 or 0x88. 0x00 and 0xFF mean nothing is");
+    Serial.println("  answering at all; anything else means the SPI link is unreliable.");
+    Serial.printf("  Reads were %s.\n", stable ? "at least consistent" : "DIFFERENT each time - a loose wire or bad power");
+    Serial.println("  Check, in this order:");
+    Serial.println("    1. VCC on 3.3 V. NEVER 5 V - it damages this module.");
+    Serial.println("    2. GND shared with the ESP32.");
+    Serial.println("    3. MISO 19, MOSI 23, SCK 18, SDA/SS 5, RST 22 - MISO and MOSI");
+    Serial.println("       are the pair people swap.");
+    Serial.println("    4. Re-seat every jumper. Breadboard contacts are the usual cause.");
+    Serial.println("    5. Unplug the fingerprint sensor and reboot. It shares the supply and draws");
+    Serial.println("       bursts; if the version steadies without it, the rail is weak — fit");
+    Serial.println("       100 uF + 100 nF across 3V3/GND at each module and try again.");
+    Serial.println("    6. If both modules' 3.3 V wires are soldered onto the same header pin,");
+    Serial.println("       one on top of the other, redo it. The upper joint takes all the");
+    Serial.println("       strain and cracks; join the two wires to each other first, then run");
+    Serial.println("       a single wire to 3V3.");
+  }
+
+  /* rfidHealthy is carried past the fingerprint block below so the two
+   * results can be read together. Separately they say "the reader is faulty"
+   * and "the sensor is missing"; together, on a shared rail, they far more
+   * often say the rail is the fault and both modules are fine. */
+
+  /* ---- Fingerprint ---- */
+  fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
   delay(100);
+
+  /* Configured pins first, always. The search below only runs when those do
+   * not answer, so a board that is wired as documented behaves exactly as it
+   * did and pays nothing for the search existing. */
+  if (!finger.verifyPassword() && findFingerprintSensor()) {
+    /* findFingerprintSensor() has already reopened the port on whatever it
+     * found and said so; fall through into the success branch. */
+  }
 
   if (finger.verifyPassword()) {
     finger.getTemplateCount();
-    LOG("R307 ready — %d template(s) enrolled\n", finger.templateCount);
+    fingerReady = true;
+    Serial.printf("Sensor: found — %d template(s) enrolled on this sensor\n",
+                  finger.templateCount);
+    Serial.println("       console: type count, slots or wipe into the Serial Monitor");
+    if (finger.templateCount == 0) {
+      Serial.println("  none enrolled yet — that is fine. Open Fingerprints in");
+      Serial.println("  L-SIAMS, press Enrol Fingerprint, choose this terminal,");
+      Serial.println("  and this board will ask for the finger itself.");
+    }
   } else {
-    LOGLN("R307 NOT DETECTED — sessions cannot be opened on this terminal");
+    /* The pins are printed rather than hard-coded into the sentence, because
+     * they are configurable and a message naming 16 and 17 while the sketch
+     * uses 25 and 26 sends somebody to check wiring that is already right. */
+    Serial.printf("Sensor: NOT FOUND — sensor TX must reach GPIO %d and its RX GPIO %d.\n",
+                  PIN_FINGER_RX, PIN_FINGER_TX);
+    Serial.println("  They cross: the sensor's transmit goes to the pin this board");
+    Serial.println("  receives on. Wired straight through, both talk and neither listens.");
+    Serial.println("  VCC must match the module: a bare AS608 wants 3.3 V on 3V3, an");
+    Serial.println("  R307 wants 5 V on VIN. 5 V on a bare AS608 destroys it.");
+    Serial.println("  On 3V3 it shares the pin with the reader — check that joint. Two");
+    Serial.println("  wires soldered one on top of the other crack at the upper one, and");
+    Serial.println("  the sensor goes quiet exactly like a dead sensor does.");
+    Serial.println("  If your board has no 16 or 17, look for RX2 and TX2 — same pins,");
+    Serial.println("  different label. If it genuinely has neither (a WROVER uses them");
+    Serial.println("  for PSRAM), set PIN_FINGER_RX 25 and PIN_FINGER_TX 26 and rewire.");
   }
 
-  /* --- 5. Configuration --- */
-  prefs.begin(NVS_NAMESPACE, false);
-  loadQueueCount();
-
-  if (queueCount > 0) {
-    LOG("Recovered %d queued record(s) from storage\n", queueCount);
+  /* Both dead at once.
+   *
+   * Two independent modules on two independent buses do not usually fail in
+   * the same boot. What they do share is the 3.3 V rail and the ground, so
+   * when both go quiet together the thing they have in common is the first
+   * suspect — not two separate faults, which is how it reads if each result
+   * is taken on its own.
+   *
+   * Worth saying out loud because the alternative is replacing a module that
+   * was never broken. */
+  if (!rfidHealthy && !fingerReady) {
+    Serial.println();
+    Serial.println("  ---- BOTH modules are silent ----");
+    Serial.println("  They sit on different buses and share only two things: the 3.3 V rail");
+    Serial.println("  and the ground. Two separate faults in one boot is the unlikely reading;");
+    Serial.println("  one supply problem is the likely one. Before replacing anything:");
+    Serial.println("    1. Power the board from a 1 A wall supply, not a laptop USB port.");
+    Serial.println("    2. Check the shared 3V3 and GND joints. If both modules' wires are");
+    Serial.println("       stacked on one header pin, join them to each other first and run");
+    Serial.println("       a single wire to the pin.");
+    Serial.println("    3. Fit 100 uF + 100 nF across 3V3/GND at each module.");
+    Serial.println("    4. Then unplug one module and reboot. Whichever the remaining one is,");
+    Serial.println("       if it now works, the rail was the fault and both are fine.");
+    Serial.println();
   }
 
-  if (!loadProvisioning()) {
-    state = STATE_PROVISION;
-    provisionFromSerial();
+  /* ---- Wi-Fi ---- */
+  Serial.printf("Wi-Fi: connecting to %s", WIFI_SSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  uint32_t startedAt = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startedAt < 20000) {
+    delay(400);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    diagnoseWifi();
     return;
   }
 
-  LOG("Device %s -> %s\n", cfg.deviceId.c_str(), cfg.serverUrl.c_str());
+  Serial.print("Wi-Fi ok, IP ");
+  Serial.println(WiFi.localIP());
+  Serial.print("This ESP32's MAC: ");
+  Serial.println(WiFi.macAddress());
+  Serial.printf("Server: %s\n", SERVER_URL);
 
-  /* --- 6. WiFi --- */
-  state = STATE_CONNECTING;
+  /* The IP above and the URL above it were printed next to each other and left
+   * for a person to compare. They are the commonest thing to get wrong — the
+   * PC's address is typed in by hand, and a router handing out 192.168.1.x
+   * while the URL says 192.168.0.100 produces a terminal that joins the Wi-Fi,
+   * reports nothing, and shows as Offline with no error anywhere. Comparing
+   * them costs nothing and turns that into a sentence. */
+  {
+    String host = String(SERVER_URL);
+    int    from = host.indexOf("//");
 
-  if (!connectWifi()) {
-    /* No network is not a fatal condition: offline mode is a designed
-     * behaviour, not a failure path. */
-    state = STATE_OFFLINE;
-    showLines("OFFLINE", "No network", "Attendance queued", 3000);
-    return;
-  }
+    if (from >= 0) host = host.substring(from + 2);
 
-  /* --- 7. Time --- */
-  syncTime();
+    int cut = host.indexOf(':');
+    if (cut < 0) cut = host.indexOf('/');
+    if (cut >= 0) host = host.substring(0, cut);
 
-  /* --- 8. Claim --- */
-  if (!cfg.claimed) {
-    state = STATE_CLAIMING;
+    IPAddress serverIp;
 
-    if (!claimDevice()) {
-      state = STATE_ERROR;
-      showLines("NOT ACTIVATED", "Contact admin", "", 0);
-      return;
+    if (serverIp.fromString(host)) {
+      IPAddress mine = WiFi.localIP();
+
+      if (serverIp[0] != mine[0] || serverIp[1] != mine[1] || serverIp[2] != mine[2]) {
+        Serial.println();
+        Serial.println("  *** The server address is on a different network from this board. ***");
+        Serial.printf("      This ESP32 is %d.%d.%d.%d and the URL points at %s.\n",
+                      mine[0], mine[1], mine[2], mine[3], host.c_str());
+        Serial.println("      Nothing this board sends can reach that address, so the terminal");
+        Serial.println("      will stay Offline however long you wait.");
+        Serial.println("      start.bat prints the right address as \"On other devices\".");
+        Serial.println("      Put that in SERVER_URL, keep the :8080, and re-upload.");
+        Serial.println();
+      } else {
+        Serial.println("Server is on this network — good.");
+      }
     }
   }
 
-  /* --- 9. Authenticate --- */
-  state = STATE_AUTHENTICATING;
-
-  if (!authenticateDevice()) {
-    state = STATE_ERROR;
+  Serial.println("Claiming...");
+  if (!claimDevice()) {
+    Serial.println("Cannot continue: every signed request is refused until the");
+    Serial.println("device is claimed (DEVICE_UNCLAIMED).");
     return;
   }
 
-  /* --- 10. Drain anything the last shift queued --- */
-  if (queueCount > 0) syncQueue();
+  Serial.println("Syncing clock...");
 
-  if (state != STATE_SESSION_OPEN) state = STATE_READY;
+  /* The return value used to be dropped. Without a clock nothing can be
+   * signed, so enrolment and attendance both stop — while finger matching,
+   * which never leaves the sensor, carries on as if all were well. Worth
+   * saying out loud rather than leaving to be deduced. */
+  if (!syncClockFromServer()) {
+    Serial.println("  Enrolment and attendance will NOT work until this succeeds:");
+    Serial.println("  every request to the server is signed, and a signature needs the");
+    Serial.println("  time. Finger matching will still appear to work, because the");
+    Serial.println("  sensor does that on its own without asking the server anything.");
+  }
 
-  showLines("READY", cfg.deviceId, "", 2000);
-  feedback("green", "double_short");
+  sendHeartbeat();
+  lastHeartbeatAt = millis();
 
-  LOGLN("Terminal ready.\n");
+  Serial.println();
+  Serial.println("Ready. Teacher: scan a finger to open the session.");
+  Serial.println("       Student: tap a card once it is open.");
+  Serial.println("       Admin:   Fingerprints -> Enrol Fingerprint enrols from here.");
+}
+
+/* ---------------------------------------------------------------- console --
+ *
+ * Type a word into the Serial Monitor and press Enter.
+ *
+ * The sensor keeps its own copy of every template, and until now nothing here
+ * could look at that copy or clear it. That mattered once a template ended up
+ * in the sensor with no matching row on the server: the reader went on
+ * matching it happily, the server answered FINGERPRINT_UNKNOWN, and there was
+ * no way to see what the sensor was holding, let alone remove it.
+ *
+ *   count  how many templates the sensor is storing
+ *   slots  which slot numbers those are
+ *   wipe   erase every template on the sensor
+ *
+ * `wipe` clears the sensor only. The server's records are untouched, so every
+ * teacher has to be enrolled again afterwards — which is the point: it is the
+ * way back to the sensor and the server agreeing with each other.
+ */
+void handleConsole() {
+  if (!Serial.available()) return;
+
+  /* The Serial Monitor's line-ending dropdown decides whether a newline is
+   * ever sent. Set to "No line ending" there is none, and the default one
+   * second timeout would stall the whole loop — no card read, no heartbeat —
+   * every time somebody typed. 60 ms is longer than a line takes to arrive at
+   * 115200 baud and short enough not to matter if it never does. */
+  Serial.setTimeout(60);
+
+  String command = Serial.readStringUntil('\n');
+  command.trim();
+  command.toLowerCase();
+
+  if (command.length() == 0) return;
+
+  if (command == "count") {
+    finger.getTemplateCount();
+    Serial.printf("\nSensor holds %d template(s).\n", finger.templateCount);
+    return;
+  }
+
+  if (command == "slots") {
+    Serial.println("\nOccupied slots:");
+    int found = 0;
+
+    /* No bulk "list" exists in the AS608/R307 protocol, so each slot is probed by
+     * asking the sensor to load it. Capped at 200 to keep this quick — a
+     * bench sensor never holds more. */
+    for (uint16_t slot = 1; slot <= 200; slot++) {
+      if (finger.loadModel(slot) == FINGERPRINT_OK) {
+        Serial.printf("  slot %d\n", slot);
+        found++;
+      }
+    }
+
+    if (found == 0) Serial.println("  (none)");
+    Serial.printf("Total: %d\n", found);
+    return;
+  }
+
+  if (command == "wipe") {
+    Serial.println("\nErasing every template on the sensor…");
+
+    uint8_t erased = finger.emptyDatabase();
+
+    if (erased != FINGERPRINT_OK) {
+      Serial.printf("The sensor refused the erase (code %d). Check power and wiring.\n", erased);
+      return;
+    }
+
+    /* Believing the OK is not enough. A sensor whose flash has stopped
+     * accepting writes acknowledges the command and keeps every template, and
+     * that is indistinguishable from success unless the count is read back.
+     *
+     * It is worth catching precisely, because it is the difference between a
+     * sensor that needs its templates re-enrolled and a sensor that needs
+     * replacing — and enrolling into flash that cannot be written is what
+     * produces a template stored "successfully" that no search can ever find. */
+    finger.getTemplateCount();
+
+    if (finger.templateCount == 0) {
+      Serial.println("Done — the sensor is empty.");
+      Serial.println("Re-enrol every teacher from Fingerprints in L-SIAMS.");
+      return;
+    }
+
+    Serial.printf("The sensor accepted the erase and still holds %d template(s).\n",
+                  finger.templateCount);
+    Serial.println();
+    Serial.println("That is a hardware fault, and a conclusive one: the flash is not");
+    Serial.println("accepting writes. Every enrolment will report success and store");
+    Serial.println("nothing findable, which is why the same finger keeps coming back");
+    Serial.println("as not recognised however many times it is enrolled.");
+    Serial.println();
+    Serial.println("Try once: unplug the sensor's power completely, wait five seconds,");
+    Serial.println("reconnect, and run wipe again. If the count still will not reach 0,");
+    Serial.println("this sensor needs replacing — no change to the code or the wiring");
+    Serial.println("will fix it.");
+
+    return;
+  }
+
+  Serial.printf("\nUnknown command \"%s\". Try: count, slots, wipe\n", command.c_str());
 }
 
 void loop() {
-  uint32_t now = millis();
+  handleConsole();
 
-  /* Restore the idle screen once a message has had its time on screen. */
-  if (displayBusy && now > displayUntil) {
-    showIdle();
+  /* The heartbeat is a blocking HTTP request, and so is every poll below it.
+   * A card held against the reader while one of them is in flight is not seen
+   * — which is invisible from the outside and reads as a dead reader.
+   *
+   * During a capture the reader owns the board: runCardEnrollment() does not
+   * return until it has a UID or the window closes, and nothing here runs in
+   * the meantime. The heartbeat it delays is bounded by that window, and a
+   * terminal that goes quiet for under a minute while somebody issues cards
+   * at it is not a terminal anybody needs alerting about. */
+  if (!enrollingCard && millis() - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+    lastHeartbeatAt = millis();
+    sendHeartbeat();
   }
 
-  /* Release a local lock when it expires. */
-  if (state == STATE_LOCKED && now > lockUntil) {
-    state          = session.open ? STATE_SESSION_OPEN : STATE_READY;
-    fingerFailures = 0;
-    showIdle();
-    LOGLN("Lock released");
+  watchReader();
+  pollEnrollment();
+  pollCardEnrollment();
+  handleFingerprint();
+
+  String uid = readCardUid();
+  if (uid.length() == 0) {
+    delay(40);
+    return;
   }
 
-  /* Reconnect WiFi on a timer rather than blocking the loop. */
-  if (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(PIN_LED_BLUE, LOW);
+  /* The reader reports a held card continuously; without this every tap
+   * becomes dozens of requests. */
+  if (uid == lastUid && millis() - lastTapAt < CARD_DEBOUNCE_MS) return;
 
-    if (state != STATE_OFFLINE && state != STATE_PROVISION) {
-      state = STATE_OFFLINE;
-      showIdle();
-    }
+  lastUid   = uid;
+  lastTapAt = millis();
 
-    if (now - lastWifiRetry > WIFI_RETRY_INTERVAL_MS) {
-      lastWifiRetry = now;
-      WiFi.disconnect();
-      WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPassword.c_str());
-    }
-  } else {
-    digitalWrite(PIN_LED_BLUE, HIGH);
+  Serial.printf("\nCard: %s\n", uid.c_str());
 
-    /* Heartbeat, jittered so a whole school of terminals does not report on
-     * the same second (Part 17.8). */
-    uint32_t heartbeatMs = (uint32_t) cfg.heartbeatInterval * 1000UL;
-    uint32_t jitter      = (uint32_t) (esp_random() % (HEARTBEAT_JITTER_S * 2000UL));
-
-    if (now - lastHeartbeat > heartbeatMs + jitter - HEARTBEAT_JITTER_S * 1000UL) {
-      lastHeartbeat = now;
-      sendHeartbeat();
-    }
-
-    if (queueCount > 0 && now - lastSync > (uint32_t) cfg.syncInterval * 1000UL) {
-      lastSync = now;
-      syncQueue();
-    }
-
-    if (now - lastTimeSync > (uint32_t) TIME_SYNC_INTERVAL_S * 1000UL) {
-      syncTime();
-    }
+  if (!clockSet && !syncClockFromServer()) {
+    Serial.println("  no clock — cannot sign the request");
+    return;
   }
 
-  /* Card and finger are only read when the terminal is in a state that can
-   * act on them. */
-  if (state == STATE_READY) {
-    pollEnrollment();
-  }
-
-  if (state == STATE_READY || state == STATE_OFFLINE) {
-    handleFingerprint();
-  }
-
-  if (state == STATE_SESSION_OPEN || state == STATE_OFFLINE) {
-    handleCard();
-
-    if (state == STATE_SESSION_OPEN) {
-      handleButton();
-    }
-  }
-
-  delay(40);
+  sendTap(uid);
 }

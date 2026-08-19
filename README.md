@@ -18,7 +18,7 @@ no cloud service, no external API, and no internet dependency at runtime.
 |---|---|
 | **Attendance capture** | RFID tap-in and tap-out on ESP32 terminals, with the server deciding intent, not the device |
 | **Session control** | A session opens only when the teacher proves they are there — a fingerprint on the terminal, or their own password as a failover when the reader cannot read them — and only for a class they are actually scheduled to teach |
-| **Offline tolerance** | Terminals queue taps in flash when the network drops and replay them with their original timestamps and idempotency keys |
+| **Offline tolerance** | Designed for it — every tap carries a timestamp taken at the tap and an idempotency key, so a retry can never double-record. The queue that replays them from flash is implemented in the reference firmware, not yet in the shipping terminal sketch |
 | **Status model** | Separate arrival, departure and final statuses, so "arrived late and left early" is not flattened into one ambiguous word |
 | **Reporting** | 15 report types, exported as PDF, Excel or CSV, all generated without any third-party library |
 | **Realtime** | WebSocket with SSE and long-polling fallbacks, with sequence-based replay so no event is lost across a reconnect |
@@ -38,8 +38,9 @@ no cloud service, no external API, and no internet dependency at runtime.
   also what runs underneath phpMyAdmin in a XAMPP install. MySQL 8 is supported
   but has not been exercised here.
 - **Apache 2.4** with `mod_rewrite`, or **nginx** with PHP-FPM
-- ESP32 terminals with an MFRC522 RFID reader, an R307 fingerprint sensor and an
-  I²C display — see [`docs/FIRMWARE.md`](docs/FIRMWARE.md)
+- ESP32 terminals with an MFRC522 RFID reader and an AS608 or R307 fingerprint
+  sensor. No display is needed — see [`firmware/README.md`](firmware/README.md)
+  for the wiring and [`docs/FIRMWARE.md`](docs/FIRMWARE.md) for the detail
 
 There are no Composer dependencies. `composer.json` exists to declare the PHP
 version and the extension requirements; there is no `vendor/` directory and
@@ -195,7 +196,7 @@ config/            app, database, security, attendance, realtime
 database/
   migrations/      Seven ordered SQL files; the schema is the specification
   seeders/         Reference and demo data
-firmware/          ESP32 sketch and configuration header
+firmware/          ESP32 terminal sketch, plus diagnostics (see firmware/README.md)
 public/            Web root — index.php, assets, uploads
 realtime/          The WebSocket server
 routes/            web.php and api.php; each documents its middleware chain

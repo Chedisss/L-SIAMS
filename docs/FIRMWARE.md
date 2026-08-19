@@ -1,25 +1,34 @@
 # Terminal firmware
 
-The classroom terminal is an ESP32 with an RFID reader, a fingerprint sensor and
-a small display. Its job is narrow on purpose: **read hardware, report to the
-server, display what the server says.** It does not decide whether a tap is an
-arrival or a departure, whether a student is late, or whether attendance should
-be recorded at all. Those are server decisions, so a terminal with a wrong clock
-or modified firmware cannot manufacture a status.
+The classroom terminal is an ESP32 with an RFID reader and a fingerprint sensor.
+Its job is narrow on purpose: **read hardware, report to the server, do what the
+server says.** It does not decide whether a tap is an arrival or a departure,
+whether a student is late, or whether attendance should be recorded at all.
+Those are server decisions, so a terminal with a wrong clock or modified
+firmware cannot manufacture a status.
+
+> **Which sketch:** `firmware/L_SIAMS_Terminal`. The other directories under
+> `firmware/` are diagnostics for when the terminal will not behave, and
+> `firmware/reference/` is not for flashing at all. See
+> [`firmware/README.md`](../firmware/README.md).
 
 ---
 
 ## 1. Hardware
 
+### Required
+
 | Component | Part | Notes |
 |---|---|---|
-| Controller | ESP32-WROOM-32 dev board | 4 MB flash minimum |
-| RFID reader | MFRC522 (13.56 MHz) | SPI |
-| Fingerprint sensor | R307 / AS608 | UART, 57600 baud |
-| Display | SSD1306 OLED 128×64 | I²C, address `0x3C` |
-| Feedback | Passive buzzer, 4 LEDs | green / red / blue / amber |
-| Input | Momentary push button | 3-second hold for the maintenance menu |
-| Power | 5 V 2 A supply | see the power note below |
+| Controller | ESP32-WROOM-32 dev board | any 30-pin DOIT/DEVKIT board, 4 MB flash |
+| RFID reader | MFRC522 (13.56 MHz) | SPI, **3.3 V** |
+| Fingerprint sensor | AS608 (3.3 V) or R307 (5 V) | UART, 57600 baud |
+| Power | 5 V 1 A supply or better | see the power note below |
+
+That is the whole bill of materials. There is no display, buzzer, LED or button
+on a working terminal: the Serial Monitor at 115200 is the console and the web
+interface is the screen. The optional feedback hardware is described at the end
+of this section and is not wired to anything in the shipping firmware.
 
 ### Wiring
 
@@ -31,53 +40,82 @@ or modified firmware cannot manufacture a status.
 | SCK | GPIO 18 |
 | MOSI | GPIO 23 |
 | MISO | GPIO 19 |
-| RST | GPIO 27 |
+| RST | GPIO 22 |
 | 3.3V | 3V3 |
 | GND | GND |
 
 > The MFRC522 is a **3.3 V** part. Connecting it to 5 V destroys it. This is the
 > single most common assembly mistake.
 
-**R307 fingerprint sensor → ESP32** (UART2)
+> RST is GPIO 22 because nothing else claims it. If you later add an SSD1306,
+> its SCL wants 22 too — move RST to 27 and change `PIN_RFID_RST` to match.
 
-| R307 | ESP32 |
+**Fingerprint sensor → ESP32** (UART2)
+
+| Sensor | ESP32 |
 |---|---|
-| TX (green) | GPIO 16 |
-| RX (white) | GPIO 17 |
-| VCC (red) | 5 V |
+| TX (green) | GPIO 16 — silkscreen RX2 |
+| RX (white) | GPIO 17 — silkscreen TX2 |
+| VCC (red) | **3V3** for a bare AS608 · **VIN** for an R307 |
 | GND (black) | GND |
 
 The sensor's TX goes to the ESP32's RX. Crossing these is the second most common
 assembly mistake, and it fails silently — the sensor simply never answers.
 
-**SSD1306 OLED → ESP32** (I²C)
+> An R307 is an AS608 in a 5 V housing with its own regulator, so it wants VIN.
+> A **bare AS608 has no regulator and 5 V destroys it.** If you are holding a
+> small board with exposed components rather than a sealed cylinder, it is the
+> 3.3 V part.
 
-| OLED | ESP32 |
-|---|---|
-| SDA | GPIO 21 |
-| SCL | GPIO 22 |
-| VCC | 3.3 V |
-| GND | GND |
+### Sharing the 3V3 pin
 
-**Feedback**
+Both modules want 3.3 V and the ESP32 has one 3V3 pin, so they share it. Two
+things go wrong there, and both present as a dead module:
+
+**The joint.** Do not stack two solder joints on the same header pin — the upper
+one carries all the mechanical strain and cracks, giving a connection that works
+on the bench and fails when the board is moved. Join the two module wires to
+each other, and run a single wire to the pin:
+
+```
+    MFRC522 VCC ──┐
+                  ├── one wire ── ESP32 3V3
+    AS608   VCC ──┘
+             twist, solder, heatshrink
+```
+
+A female Dupont on the pin alongside one soldered wire is fine — they are not
+competing for the same spot. Check the connector still seats on clean pin rather
+than riding on a solder blob.
+
+**The peaks.** Averages are comfortable; the bursts coincide.
+
+| | Idle | Peak |
+|---|---|---|
+| MFRC522 | ~26 mA | ~100 mA (RF field driving) |
+| AS608 | ~50 mA | ~150 mA (capture) |
+| ESP32 | ~80–160 mA | ~500 mA (Wi-Fi transmit) |
+
+A dip on that rail produces a brownout reset, an MFRC522 reporting a different
+version on every read, and a sensor whose replies arrive corrupted — three
+symptoms that each look like a separate fault. Fit **100 µF electrolytic +
+100 nF ceramic across 3V3 and GND at each module**, and power the board from a
+1 A wall supply rather than a laptop USB port.
+
+### Optional feedback hardware
+
+Not used by the shipping firmware. Wire it only if you are extending the sketch;
+the pins are free and these are the assignments the earlier firmware used.
 
 | Function | GPIO | Wiring |
 |---|---|---|
-| Buzzer | 25 | through a transistor if the buzzer draws more than 20 mA |
+| Buzzer | 25 | through a transistor if it draws more than 20 mA |
 | Green LED | 26 | via 220 Ω |
 | Red LED | 33 | via 220 Ω |
 | Blue LED | 32 | via 220 Ω |
 | Amber LED | 14 | via 220 Ω |
 | Button | 4 | to GND, using the internal pull-up |
-
-### Power
-
-Use a 5 V 2 A supply, not a phone charger of unknown provenance. The fingerprint
-sensor draws a burst of current while its illumination is on, and an underpowered
-supply produces a brownout reset in the middle of a scan — which presents as an
-intermittent, maddening fault that looks like a firmware bug.
-
-Put a 470 µF electrolytic across the 5 V rail near the sensor.
+| SSD1306 OLED | SDA 21, SCL 22 | I²C at `0x3C` — collides with RST, see above |
 
 ---
 
@@ -85,18 +123,17 @@ Put a 470 µF electrolytic across the 5 V rail near the sensor.
 
 Arduino IDE 2.x or `arduino-cli`, with the ESP32 board package installed.
 
-Libraries:
+Libraries, by the exact name Library Manager shows:
 
 | Library | Purpose |
 |---|---|
-| `ArduinoJson` (v7) | Request and response bodies |
-| `MFRC522` | RFID reader |
-| `Adafruit Fingerprint Sensor Library` | R307 |
-| `Adafruit SSD1306` + `Adafruit GFX` | Display |
+| **MFRC522** by GithubCommunity | RFID reader — *not* MFRC522v2, different API |
+| **Adafruit Fingerprint Sensor Library** by Adafruit | AS608 / R307 |
+| **ArduinoJson** by Benoit Blanchon | request and response bodies — 6 or 7 both compile |
 
-`WiFi`, `WiFiClientSecure`, `HTTPClient`, `Preferences`, `SPI`, `Wire` and
-`mbedtls` come with the ESP32 core. HMAC-SHA256 uses `mbedtls/md.h` — the same
-primitive the server uses, so there is no bespoke crypto in the firmware.
+`WiFi`, `WiFiClientSecure`, `HTTPClient`, `SPI` and `mbedtls` come with the ESP32
+core. HMAC-SHA256 uses `mbedtls/md.h` — the same primitive the server uses, so
+there is no bespoke crypto in the firmware.
 
 Board settings:
 
@@ -108,82 +145,94 @@ CPU Frequency:    240MHz
 Upload Speed:     921600
 ```
 
-The default partition scheme matters — the offline queue lives in NVS, and a
-partition layout without room for it silently truncates the queue.
+Serial Monitor: **115200**.
 
 ---
 
 ## 3. Provisioning
 
-A terminal is provisioned once, over USB serial, before it is installed.
-
 ### Step 1 — register the device on the server
 
-Devices → **Register terminal**. Enter the name, MAC address and classroom. The
-response carries the API key, the HMAC secret and a single-use claim token,
-**displayed exactly once**. Download the provisioning JSON at that moment.
+Devices → **Register terminal**. Enter the name, MAC address and classroom.
+
+The MAC has to be the board's own. If the terminal cannot join Wi-Fi yet and so
+never prints it, flash `firmware/L_SIAMS_WhoAmI` — it reads the MAC out of the
+radio without connecting to anything.
+
+The response carries the device id, API key, HMAC secret and a single-use claim
+token, **displayed exactly once**. Download the provisioning JSON at that moment.
+Every fresh download rotates the key and secret, so use one file and do not
+download again after you have flashed it.
 
 For a batch, use Devices → **Bulk register** and download the ZIP of one JSON per
 terminal. The same rule applies: that download is the only copy.
 
-### Step 2 — flash the firmware
+### Step 2 — put the six values into the sketch
+
+Open `firmware/L_SIAMS_Terminal/L_SIAMS_Terminal.ino` and edit the config block
+at the top. Four come from the provisioning JSON, two are your network:
+
+```cpp
+static const char *WIFI_SSID   = "YOUR_WIFI_NAME";
+static const char *WIFI_PASS   = "YOUR_WIFI_PASSWORD";
+static const char *SERVER_URL  = "http://192.168.0.100:8080";
+static const char *DEVICE_ID   = "DEV-2026-0001";
+static const char *API_KEY     = "lsk_xxxxxxxx.yyyyyyyy";
+static const char *HMAC_SECRET = "zzzzzzzzzzzzzzzz";
+static const char *CLAIM_TOKEN = "…";
+```
+
+`SERVER_URL` is the host PC's LAN address **with the port** — never `localhost`,
+which to the ESP32 means the ESP32. On the PC:
+
+```powershell
+(Get-NetIPConfiguration | Where-Object {$_.IPv4DefaultGateway -ne $null}).IPv4Address.IPAddress
+```
+
+The sketch refuses to start with any placeholder still in place, and says which
+one is unset rather than failing later in a way that looks like a network fault.
+It also compares its own IP against `SERVER_URL` after joining and warns if they
+are on different subnets — the commonest reason a terminal joins the Wi-Fi,
+reports nothing, and shows as Offline with no error anywhere.
+
+### Step 3 — flash
 
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32 firmware/L_SIAMS_Terminal
 arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/ttyUSB0 firmware/L_SIAMS_Terminal
 ```
 
-The firmware ships with no credentials in it. The same binary goes on every
-terminal; identity arrives in the next step.
-
-### Step 3 — paste the provisioning JSON
-
-Open the serial monitor at **115200 baud**. An unprovisioned terminal shows
-`PROVISION — Paste config JSON over serial` and waits.
-
-Paste the JSON contents, then press Enter:
-
-```json
-{
-  "schema_version": "1.0",
-  "device_id": "DEV-2026-0001",
-  "device_name": "Room 204 Terminal",
-  "classroom_name": "Room 204",
-  "device_role": "both",
-  "api_key": "…",
-  "hmac_secret": "…",
-  "claim_token": "…",
-  "server_url": "https://192.168.1.10",
-  "server_fingerprint": "…",
-  "heartbeat_interval_sec": 30,
-  "sync_interval_sec": 60,
-  "offline_queue_limit": 500
-}
-```
-
-It then prompts for the Wi-Fi SSID and password, writes everything to NVS, and
-restarts.
+Or open the sketch in the IDE and press Upload.
 
 ### Step 4 — first boot claims the device
 
-On restart the terminal connects to Wi-Fi and presents its claim token to
-`POST /api/device/claim`. The server activates the device and **consumes the
-token** — it cannot be presented again. The Devices page flips from *pending* to
-*claimed*, and the terminal is live.
+On boot the terminal presents its claim token to `POST /api/device/claim`. The
+server activates the device and **consumes the token** — it cannot be presented
+again. The Devices page flips from *pending* to *active*, and the terminal is
+live.
 
-If claiming fails, the token was already used or has expired. Generate a fresh
-provisioning file from the device's detail page and start again from step 3.
+If claiming fails, the serial log says why. `HTTP -1` means the connection never
+opened at all: the server is not running, the firewall is blocking the port, or
+the address is wrong — not a credential problem. A token that was already used
+or has expired says so explicitly; generate a fresh provisioning file from the
+device's detail page and start again from step 2.
 
 ### Re-provisioning
 
-Hold the button for 3 seconds to reach the maintenance menu, which offers a
-credential wipe. Wiping clears NVS and returns the terminal to `PROVISION`. It
-will need a fresh provisioning file — the old credentials cannot be recovered,
-which is the point.
+Paste new values into the sketch and re-flash. The shipping firmware holds no
+credentials in NVS, so there is nothing to wipe — which also means a stolen
+terminal gives up its key to anyone who can read its flash. Revoke the device's
+API key from the web interface if a terminal goes missing.
 
 ---
 
 ## 4. State machine
+
+> **This section describes `firmware/reference/L_SIAMS_Terminal_OLED`, not the
+> shipping terminal.** The shipping sketch has no display and no explicit state
+> machine — it claims, syncs its clock, then polls in one loop. The states below
+> are the design the display build was written against, and the vocabulary the
+> server still speaks in its responses. Read it as intent, not as what runs.
 
 ```
 BOOT ─► PROVISION ─► CONNECTING ─► CLAIMING ─► AUTHENTICATING ─► READY
@@ -351,7 +400,14 @@ queued tap, where it is the only record of when the tap actually happened.
 
 ## 6. Offline behaviour
 
-When a request fails, the terminal enters `OFFLINE` and queues taps in NVS. Each
+> **The shipping terminal does not do this yet.** A tap while the network is
+> down is refused at the terminal and **not recorded**. On a stable LAN that is
+> a fair trade for a sketch small enough to read in one sitting; before a
+> terminal runs unattended in a school, this is the gap to close. The
+> implementation below exists in `firmware/reference/L_SIAMS_Terminal_OLED`,
+> written against an older server API — read it before writing the queue again.
+
+When a request fails, the reference terminal enters `OFFLINE` and queues taps in NVS. Each
 queued entry carries the card UID, the timestamp at the moment of the tap, and a
 `request_id` generated *then* — not at replay time.
 
@@ -371,6 +427,12 @@ On reconnection the terminal syncs in batches of 25, oldest first, and returns t
 ---
 
 ## 7. Feedback
+
+> **The shipping terminal has no LEDs, buzzer or display.** It prints the
+> server's decision to the Serial Monitor instead, and the web interface is
+> where anyone actually watches attendance arrive. The server sends these
+> fields on every response regardless, so wiring the hardware later is a
+> firmware change only — nothing on the server has to know.
 
 | Event | LED | Buzzer | Display |
 |---|---|---|---|
