@@ -1758,14 +1758,44 @@ void setup() {
 
     rfidHealthy = selfTest;
 
+    /* "Faulty, no wiring change will fix it" is a verdict that ends with
+     * somebody buying a replacement module. It is only earned on a rail that
+     * was holding up.
+     *
+     * A boot that follows a brownout has no such rail: the chip was starved
+     * hard enough to reset the whole board a moment ago, and a starved MFRC522
+     * fails its self test exactly like a dead one. Reads being consistent
+     * within this boot does not separate them either — a chip sitting in a bad
+     * state answers the same wrong value every time.
+     *
+     * The tell is across boots. A dead chip reports the same wrong version
+     * every power-up; a starved one wanders (0xEE one boot, 0x82 the next),
+     * because what it reports depends on how far the rail dipped. So say what
+     * is actually known, and name the test that would settle it, rather than
+     * convicting the module on evidence taken during a power failure. */
+    const bool afterBrownout = (why == ESP_RST_BROWNOUT);
+
     Serial.print("  Chip self test: ");
-    Serial.println(selfTest
-      ? "PASSED — the silicon is genuine and working, so the odd\n"
-        "                  version is cosmetic. Cards should read; if they do not,\n"
-        "                  the antenna or the 3.3 V supply is the next suspect."
-      : "FAILED — the chip cannot produce its own signature.\n"
-        "                  With the reads consistent, that means the module itself is\n"
-        "                  faulty. No wiring change will fix it.");
+
+    if (selfTest) {
+      Serial.println("PASSED — the silicon is genuine and working, so the odd\n"
+                     "                  version is cosmetic. Cards should read; if they do not,\n"
+                     "                  the antenna or the 3.3 V supply is the next suspect.");
+    } else if (afterBrownout) {
+      Serial.println("FAILED — but this boot followed a BROWNOUT, so the\n"
+                     "                  result proves nothing. A starved chip fails this test\n"
+                     "                  exactly like a dead one.");
+      Serial.println("                  Fix the supply first: a 1 A wall supply, then 100 uF +");
+      Serial.println("                  100 nF across 3V3/GND at each module. Re-run this and");
+      Serial.println("                  read the verdict then.");
+      Serial.println("                  Across boots, a DEAD chip reports the same wrong version");
+      Serial.println("                  every time; a STARVED one wanders. Note the version above");
+      Serial.println("                  and compare it with the next power-up.");
+    } else {
+      Serial.println("FAILED — the chip cannot produce its own signature.\n"
+                     "                  The reads were consistent and the rail did not collapse,\n"
+                     "                  so the module itself is faulty. No wiring change will fix it.");
+    }
 
     /* The self test leaves the chip reset and idle; without this everything
      * afterwards fails and looks like a second, separate fault. */
@@ -1864,6 +1894,19 @@ void setup() {
     Serial.println("  They sit on different buses and share only two things: the 3.3 V rail");
     Serial.println("  and the ground. Two separate faults in one boot is the unlikely reading;");
     Serial.println("  one supply problem is the likely one. Before replacing anything:");
+
+    /* When the board actually browned out this boot, the shared rail stops
+     * being the likely explanation and becomes a measured one. Saying so
+     * turns the list below from a checklist into a diagnosis, and stops
+     * anybody working down it starting at step 4. */
+    if (why == ESP_RST_BROWNOUT) {
+      Serial.println();
+      Serial.println("  This boot followed a BROWNOUT, so the rail is not a theory here — it");
+      Serial.println("  measurably collapsed. Treat every reading above as taken during a power");
+      Serial.println("  failure and worth nothing until steps 1 and 3 are done. Neither module");
+      Serial.println("  has been shown to be faulty yet.");
+      Serial.println();
+    }
     Serial.println("    1. Power the board from a 1 A wall supply, not a laptop USB port.");
     Serial.println("    2. Check the shared 3V3 and GND joints. If both modules' wires are");
     Serial.println("       stacked on one header pin, join them to each other first and run");
