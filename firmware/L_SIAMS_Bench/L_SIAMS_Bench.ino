@@ -55,6 +55,7 @@ using LsJson = JsonDocument;
 #endif
 #include <sys/time.h>
 #include <esp_system.h>
+#include <esp_attr.h>   /* RTC_DATA_ATTR — survives a reset, not a power cycle */
 #include "mbedtls/md.h"
 
 /* ---------------------------------------------------------------- config -- */
@@ -1550,6 +1551,46 @@ void setup() {
   Serial.println();
   Serial.println("L-SIAMS bench terminal — RFID + fingerprint");
   Serial.println("------------------------------------------");
+
+  /* Why this boot happened, and how many there have been.
+   *
+   * A board that crashes partway through setup reboots and prints the same
+   * lines again, so the log looks like one run that stops at the same place
+   * every time rather than like a loop. That is indistinguishable from a hang
+   * unless the reset reason is printed — and the two need opposite responses:
+   * a hang means waiting longer, a crash loop means something in setup is
+   * faulting and no amount of waiting will get past it.
+   *
+   * bootCount lives in RTC memory, which survives a reset but not a power
+   * cycle, so "boot #7" after one power-up says the board has restarted itself
+   * six times. */
+  static RTC_DATA_ATTR uint32_t bootCount = 0;
+  bootCount++;
+
+  esp_reset_reason_t why = esp_reset_reason();
+
+  Serial.printf("Boot #%lu, reason: ", (unsigned long) bootCount);
+
+  switch (why) {
+    case ESP_RST_POWERON:  Serial.println("power on (normal)"); break;
+    case ESP_RST_SW:       Serial.println("software reset (normal after upload)"); break;
+    case ESP_RST_PANIC:    Serial.println("*** CRASH — the sketch faulted and restarted ***"); break;
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:      Serial.println("*** WATCHDOG — something blocked too long ***"); break;
+    case ESP_RST_BROWNOUT: Serial.println("*** BROWNOUT — the supply sagged, use a wall charger ***"); break;
+    case ESP_RST_EXT:      Serial.println("reset button"); break;
+    default:               Serial.printf("code %d\n", (int) why); break;
+  }
+
+  if (bootCount > 1 && (why == ESP_RST_PANIC || why == ESP_RST_BROWNOUT
+                        || why == ESP_RST_INT_WDT || why == ESP_RST_TASK_WDT)) {
+    Serial.println();
+    Serial.println("  This board is restarting itself. Anything printed below is the");
+    Serial.println("  start of another attempt, not progress through one — which is why");
+    Serial.println("  the log appears to stop at the same line every time.");
+    Serial.println();
+  }
 
   checkConfig();
 
