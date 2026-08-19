@@ -23,6 +23,54 @@
  *      board. If you swap back to one, that VCC moves to VIN.
  *      WAKEUP and the 3.3 V touch feed stay disconnected.
  *
+ * Sharing the 3V3 pin between both modules:
+ *
+ *      The ESP32 has one 3V3 output and both modules want 3.3 V, so they
+ *      share it. That is fine electrically. What is not fine is stacking two
+ *      solder joints on the same header pin: the upper joint carries all the
+ *      mechanical strain, and it cracks. The result is a connection that
+ *      works on the bench and fails when the board is moved — which reads as
+ *      a dead module, not a dead joint, and costs a day.
+ *
+ *      Make the junction off the board instead:
+ *
+ *          MFRC522 VCC ──┐
+ *                        ├── one wire ── ESP32 3V3
+ *          AS608   VCC ──┘
+ *                   twist, solder, heatshrink
+ *
+ *      Same for GND. Better still, a scrap of perfboard with a 3V3 rail and
+ *      a GND rail: everything lands there, two wires go to the ESP32.
+ *
+ *      Signal pins are never shared. The reader is on SPI and the sensor is
+ *      on UART2 — separate buses, no conflict, nothing to arbitrate.
+ *
+ * Decoupling — fit these, they are not optional on a shared rail:
+ *
+ *      100 uF electrolytic + 100 nF ceramic across 3V3 and GND, as close to
+ *      each module as the leads allow.
+ *
+ *      What they are for, in numbers:
+ *
+ *          MFRC522     ~26 mA idle,   ~100 mA peak while the RF field drives
+ *          AS608       ~50 mA idle,   ~150 mA peak during capture
+ *          ESP32      ~80-160 mA,     ~500 mA peak on a Wi-Fi transmit burst
+ *
+ *      The AMS1117 on a typical dev board is rated near 1 A, so the average
+ *      is comfortable and the *peaks* are the problem. When all three coincide
+ *      the 3.3 V rail dips, and a dip is what produces a brownout reset, an
+ *      MFRC522 that reports a different version every read, and a sensor that
+ *      fails its handshake for no reason visible in any log. The capacitors
+ *      supply those bursts locally so the rail never sees them.
+ *
+ *      Power the board from a 1 A (or better) wall supply, not a laptop USB
+ *      port. Board resets on this bench have far more often been the supply
+ *      than the sketch.
+ *
+ *      Bring up ONE module at a time. Two unknown-good modules on one rail
+ *      makes it impossible to tell which is at fault — or whether either is,
+ *      rather than the rail they share.
+ *
  * Libraries, by the exact name Library Manager shows:
  *      "MFRC522" by GithubCommunity              (NOT MFRC522v2 - different API)
  *      "Adafruit Fingerprint Sensor Library" by Adafruit
@@ -950,6 +998,9 @@ static void handleFingerprint() {
     Serial.println("          2. A shared GND between the sensor and the ESP32.");
     Serial.println("          3. The RX/TX pair re-seated; breadboard contacts are the usual culprit.");
     Serial.println("          4. Powering the ESP32 from a wall charger rather than a laptop port.");
+    Serial.println("          5. 100 uF + 100 nF across 3V3/GND at the sensor. A capture is the");
+    Serial.println("             sensor's biggest current draw, and on a rail shared with the");
+    Serial.println("             reader that is exactly when the reply gets corrupted.");
     return;
   }
 
@@ -1578,7 +1629,14 @@ void setup() {
     case ESP_RST_INT_WDT:
     case ESP_RST_TASK_WDT:
     case ESP_RST_WDT:      Serial.println("*** WATCHDOG — something blocked too long ***"); break;
-    case ESP_RST_BROWNOUT: Serial.println("*** BROWNOUT — the supply sagged, use a wall charger ***"); break;
+    case ESP_RST_BROWNOUT:
+      Serial.println("*** BROWNOUT — the 3.3 V rail sagged below the reset threshold ***");
+      Serial.println("      Not a sketch fault. Something drew more than the supply could");
+      Serial.println("      deliver at that instant — usually a Wi-Fi transmit burst landing");
+      Serial.println("      on top of the reader's RF field or the sensor's capture.");
+      Serial.println("      In order of effect: a 1 A wall supply instead of a laptop USB");
+      Serial.println("      port, then 100 uF + 100 nF across 3V3/GND at each module.");
+      break;
     case ESP_RST_EXT:      Serial.println("reset button"); break;
     default:               Serial.printf("code %d\n", (int) why); break;
   }
@@ -1626,9 +1684,19 @@ void setup() {
    *
    * Run here rather than in a separate sketch because this is the sketch
    * people actually flash, and a diagnostic nobody runs answers nothing. */
+  /* The chip's own verdict outranks the version register, so this starts as
+   * the register's guess and is overwritten by the self test when one runs.
+   * An odd version that passes the self test is a working clone, and calling
+   * it faulty below would send somebody to buy a module they already have. */
+  bool rfidHealthy = known && stable;
+
   if (!known || !stable) {
+    const bool selfTest = rfid.PCD_PerformSelfTest();
+
+    rfidHealthy = selfTest;
+
     Serial.print("  Chip self test: ");
-    Serial.println(rfid.PCD_PerformSelfTest()
+    Serial.println(selfTest
       ? "PASSED — the silicon is genuine and working, so the odd\n"
         "                  version is cosmetic. Cards should read; if they do not,\n"
         "                  the antenna or the 3.3 V supply is the next suspect."
@@ -1663,8 +1731,18 @@ void setup() {
     Serial.println("       are the pair people swap.");
     Serial.println("    4. Re-seat every jumper. Breadboard contacts are the usual cause.");
     Serial.println("    5. Unplug the fingerprint sensor and reboot. It shares the supply and draws");
-    Serial.println("       bursts; if the version steadies without it, the rail is weak.");
+    Serial.println("       bursts; if the version steadies without it, the rail is weak — fit");
+    Serial.println("       100 uF + 100 nF across 3V3/GND at each module and try again.");
+    Serial.println("    6. If both modules' 3.3 V wires are soldered onto the same header pin,");
+    Serial.println("       one on top of the other, redo it. The upper joint takes all the");
+    Serial.println("       strain and cracks; join the two wires to each other first, then run");
+    Serial.println("       a single wire to 3V3.");
   }
+
+  /* rfidHealthy is carried past the fingerprint block below so the two
+   * results can be read together. Separately they say "the reader is faulty"
+   * and "the sensor is missing"; together, on a shared rail, they far more
+   * often say the rail is the fault and both modules are fine. */
 
   /* ---- Fingerprint ---- */
   fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
@@ -1699,9 +1777,38 @@ void setup() {
     Serial.println("  receives on. Wired straight through, both talk and neither listens.");
     Serial.println("  VCC must match the module: a bare AS608 wants 3.3 V on 3V3, an");
     Serial.println("  R307 wants 5 V on VIN. 5 V on a bare AS608 destroys it.");
+    Serial.println("  On 3V3 it shares the pin with the reader — check that joint. Two");
+    Serial.println("  wires soldered one on top of the other crack at the upper one, and");
+    Serial.println("  the sensor goes quiet exactly like a dead sensor does.");
     Serial.println("  If your board has no 16 or 17, look for RX2 and TX2 — same pins,");
     Serial.println("  different label. If it genuinely has neither (a WROVER uses them");
     Serial.println("  for PSRAM), set PIN_FINGER_RX 25 and PIN_FINGER_TX 26 and rewire.");
+  }
+
+  /* Both dead at once.
+   *
+   * Two independent modules on two independent buses do not usually fail in
+   * the same boot. What they do share is the 3.3 V rail and the ground, so
+   * when both go quiet together the thing they have in common is the first
+   * suspect — not two separate faults, which is how it reads if each result
+   * is taken on its own.
+   *
+   * Worth saying out loud because the alternative is replacing a module that
+   * was never broken. */
+  if (!rfidHealthy && !fingerReady) {
+    Serial.println();
+    Serial.println("  ---- BOTH modules are silent ----");
+    Serial.println("  They sit on different buses and share only two things: the 3.3 V rail");
+    Serial.println("  and the ground. Two separate faults in one boot is the unlikely reading;");
+    Serial.println("  one supply problem is the likely one. Before replacing anything:");
+    Serial.println("    1. Power the board from a 1 A wall supply, not a laptop USB port.");
+    Serial.println("    2. Check the shared 3V3 and GND joints. If both modules' wires are");
+    Serial.println("       stacked on one header pin, join them to each other first and run");
+    Serial.println("       a single wire to the pin.");
+    Serial.println("    3. Fit 100 uF + 100 nF across 3V3/GND at each module.");
+    Serial.println("    4. Then unplug one module and reboot. Whichever the remaining one is,");
+    Serial.println("       if it now works, the rail was the fault and both are fine.");
+    Serial.println();
   }
 
   /* ---- Wi-Fi ---- */
