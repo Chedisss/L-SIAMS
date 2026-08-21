@@ -499,3 +499,9 @@ five minutes locally, so a locked-out person cannot hammer the server endpoint.
 | Random resets during scans | Underpowered supply. Use 5 V 2 A and add the 470 µF capacitor. |
 | Stuck `OFFLINE` with a good network | TLS failure — usually the certificate fingerprint changed after the server certificate was renewed. Re-provision. |
 | Queue grows and never drains | The server is reachable but rejecting. Read the device log on its detail page. |
+
+For anything in the first two hardware rows, flash `firmware/L_SIAMS_Hardware_Test`
+before changing the terminal. It brings up the reader and the sensor together on
+the rail they share, with no Wi-Fi and no credentials involved, and says which of
+the two is at fault — or that the rail is, which is what two modules failing at
+once usually means.

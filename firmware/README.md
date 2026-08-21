@@ -7,8 +7,9 @@ is a diagnostic you reach for when the terminal will not behave.
 ```
 firmware/
   L_SIAMS_Terminal/     ← flash this one
-  L_SIAMS_Reader_Check/   is the RFID reader alive?      no Wi-Fi, no server
   L_SIAMS_WhoAmI/         what is my MAC? what Wi-Fi?    no wiring at all
+  L_SIAMS_Reader_Check/   is the RFID reader alive?      no Wi-Fi, no server
+  L_SIAMS_Hardware_Test/  do BOTH modules work?          no Wi-Fi, no server
   L_SIAMS_RFID_Test/      does a tap reach the server?   signing only
   reference/              not for flashing — see below
 ```
@@ -121,6 +122,35 @@ gets far enough to print it.
 a card at all?" Samples the version register twenty times and runs the chip's
 own self test. A different value each time is a loose connection; the same wrong
 value every time is a dead module.
+
+**`L_SIAMS_Hardware_Test`** — no Wi-Fi, no server, no credentials. The same
+reader checks plus the sensor, with both modules on the rail they will actually
+share. That combination is the point: each works alone far more often than the
+two work together, and what fails is usually the 3.3 V rail dipping when the RF
+field switches on mid-capture — which no test of one module can see.
+
+It brings up the reader, brings up the sensor (searching the likely pin pairs
+both ways round if the configured ones stay silent), and prints a verdict that
+reads the two results together. Then it runs: tap a card and the UID prints,
+press a finger and it is matched against whatever the sensor holds. Nothing is
+sent anywhere and nothing is recorded.
+
+| Command | Does |
+|---|---|
+| `test` | run the boot checks again, without reflashing |
+| `count` | how many templates the sensor is holding |
+| `slots` | which sensor slots are occupied |
+| `enroll [slot]` | enrol a finger, into the first free slot if none is given |
+| `delete <slot>` | erase one template |
+| `wipe` | erase every template, and verify it reached zero |
+
+`enroll` exists because a sensor with an empty library reports every finger as
+unknown, and that is indistinguishable from a sensor that cannot match. Enrol
+once, press again, and the answer is unambiguous.
+
+Templates enrolled here are on the sensor and nothing in L-SIAMS knows about
+them. `wipe` before flashing the terminal, or the server and the sensor
+disagree about who owns which slot.
 
 **`L_SIAMS_RFID_Test`** — Wi-Fi and server, no fingerprint sensor. Proves a tap
 reaches the server, authenticates, and comes back with a decision. When this
