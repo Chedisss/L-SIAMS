@@ -22,6 +22,7 @@ use App\Controllers\Api\ConstraintApiController;
 use App\Controllers\Api\DashboardApiController;
 use App\Controllers\Api\DeviceApiController;
 use App\Controllers\Api\FingerprintEnrollmentApiController;
+use App\Controllers\Api\FingerprintSyncApiController;
 use App\Controllers\Api\RfidEnrollmentApiController;
 use App\Controllers\Api\RealtimeApiController;
 use App\Controllers\Web\AttendanceController;
@@ -114,6 +115,15 @@ $router->group('/api/fingerprint/enrollment', $deviceChain, static function ($ro
     $router->post('/complete', FingerprintEnrollmentApiController::class . '@complete');
     $router->post('/failed', FingerprintEnrollmentApiController::class . '@failed');
     $router->post('/discarded', FingerprintEnrollmentApiController::class . '@discarded');
+});
+
+// Template sync. A sensor can only match what is in its own flash, so this is
+// how a teacher enrolled in one room becomes known to the reader in another.
+// The only route in the system that carries biometric data; see the controller
+// for what guards it.
+$router->group('/api/fingerprint/sync', $deviceChain, static function ($router): void {
+    $router->get('', FingerprintSyncApiController::class . '@pending');
+    $router->post('/stored', FingerprintSyncApiController::class . '@stored');
 });
 
 $router->post('/api/rfid/scan', AttendanceApiController::class . '@tap', $deviceChain);

@@ -14,9 +14,11 @@ $__view->start('content');
 <div class="alert alert-info">
     <span class="alert__icon"><i class="fa-solid fa-shield-halved"></i></span>
     <div class="alert__body">
-        No biometric template is ever sent to or stored on this server. The R307 keeps the template
-        in its own flash and returns a slot number; L-SIAMS records only that number and the teacher
-        it belongs to. A full database compromise therefore leaks no biometric data.
+        A fingerprint enrolled on one terminal is copied to the others, so a teacher can open a
+        session in any room they teach in. That means the template is stored here as well as in each
+        sensor. It is encrypted with this installation's key, is never shown on any screen or written
+        to any log, and is a mathematical template rather than a picture of a finger — but it is
+        biometric data, and a compromise of both the database and the application key would expose it.
     </div>
 </div>
 

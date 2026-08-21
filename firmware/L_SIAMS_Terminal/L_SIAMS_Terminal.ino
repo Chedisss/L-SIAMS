@@ -270,6 +270,9 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
  * has nothing else to do between taps, and the reply is a few hundred bytes.
  * Polling stops while a session is open — the sensor is busy then. */
 #define ENROLL_POLL_MS         2000
+/* Template sync is slower than the enrolment polls on purpose: it is
+ * background catch-up, not something anybody is standing and waiting for. */
+#define TEMPLATE_SYNC_MS       15000
 #define CARD_POLL_MS           2000
 #define ENROLL_STEP_TIMEOUT_MS 20000   /* per finger placement */
 
@@ -282,6 +285,7 @@ static uint32_t lastTapAt         = 0;
 static bool     clockSet          = false;
 static String   lastDateHeader;
 static uint32_t lastHeartbeatAt   = 0;
+static uint32_t lastTemplateSyncAt = 0;
 static bool     heartbeatLogged   = false;
 static uint32_t lastReaderCheck   = 0;
 static byte     lastReaderVersion = 0xEE;    /* neither 0x00 nor a real version */
@@ -772,6 +776,251 @@ static void waitForFingerRemoved(int requestId) {
   }
 }
 
+/* ======================= template transfer ==============================
+ *
+ * Moving a template between the sensor and the server, so a teacher enrolled
+ * in one room can open a session in another. The sensor can only match what is
+ * in its own flash; this is how the same finger gets into every sensor.
+ *
+ * Written against the packet protocol directly because the Adafruit library
+ * does not expose it. getModel() sends the command but hands back only a
+ * status code — the bytes arrive as data packets on the serial line and the
+ * library drops them. There is no DownChar in the library at all.
+ *
+ * Packet layout, from the R30x/ZFM datasheet:
+ *
+ *      EF 01 | addr(4) | PID(1) | length(2) | payload | checksum(2)
+ *
+ *   length counts the payload AND the two checksum bytes.
+ *   checksum is the plain sum of PID, both length bytes and every payload byte.
+ *   PID: 01 command   02 data   07 acknowledge   08 last data packet
+ *
+ * A template on this family is 512 bytes, arriving as data packets whose size
+ * the sensor chooses (32, 64, 128 or 256). Both directions are written to cope
+ * with any of them rather than assuming one.
+ */
+
+#define FP_ADDR          0xFFFFFFFFUL
+#define FP_PID_COMMAND   0x01
+#define FP_PID_DATA      0x02
+#define FP_PID_ACK       0x07
+#define FP_PID_END       0x08
+#define FP_TEMPLATE_MAX  1024      /* 512 is the real size; headroom for clones */
+
+static void fpSendPacket(uint8_t pid, const uint8_t *payload, uint16_t len) {
+  uint16_t declared = len + 2;              /* payload + checksum */
+  uint16_t checksum = pid + (declared >> 8) + (declared & 0xFF);
+
+  fingerSerial.write((uint8_t) 0xEF);
+  fingerSerial.write((uint8_t) 0x01);
+  fingerSerial.write((uint8_t) (FP_ADDR >> 24));
+  fingerSerial.write((uint8_t) (FP_ADDR >> 16));
+  fingerSerial.write((uint8_t) (FP_ADDR >> 8));
+  fingerSerial.write((uint8_t) (FP_ADDR & 0xFF));
+  fingerSerial.write(pid);
+  fingerSerial.write((uint8_t) (declared >> 8));
+  fingerSerial.write((uint8_t) (declared & 0xFF));
+
+  for (uint16_t i = 0; i < len; i++) {
+    fingerSerial.write(payload[i]);
+    checksum += payload[i];
+  }
+
+  fingerSerial.write((uint8_t) (checksum >> 8));
+  fingerSerial.write((uint8_t) (checksum & 0xFF));
+  fingerSerial.flush();
+}
+
+/* One byte, or -1 on timeout. Everything below reads through here so a sensor
+ * that stops mid-packet times out instead of blocking the terminal forever. */
+static int fpReadByte(uint32_t timeoutMs) {
+  uint32_t started = millis();
+
+  while (millis() - started < timeoutMs) {
+    if (fingerSerial.available()) return fingerSerial.read();
+    delay(1);
+  }
+
+  return -1;
+}
+
+/* Reads one packet. Returns false on timeout, a bad header or a checksum
+ * mismatch — a corrupted template written into another sensor produces a
+ * finger that enrols cleanly and never matches, so a bad checksum has to stop
+ * the transfer rather than be passed on. */
+static bool fpReadPacket(uint8_t *pid, uint8_t *buf, uint16_t maxLen,
+                         uint16_t *lenOut, uint32_t timeoutMs) {
+  /* Hunt for the header rather than demanding it immediately: a previous
+   * timeout can leave stray bytes in the buffer. */
+  uint32_t started = millis();
+  int      b       = 0;
+
+  while (millis() - started < timeoutMs) {
+    b = fpReadByte(timeoutMs);
+    if (b < 0) return false;
+    if (b != 0xEF) continue;
+
+    b = fpReadByte(timeoutMs);
+    if (b == 0x01) break;
+  }
+
+  if (b != 0x01) return false;
+
+  for (uint8_t i = 0; i < 4; i++) {          /* address, not checked */
+    if (fpReadByte(timeoutMs) < 0) return false;
+  }
+
+  int p = fpReadByte(timeoutMs);
+  if (p < 0) return false;
+
+  int hi = fpReadByte(timeoutMs);
+  int lo = fpReadByte(timeoutMs);
+  if (hi < 0 || lo < 0) return false;
+
+  uint16_t declared = ((uint16_t) hi << 8) | (uint16_t) lo;
+  if (declared < 2) return false;
+
+  uint16_t payloadLen = declared - 2;
+  if (payloadLen > maxLen) return false;
+
+  uint16_t checksum = (uint16_t) p + (uint16_t) hi + (uint16_t) lo;
+
+  for (uint16_t i = 0; i < payloadLen; i++) {
+    int v = fpReadByte(timeoutMs);
+    if (v < 0) return false;
+    buf[i]    = (uint8_t) v;
+    checksum += (uint8_t) v;
+  }
+
+  int chi = fpReadByte(timeoutMs);
+  int clo = fpReadByte(timeoutMs);
+  if (chi < 0 || clo < 0) return false;
+
+  if ((((uint16_t) chi << 8) | (uint16_t) clo) != checksum) return false;
+
+  *pid    = (uint8_t) p;
+  *lenOut = payloadLen;
+
+  return true;
+}
+
+/* Read the template currently in character buffer 1 out of the sensor.
+ * Call loadModel(slot) first — that is what puts a stored template there. */
+static bool fpReadTemplate(uint8_t *out, size_t max, size_t *lenOut) {
+  while (fingerSerial.available()) fingerSerial.read();   /* drop stale bytes */
+
+  uint8_t command[2] = { 0x08, 0x01 };                    /* UpChar, buffer 1 */
+  fpSendPacket(FP_PID_COMMAND, command, 2);
+
+  uint8_t  pid = 0, buf[288];
+  uint16_t len = 0;
+
+  if (!fpReadPacket(&pid, buf, sizeof(buf), &len, 2000)) return false;
+  if (pid != FP_PID_ACK || len < 1 || buf[0] != 0x00)     return false;
+
+  size_t total = 0;
+
+  /* The sensor decides the packet size, so this loops until it sends the
+   * end-of-data packet rather than counting to a fixed number. */
+  for (uint8_t packets = 0; packets < 64; packets++) {
+    if (!fpReadPacket(&pid, buf, sizeof(buf), &len, 2000)) return false;
+    if (pid != FP_PID_DATA && pid != FP_PID_END)          return false;
+    if (total + len > max)                                return false;
+
+    memcpy(out + total, buf, len);
+    total += len;
+
+    if (pid == FP_PID_END) {
+      *lenOut = total;
+      return total >= 256;      /* anything smaller is a truncated transfer */
+    }
+  }
+
+  return false;
+}
+
+/* Write a template into character buffer 1. storeModel(slot) then commits it
+ * to flash — this call alone changes nothing permanent. */
+static bool fpWriteTemplate(const uint8_t *data, size_t len) {
+  while (fingerSerial.available()) fingerSerial.read();
+
+  uint8_t command[2] = { 0x09, 0x01 };                  /* DownChar, buffer 1 */
+  fpSendPacket(FP_PID_COMMAND, command, 2);
+
+  uint8_t  pid = 0, buf[64];
+  uint16_t got = 0;
+
+  if (!fpReadPacket(&pid, buf, sizeof(buf), &got, 2000)) return false;
+  if (pid != FP_PID_ACK || got < 1 || buf[0] != 0x00)    return false;
+
+  /* 128 is accepted by every module in this family. Larger packets are
+   * allowed by the protocol and refused by some clones. */
+  const size_t chunk = 128;
+
+  for (size_t sent = 0; sent < len; sent += chunk) {
+    size_t  take = (len - sent > chunk) ? chunk : (len - sent);
+    bool    last = (sent + take >= len);
+
+    fpSendPacket(last ? FP_PID_END : FP_PID_DATA, data + sent, (uint16_t) take);
+    delay(10);
+  }
+
+  return true;
+}
+
+/* ---- base64, for carrying the template through JSON ---------------------- */
+
+static const char FP_B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static String fpBase64Encode(const uint8_t *data, size_t len) {
+  String out;
+  out.reserve(((len + 2) / 3) * 4 + 1);
+
+  for (size_t i = 0; i < len; i += 3) {
+    uint32_t block = (uint32_t) data[i] << 16;
+    if (i + 1 < len) block |= (uint32_t) data[i + 1] << 8;
+    if (i + 2 < len) block |= (uint32_t) data[i + 2];
+
+    out += FP_B64[(block >> 18) & 0x3F];
+    out += FP_B64[(block >> 12) & 0x3F];
+    out += (i + 1 < len) ? FP_B64[(block >> 6) & 0x3F] : '=';
+    out += (i + 2 < len) ? FP_B64[block & 0x3F]        : '=';
+  }
+
+  return out;
+}
+
+static size_t fpBase64Decode(const char *text, uint8_t *out, size_t max) {
+  auto value = [](char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+  };
+
+  uint32_t block = 0;
+  int      bits  = 0;
+  size_t   total = 0;
+
+  for (const char *p = text; *p; p++) {
+    int v = value(*p);
+    if (v < 0) continue;                 /* '=' padding, whitespace, newlines */
+
+    block = (block << 6) | (uint32_t) v;
+    bits += 6;
+
+    if (bits >= 8) {
+      bits -= 8;
+      if (total >= max) return 0;
+      out[total++] = (uint8_t) ((block >> bits) & 0xFF);
+    }
+  }
+
+  return total;
+}
+
 static void runEnrollment(int requestId, int slot, const char *teacherName) {
   Serial.println();
   Serial.printf("=== ENROLMENT: %s -> sensor slot %d ===\n", teacherName, slot);
@@ -831,10 +1080,32 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
 
   finger.getTemplateCount();
 
+  /* loadModel() above left the template in character buffer 1, so this reads
+   * the bytes themselves out of the sensor. They go to the server so every
+   * other terminal can be given the same template — without this the teacher
+   * is known to this reader and a stranger to every other one.
+   *
+   * A failure here is not an enrolment failure. The template is in this
+   * sensor and this room works; only the copy to other rooms is lost, and
+   * saying so beats discarding a capture the teacher already stood through. */
+  static uint8_t templateBytes[FP_TEMPLATE_MAX];
+  size_t         templateLen = 0;
+  String         templateB64;
+
+  if (fpReadTemplate(templateBytes, sizeof(templateBytes), &templateLen)) {
+    templateB64 = fpBase64Encode(templateBytes, templateLen);
+    Serial.printf("Enrol: read %u template bytes back for syncing\n", (unsigned) templateLen);
+  } else {
+    Serial.println("Enrol: the template could not be read off the sensor.");
+    Serial.println("       The enrolment stands and this terminal will recognise the finger,");
+    Serial.println("       but other rooms cannot be given a copy of it.");
+  }
+
   LsJson request;
   request["request_id"]         = requestId;
   request["sensor_template_id"] = slot;
   request["sample_count"]       = 2;
+  if (templateB64.length()) request["template"] = templateB64;
 
   String body;
   serializeJson(request, body);
@@ -1010,6 +1281,90 @@ static void pollEnrollment() {
  * THIS classroom right now, so a verified finger with no matching schedule is
  * still refused. That check is the real authorisation step.
  */
+/* ---------------------------------------------------------------------------
+ * Collecting templates enrolled on other terminals.
+ *
+ * A teacher enrolled in Room 101 is unknown to this sensor until their
+ * template is written into this sensor's flash. The server holds the copy;
+ * this asks for one at a time and writes it.
+ *
+ * Pull, not push, and one per poll. Writing a template is a multi-packet UART
+ * transfer that blocks this loop, and a terminal that disappears for the
+ * length of a twenty-template backlog is a terminal that misses taps. Fifteen
+ * seconds between polls drains a backlog quietly while leaving the reader
+ * responsive throughout, and a terminal that was switched off simply collects
+ * what it missed when it comes back.
+ * ------------------------------------------------------------------------- */
+static void pollTemplateSync() {
+  if (!fingerReady || enrolling || enrollingCard) return;
+  if (millis() - lastTemplateSyncAt < TEMPLATE_SYNC_MS) return;
+
+  lastTemplateSyncAt = millis();
+
+  LsJson response;
+  int    status = signedRequest("GET", "/api/fingerprint/sync", "", &response);
+
+  if (status != 200) return;
+
+  JsonVariantConst tpl = response["data"]["template"];
+  if (tpl.isNull()) return;
+
+  int         slot = tpl["slot"] | 0;
+  const char *name = tpl["teacher_name"] | "";
+  const char *data = tpl["data"] | "";
+
+  if (slot <= 0 || !strlen(data)) return;
+
+  Serial.printf("\nSync: writing %s into slot %d\n", name, slot);
+
+  static uint8_t incoming[FP_TEMPLATE_MAX];
+  size_t         len = fpBase64Decode(data, incoming, sizeof(incoming));
+
+  /* Every failure below is reported, never returned from quietly. A slot left
+   * pending is offered again on the next poll forever, and a terminal
+   * silently refusing the same template every fifteen seconds is invisible
+   * from the server. */
+  bool        ok     = false;
+  const char *reason = "";
+
+  if (len < 256) {
+    reason = "The template did not decode to a usable size.";
+    Serial.println("      the template did not decode to a sensible size");
+  } else if (!fpWriteTemplate(incoming, len)) {
+    reason = "The sensor refused the template transfer.";
+    Serial.println("      the sensor refused the transfer");
+  } else {
+    uint8_t stored = finger.storeModel(slot);
+
+    if (stored != FINGERPRINT_OK) {
+      reason = "The sensor refused to store the template.";
+      Serial.printf("      the sensor refused to store into slot %d (code %d)\n", slot, stored);
+    } else if (finger.loadModel(slot) != FINGERPRINT_OK) {
+      /* Same read-back as enrolment, for the same reason: a sensor whose flash
+       * has stopped accepting writes acknowledges the store and keeps nothing.
+       * Marking the slot present on the strength of an OK would leave a
+       * teacher unable to open their class with nothing saying why. */
+      reason = "Stored but reads back empty; the sensor flash is not accepting writes.";
+      Serial.printf("      slot %d says stored but reads back empty\n", slot);
+    } else {
+      ok = true;
+      finger.getTemplateCount();
+      Serial.printf("      stored — %d template(s) on this sensor now\n", finger.templateCount);
+    }
+  }
+
+  LsJson body;
+  body["slot"]   = slot;
+  body["stored"] = ok;
+  if (!ok) body["reason"] = reason;
+
+  String json;
+  serializeJson(body, json);
+
+  LsJson ignored;
+  signedRequest("POST", "/api/fingerprint/sync/stored", json, &ignored);
+}
+
 static void handleFingerprint() {
   if (!fingerReady) return;
   if (millis() - lastFingerAt < FINGER_COOLDOWN_MS) return;
@@ -2169,6 +2524,7 @@ void loop() {
   watchReader();
   pollEnrollment();
   pollCardEnrollment();
+  pollTemplateSync();
   handleFingerprint();
 
   String uid = readCardUid();

@@ -149,6 +149,16 @@ return [
         'web'      => ['limit' => 600, 'window' => 60],
     ],
 
+    // --- Biometrics --------------------------------------------------------
+    'fingerprint' => [
+        // The server's ceiling when handing out slots on a sensor. The common
+        // AS608 holds 127; modules sold under the same name ship with 162 and
+        // 1000. Terminals read their real capacity at boot, so this only needs
+        // raising if you have more teachers than 127 AND sensors that can hold
+        // them.
+        'sensor_capacity' => Env::int('FINGERPRINT_SENSOR_CAPACITY', 127),
+    ],
+
     // --- Network -----------------------------------------------------------
     'network' => [
         'trusted_web_cidrs'    => Env::list('TRUSTED_WEB_CIDRS', ['192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12', '127.0.0.0/8']),

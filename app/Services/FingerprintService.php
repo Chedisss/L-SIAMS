@@ -12,11 +12,18 @@ use App\Core\Exceptions\ValidationException;
 /**
  * Teacher fingerprint enrolment and verification.
  *
- * Note what is *not* stored here: no biometric template ever reaches this
- * database. The R307 keeps the template in its own flash and returns a slot
- * number; the server records only that number and the teacher it maps to. The
- * consequence is that a full database compromise leaks no biometric data at
- * all, which is the right trade for a system deployed in a school.
+ * This database DOES hold biometric templates, and it deliberately did not
+ * until migration 018. The reason for the change is in that migration: a
+ * template that lives only in the sensor it was enrolled on makes its teacher
+ * unknown in every other classroom, and a school timetable puts teachers in
+ * more than one room.
+ *
+ * Templates are encrypted with the application key, so a stolen .sql dump on
+ * its own is not enough — but a host compromise that takes both the dump and
+ * APP_KEY now leaks biometric data, where previously there was none to leak.
+ * A template is the sensor's own feature vector rather than an image and
+ * cannot be turned back into a fingerprint picture, which limits the harm
+ * without removing it.
  *
  * Fingerprints authorise teachers opening sessions and nothing else — student
  * attendance never involves the sensor (Part 3).
@@ -40,15 +47,28 @@ final class FingerprintService
 
         self::assertDeviceNotLocked($device);
 
+        // fingerprint_slots, not fingerprint_templates.
+        //
+        // A slot number is allocated by one sensor, in its own flash, counting
+        // from 1. It identifies a person only in combination with the device
+        // that allocated it, which is exactly what this table records — one
+        // row per (terminal, slot), with a unique key that makes two teachers
+        // sharing a slot on one sensor unrepresentable.
+        //
+        // Reading the origin enrolment instead, as this used to, could only
+        // ever recognise a teacher on the terminal they first enrolled at.
+        // Every synced copy lives here.
         $fingerprint = $db->selectOne(
-            'SELECT fp.*, t.teacher_id, t.first_name, t.last_name, t.status AS teacher_status,
+            "SELECT fp.*, t.teacher_id, t.first_name, t.last_name, t.status AS teacher_status,
                     t.employee_number, t.department_id
-               FROM fingerprint_templates fp
-               JOIN teachers t ON t.teacher_id = fp.teacher_id
-              WHERE fp.sensor_template_id = :slot
-                AND fp.enrolled_device_row_id = :device
+               FROM fingerprint_slots s
+               JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
+               JOIN teachers t               ON t.teacher_id = fp.teacher_id
+              WHERE s.sensor_template_id = :slot
+                AND s.device_row_id      = :device
+                AND s.status             = 'present'
                 AND t.deleted_at IS NULL
-              LIMIT 1',
+              LIMIT 1",
             ['slot' => $sensorTemplateId, 'device' => $deviceRowId]
         );
 
@@ -78,17 +98,16 @@ final class FingerprintService
         // sends them to re-enrol a finger that is already enrolled.
         if ($fingerprint === null) {
             $elsewhere = $db->selectOne(
-                "SELECT fp.enrolled_device_row_id, d.device_id, c.room_number,
+                "SELECT s2.device_row_id AS enrolled_device_row_id, d.device_id, c.room_number,
                         CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
-                   FROM fingerprint_templates fp
-                   JOIN teachers t       ON t.teacher_id = fp.teacher_id
-              LEFT JOIN devices d        ON d.id = fp.enrolled_device_row_id
-              LEFT JOIN classrooms c     ON c.classroom_id = d.classroom_id
-                  WHERE fp.sensor_template_id = :slot
-                    AND (fp.enrolled_device_row_id IS NULL
-                         OR fp.enrolled_device_row_id <> :device)
+                   FROM fingerprint_slots s2
+                   JOIN fingerprint_templates fp ON fp.fingerprint_id = s2.fingerprint_id
+                   JOIN teachers t               ON t.teacher_id = fp.teacher_id
+              LEFT JOIN devices d                ON d.id = s2.device_row_id
+              LEFT JOIN classrooms c             ON c.classroom_id = d.classroom_id
+                  WHERE s2.sensor_template_id = :slot
+                    AND s2.device_row_id <> :device
                     AND t.deleted_at IS NULL
-                  ORDER BY fp.enrolled_device_row_id IS NULL
                   LIMIT 1",
                 ['slot' => $sensorTemplateId, 'device' => $deviceRowId]
             );

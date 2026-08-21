@@ -294,12 +294,45 @@ Center. The vocabulary includes `SIGNATURE_INVALID`, `REPLAY_DETECTED`,
   audit log, not in the security log, not in a value field, not in an error
   message, not in a URL.
 - Passwords, in any form, at any point.
-- Fingerprint templates. The database stores a slot number on the sensor and
-  nothing else. **No biometric data ever reaches this system**, which reduces its
-  exposure to a template breach to zero rather than to "encrypted".
+- Fingerprint templates. These *are* stored — see below — but never written to
+  any log, never returned to a browser, and never placed in an error message or
+  a URL. The only path they travel is between a terminal and the sync endpoint,
+  over an authenticated and signed request.
 
 Keys never appear in URLs or query strings either, so they cannot end up in a
 web-server access log, a proxy log or a browser history.
+
+### Fingerprint templates, and what changed
+
+This system used to store no biometric data at all, and that was worth stating.
+It no longer does, so the honest version:
+
+**What is stored.** The sensor's template — its own feature vector for a
+finger — encrypted with the application key using AES-256-GCM, in
+`fingerprint_templates.template_data`.
+
+**Why.** A template held only in the sensor it was enrolled on makes its teacher
+a stranger to every other reader in the building. A school timetable puts
+teachers in several rooms, so that limitation meant a teacher could open a
+register in one classroom and nowhere else, with no remedy short of walking them
+to every terminal.
+
+**What it costs.** A stolen database dump alone is not enough to read a
+template. A host compromise that takes both the dump and `APP_KEY` is. Before
+this change there was nothing there to take. A template cannot be turned back
+into a fingerprint image, which limits the harm without removing it — the honest
+summary is that exposure moved from "zero" to "encrypted", not that nothing
+changed.
+
+**What still holds.** Templates are never logged, never rendered to a browser,
+never put in an audit or security log value, and never placed in a URL. They
+leave the server on exactly one route, `/api/fingerprint/sync`, to a terminal
+that has presented a registered device id, a valid API key, an HMAC signature
+over the request, a fresh timestamp and a single-use nonce.
+
+**If you would rather not.** Nothing forces the sync on. Leave teachers enrolled
+on a single terminal and the column stays NULL for them; they open sessions in
+that room, and use the password failover elsewhere.
 
 ---
 

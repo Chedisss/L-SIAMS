@@ -5,6 +5,7 @@ namespace App\Services;
 
 use App\Core\Clock;
 use App\Core\Config;
+use App\Core\Crypto;
 use App\Core\Database;
 use App\Core\Exceptions\BusinessRuleException;
 use App\Core\Exceptions\ValidationException;
@@ -22,7 +23,10 @@ use App\Core\Exceptions\ValidationException;
  * back from the sensor rather than from a keyboard. The administrator never
  * types a number.
  *
- * What is still true: no biometric template reaches this server. The request
+ * The template itself now travels with the completion report, so it can be
+ * copied to the other terminals (FingerprintSyncService). It is held here,
+ * encrypted, only for a capture taken before its teacher record exists, and
+ * cleared the moment bind() moves it onto the teacher. The request
  * carries the slot the template must occupy; the template stays in the sensor's
  * flash, and this database records only which teacher owns which slot.
  */
@@ -401,7 +405,8 @@ final class FingerprintEnrollmentService
         int $deviceRowId,
         int $sensorTemplateId,
         ?int $quality = null,
-        int $sampleCount = 0
+        int $sampleCount = 0,
+        #[\SensitiveParameter] string $templateData = ''
     ): array {
         $request = self::findForDevice($requestId, $deviceRowId);
 
@@ -441,7 +446,7 @@ final class FingerprintEnrollmentService
         // template is in the sensor and the slot is held against this request;
         // bind() attaches both to the teacher row the moment it is created.
         if ($request['teacher_id'] !== null) {
-            FingerprintService::enroll(
+            $enrolled = FingerprintService::enroll(
                 (int) $request['teacher_id'],
                 $sensorTemplateId,
                 $deviceRowId,
@@ -449,6 +454,19 @@ final class FingerprintEnrollmentService
                 $sampleCount,
                 $request['requested_by'] === null ? null : (int) $request['requested_by']
             );
+
+            // The bytes the sensor handed back, so every other terminal can be
+            // given the same template. A terminal running older firmware sends
+            // nothing, and that is not an error — the enrolment stands, it
+            // simply stays local to this sensor until somebody re-enrols.
+            if ($templateData !== '' && isset($enrolled['fingerprint_id'])) {
+                FingerprintSyncService::captureTemplate(
+                    (int) $enrolled['fingerprint_id'],
+                    $deviceRowId,
+                    $sensorTemplateId,
+                    $templateData
+                );
+            }
         }
 
         Database::instance()->update('fingerprint_enrollment_requests', [
@@ -459,6 +477,13 @@ final class FingerprintEnrollmentService
                 : 'Fingerprint enrolled.',
             'quality_score' => $quality,
             'sample_count'  => $sampleCount,
+            // Held encrypted only while the registration form is still open.
+            // bind() moves it onto the teacher's row and clears it here, so a
+            // capture that is never bound expires with the request rather than
+            // leaving biometric data in a staging table indefinitely.
+            'template_data' => $request['teacher_id'] === null && $templateData !== ''
+                ? Crypto::encrypt($templateData)
+                : null,
             'completed_at'  => Clock::nowString(),
             'bound_at'      => $request['teacher_id'] === null ? null : Clock::nowString(),
             // An unbound capture is now waiting on somebody filling in the rest
@@ -510,7 +535,7 @@ final class FingerprintEnrollmentService
             ]);
         }
 
-        FingerprintService::enroll(
+        $enrolled = FingerprintService::enroll(
             $teacherId,
             (int) $request['sensor_template_id'],
             (int) $request['device_row_id'],
@@ -519,11 +544,37 @@ final class FingerprintEnrollmentService
             $userId
         );
 
+        // The template has been waiting here since the capture, because at
+        // that moment there was no teacher row to hang it on. Now there is, so
+        // it moves onto the teacher and the staging copy is cleared — a
+        // capture that is never bound therefore leaves no biometric data
+        // behind when its request expires.
+        if ($request['template_data'] !== null && isset($enrolled['fingerprint_id'])) {
+            try {
+                FingerprintSyncService::captureTemplate(
+                    (int) $enrolled['fingerprint_id'],
+                    (int) $request['device_row_id'],
+                    (int) $request['sensor_template_id'],
+                    base64_encode(Crypto::decrypt((string) $request['template_data']))
+                );
+            } catch (\Throwable $e) {
+                // The teacher is enrolled and their own terminal works. Losing
+                // the onward copy is worth a log, not a failed registration
+                // the administrator has to start over.
+                \App\Core\Logger::warning('Held fingerprint template could not be moved onto the teacher', [
+                    'request_id' => $requestId,
+                    'teacher_id' => $teacherId,
+                    'error'      => $e->getMessage(),
+                ]);
+            }
+        }
+
         $db->update('fingerprint_enrollment_requests', [
-            'teacher_id' => $teacherId,
-            'bound_at'   => Clock::nowString(),
-            'message'    => 'Fingerprint enrolled with the teacher record.',
-            'updated_at' => Clock::nowString(),
+            'teacher_id'    => $teacherId,
+            'template_data' => null,
+            'bound_at'      => Clock::nowString(),
+            'message'       => 'Fingerprint enrolled with the teacher record.',
+            'updated_at'    => Clock::nowString(),
         ], ['request_id' => $requestId]);
     }
 
