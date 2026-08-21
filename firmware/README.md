@@ -1,16 +1,15 @@
 # Firmware
 
-**Flash `L_SIAMS_Terminal`.** That is the classroom terminal, and it is the only
-sketch here that talks to the running system. Everything else in this directory
-is a diagnostic you reach for when the terminal will not behave.
+**Flash `L_SIAMS_Terminal`.** It is the only sketch here, and it runs a whole
+classroom: a teacher's finger opens the attendance session, a student's card
+records against it, and the server decides every outcome.
 
 ```
 firmware/
-  L_SIAMS_Terminal/     ← flash this one
-  L_SIAMS_Reader_Check/   is the RFID reader alive?      no Wi-Fi, no server
-  L_SIAMS_WhoAmI/         what is my MAC? what Wi-Fi?    no wiring at all
-  L_SIAMS_RFID_Test/      does a tap reach the server?   signing only
-  reference/              not for flashing — see below
+  L_SIAMS_Terminal/       the sketch — flash this
+    L_SIAMS_Terminal.ino
+    secrets.h.example     copy to secrets.h and fill in
+  tools/syntax-check/     type-check it without an ESP32
 ```
 
 ---
@@ -107,41 +106,13 @@ on the Devices page.
 
 ---
 
-## The diagnostics
+## Checking it before you flash
 
-Reach for these in this order when something will not work. Each answers one
-question and needs less than the one before it.
+```
+tools/syntax-check/check.sh
+```
 
-**`L_SIAMS_WhoAmI`** — no wiring, no credentials. Prints the board's MAC and
-lists the Wi-Fi networks it can see. Use it when the terminal will not join the
-network, or when you need the MAC to register the device and the terminal never
-gets far enough to print it.
-
-**`L_SIAMS_Reader_Check`** — no Wi-Fi, no server. Answers "can this MFRC522 read
-a card at all?" Samples the version register twenty times and runs the chip's
-own self test. A different value each time is a loose connection; the same wrong
-value every time is a dead module.
-
-**`L_SIAMS_RFID_Test`** — Wi-Fi and server, no fingerprint sensor. Proves a tap
-reaches the server, authenticates, and comes back with a decision. When this
-works, request signing is proven and anything still broken is elsewhere.
-
----
-
-## `reference/`
-
-**Nothing here is meant to be flashed.**
-
-`L_SIAMS_Terminal_OLED` was the earlier terminal firmware, written against an
-older server API. It is kept for three things it implements that the shipping
-terminal does not: the offline attendance queue in NVS, the SSD1306 status
-display, and an explicit boot state machine.
-
-The queue is the real gap. The shipping terminal refuses a tap while the network
-is down rather than recording it for later, which is a fair trade on a stable
-LAN and not one to make in a school on unattended hardware. When you close that
-gap, read this file first.
-
-Do not flash it as it stands: it cannot issue student cards, it needs an SSD1306
-to come up at all, it assumes a 5 V sensor, and none of the fixes found during
-bench testing are in it.
+Type-checks the sketch with g++ against stub headers, so a typo or a wrong
+argument count is caught at a desk rather than at the bench. It does not need
+the ESP32 toolchain and does not prove the sketch works — see the README in
+that folder for exactly what it does and does not cover.
