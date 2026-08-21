@@ -9,6 +9,7 @@ WiFiClass WiFi;
 SPIClass SPI;
 #include "esp_system.h"
 esp_reset_reason_t esp_reset_reason(){ return ESP_RST_POWERON; }
+int esp_read_mac(uint8_t* m, esp_mac_type_t){ for(int i=0;i<6;i++) m[i]=0; return 0; }
 #include "mbedtls/md.h"
 void mbedtls_md_init(mbedtls_md_context_t*){}
 void mbedtls_md_free(mbedtls_md_context_t*){}
