@@ -121,10 +121,15 @@ using LsJson = JsonDocument;
  *      LS_HMAC_SECRET  <- "hmac_secret"
  *      LS_CLAIM_TOKEN  <- "claim_token"   (single use; blank it once claimed)
  *
- * The other three you type yourself. LS_SERVER_URL is the one people get
- * wrong: it must be the PC's LAN address WITH the port, like
- * http://192.168.1.14:8080 — the address start.bat prints. Never localhost or
- * 127.0.0.1, which to this board mean this board, so the request never leaves.
+ * The other three you type yourself, in these shapes:
+ *
+ *      LS_WIFI_SSID    "StaffRoom-2G"
+ *      LS_WIFI_PASS    "your wifi password"
+ *      LS_SERVER_URL   "http://192.168.1.14:8080"
+ *
+ * LS_SERVER_URL is the one people get wrong. It must be the PC's LAN address
+ * WITH the port — the address start.bat prints. Never localhost or 127.0.0.1,
+ * which to this board mean this board, so the request never leaves it.
  *
  * ---------------------------------------------------------------------------
  * ONE WARNING, WORTH READING ONCE
@@ -154,22 +159,22 @@ using LsJson = JsonDocument;
 #endif
 
 #ifndef LS_WIFI_SSID
-#define LS_WIFI_SSID    "YOUR_WIFI_NAME"
+#define LS_WIFI_SSID    "PASTE_WIFI_NAME"
 #endif
 #ifndef LS_WIFI_PASS
-#define LS_WIFI_PASS    "YOUR_WIFI_PASSWORD"
+#define LS_WIFI_PASS    "PASTE_WIFI_PASSWORD"
 #endif
 #ifndef LS_SERVER_URL
-#define LS_SERVER_URL   "http://192.168.0.100:8080"
+#define LS_SERVER_URL   "PASTE_SERVER_URL"
 #endif
 #ifndef LS_DEVICE_ID
-#define LS_DEVICE_ID    "DEV-2026-0001"
+#define LS_DEVICE_ID    "PASTE_DEVICE_ID"
 #endif
 #ifndef LS_API_KEY
-#define LS_API_KEY      "lsk_xxxxxxxx.yyyyyyyy"
+#define LS_API_KEY      "PASTE_API_KEY"
 #endif
 #ifndef LS_HMAC_SECRET
-#define LS_HMAC_SECRET  "zzzzzzzzzzzzzzzz"
+#define LS_HMAC_SECRET  "PASTE_HMAC_SECRET"
 #endif
 #ifndef LS_CLAIM_TOKEN
 #define LS_CLAIM_TOKEN  ""
@@ -1162,9 +1167,23 @@ static bool checkConfig() {
     { API_KEY,     "LS_API_KEY"     },
     { HMAC_SECRET, "LS_HMAC_SECRET" },
   };
+  /* Every placeholder starts with PASTE_ on purpose.
+   *
+   * The previous set used realistic-looking examples, and one of them was not
+   * an example at all: the server issues DEV-{year}-0001 to the first terminal
+   * registered, so "DEV-2026-0001" was simultaneously the placeholder AND a
+   * real device id. A correctly configured board was told its device id was
+   * still a placeholder, with no way to tell the difference.
+   *
+   * "http://192.168.0.100:8080" had the same problem waiting — that is a
+   * perfectly ordinary LAN address for a PC to have.
+   *
+   * A value nobody would ever legitimately hold cannot collide. The format
+   * examples moved into the comment block above, where they inform without
+   * being mistaken for data. */
   const char *placeholders[] = {
-    "YOUR_WIFI_NAME", "http://192.168.0.100:8080", "DEV-2026-0001",
-    "lsk_xxxxxxxx.yyyyyyyy", "zzzzzzzzzzzzzzzz",
+    "PASTE_WIFI_NAME", "PASTE_SERVER_URL", "PASTE_DEVICE_ID",
+    "PASTE_API_KEY", "PASTE_HMAC_SECRET",
   };
 
   bool ok = true;
@@ -1174,6 +1193,20 @@ static bool checkConfig() {
       Serial.printf("Config: %s is still the placeholder value.\n", required[i].name);
       ok = false;
     }
+  }
+
+  /* Not a placeholder, so the loop above cannot see it — but it fails in the
+   * most confusing way available: the board joins the Wi-Fi, reports nothing,
+   * and shows as Offline with no error anywhere, because every request went to
+   * the ESP32 itself. */
+  if (ok && (strstr(SERVER_URL, "localhost") != nullptr
+          || strstr(SERVER_URL, "127.0.0.1") != nullptr)) {
+    Serial.println("Config: LS_SERVER_URL points at localhost.");
+    Serial.println();
+    Serial.println("  To this board, localhost and 127.0.0.1 mean THIS BOARD — so nothing");
+    Serial.println("  it sends would ever reach your PC. Use the PC's LAN address instead,");
+    Serial.println("  the one start.bat prints, such as http://192.168.1.14:8080");
+    return false;
   }
 
   if (!ok) {
