@@ -52,18 +52,110 @@ final class FingerprintService
             ['slot' => $sensorTemplateId, 'device' => $deviceRowId]
         );
 
-        // Templates are synchronised across terminals, so fall back to a global
-        // slot lookup before declaring the print unknown.
+        // There used to be a fallback here that looked the slot up across every
+        // terminal when the device-scoped lookup found nothing, justified by a
+        // comment claiming "templates are synchronised across terminals". No
+        // such synchronisation exists anywhere in this system, and the fallback
+        // it justified could name the wrong teacher.
+        //
+        // Slot numbers are not global. Every sensor allocates from slot 1
+        // upward in its own flash, independently, so "slot 3" on the terminal
+        // in Room 101 and "slot 3" on the one in Room 102 are two different
+        // people as a matter of course — a collision by design, not by
+        // accident.
+        //
+        // So the fallback fired exactly when it was least safe to trust: a
+        // print that this terminal's sensor matched to a slot with no record
+        // for THIS device, resolved against whichever teacher happened to hold
+        // that slot number somewhere else. That opens a class register in
+        // another teacher's name, off one stale template left behind by a
+        // reflash or a deleted row. Attendance attributed to the wrong teacher
+        // is worse than a refused scan by a wide margin.
+        //
+        // Now the mismatch is detected and named rather than silently
+        // resolved, because "your fingerprint is enrolled on a different
+        // terminal" is an answer somebody can act on, and "not recognised"
+        // sends them to re-enrol a finger that is already enrolled.
         if ($fingerprint === null) {
-            $fingerprint = $db->selectOne(
-                'SELECT fp.*, t.teacher_id, t.first_name, t.last_name, t.status AS teacher_status,
-                        t.employee_number, t.department_id
+            $elsewhere = $db->selectOne(
+                "SELECT fp.enrolled_device_row_id, d.device_id, c.room_number,
+                        CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
                    FROM fingerprint_templates fp
-                   JOIN teachers t ON t.teacher_id = fp.teacher_id
-                  WHERE fp.sensor_template_id = :slot AND t.deleted_at IS NULL
-                  LIMIT 1',
-                ['slot' => $sensorTemplateId]
+                   JOIN teachers t       ON t.teacher_id = fp.teacher_id
+              LEFT JOIN devices d        ON d.id = fp.enrolled_device_row_id
+              LEFT JOIN classrooms c     ON c.classroom_id = d.classroom_id
+                  WHERE fp.sensor_template_id = :slot
+                    AND (fp.enrolled_device_row_id IS NULL
+                         OR fp.enrolled_device_row_id <> :device)
+                    AND t.deleted_at IS NULL
+                  ORDER BY fp.enrolled_device_row_id IS NULL
+                  LIMIT 1",
+                ['slot' => $sensorTemplateId, 'device' => $deviceRowId]
             );
+
+            if ($elsewhere !== null) {
+                // Two shapes of the same problem, and they need different
+                // sentences. A row tied to another terminal is somebody
+                // enrolled in the wrong room. A row tied to no terminal at all
+                // is an enrolment whose sensor was removed — the template may
+                // still sit in some sensor's flash, or nowhere, and there is
+                // no way to tell which. Neither is safe to accept, and neither
+                // is "not recognised".
+                $orphaned = $elsewhere['enrolled_device_row_id'] === null;
+
+                self::logAttempt(
+                    null,
+                    $deviceRowId,
+                    $sensorTemplateId,
+                    'unknown',
+                    $confidence,
+                    $orphaned
+                        ? sprintf(
+                            'Slot %d has no enrolment on this terminal. A record for that slot exists for %s '
+                            . 'but is tied to no terminal, so which sensor holds the template is unknown.',
+                            $sensorTemplateId,
+                            (string) $elsewhere['teacher_name']
+                        )
+                        : sprintf(
+                            'Slot %d has no enrolment on this terminal. The same slot number belongs to '
+                            . '%s on terminal %s, which is a different sensor and therefore a different print.',
+                            $sensorTemplateId,
+                            (string) $elsewhere['teacher_name'],
+                            (string) ($elsewhere['device_id'] ?? 'unknown')
+                        )
+                );
+
+                SecurityLogService::log(
+                    SecurityLogService::FINGERPRINT_SLOT_CROSS_DEVICE,
+                    'medium',
+                    sprintf(
+                        'A scan on terminal %d matched slot %d, which is enrolled on a different terminal (%s). '
+                        . 'Refused rather than resolved — slot numbers are per-sensor and mean nothing across devices.',
+                        $deviceRowId,
+                        $sensorTemplateId,
+                        (string) ($elsewhere['device_id'] ?? 'unknown')
+                    ),
+                    ['slot' => $sensorTemplateId, 'enrolled_on' => $elsewhere['device_id'] ?? null],
+                    $deviceRowId
+                );
+
+                self::registerFailure($device);
+
+                throw new BusinessRuleException(
+                    'FINGERPRINT_WRONG_TERMINAL',
+                    $orphaned
+                        ? 'This fingerprint enrolment is not tied to any terminal, so it cannot be verified '
+                          . 'here. Ask an administrator to enrol you again on this terminal.'
+                        : sprintf(
+                            'This fingerprint is not enrolled on this terminal. A fingerprint is stored in the '
+                            . 'sensor it was enrolled on and cannot be read by another one — ask an administrator '
+                            . 'to enrol you on the terminal in %s.',
+                            (string) ($elsewhere['room_number'] ?? 'this room')
+                        ),
+                    self::display('WRONG TERMINAL', 'ENROL HERE FIRST', 'red', 'rapid'),
+                    403
+                );
+            }
         }
 
         if ($fingerprint === null) {
