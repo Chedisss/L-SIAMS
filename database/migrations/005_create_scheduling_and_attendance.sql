@@ -277,9 +277,10 @@ CREATE TABLE IF NOT EXISTS unknown_rfid_logs (
 CREATE TABLE IF NOT EXISTS fingerprint_templates (
   fingerprint_id    INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   teacher_id        INT UNSIGNED NOT NULL,
-  -- The R307 stores the biometric template in its own flash; the server keeps
-  -- only the slot number. No biometric data ever reaches this database, which
-  -- keeps the system's exposure to a template breach at zero.
+  -- The sensor stores the template in its own flash and the server keeps the
+  -- slot number. This was once the whole story; migration 018 adds the
+  -- encrypted template alongside it, so one enrolment can reach every terminal
+  -- a teacher teaches at. Read 018 for what that costs.
   sensor_template_id SMALLINT UNSIGNED NOT NULL,
   enrolled_device_row_id INT UNSIGNED NULL,
   quality_score     TINYINT UNSIGNED NULL,

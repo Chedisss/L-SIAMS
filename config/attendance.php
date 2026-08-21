@@ -23,6 +23,13 @@ return [
     'section_mismatch_alert_threshold' => 3, // taps/day/student before admin notification
 
     'fingerprint' => [
+        // How often a terminal asks whether another room enrolled somebody it
+        // should know about. Background catch-up, not something anybody is
+        // standing and waiting for, so it is far slower than the enrolment
+        // poll — and writing a template blocks the terminal's loop, so polling
+        // it hard would cost taps.
+        'sync_poll_seconds'        => 15,
+
         'max_failures_before_lock' => 5,
         'device_lock_minutes'      => 5,
         'alert_after_failures'     => 3,

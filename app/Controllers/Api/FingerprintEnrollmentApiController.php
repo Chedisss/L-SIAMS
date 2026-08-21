@@ -18,9 +18,18 @@ use App\Services\FingerprintEnrollmentService;
  * `complete` or `failed`. Every route here runs the full device-auth chain, so
  * a terminal can only ever speak about a request addressed to itself.
  *
- * No template crosses this boundary. The device is told which slot to write and
- * reports back which slot it wrote; the fingerprint itself never leaves the
- * sensor's flash.
+ * The device is told which slot to write and reports back which slot it wrote.
+ *
+ * It now also reports back the template itself, which it deliberately did not
+ * before. A template that lives only in one sensor's flash makes its teacher a
+ * stranger to every other classroom, and there was no fix for that short of
+ * walking them round the building. The upload is what lets FingerprintSyncService
+ * put the same finger on every terminal.
+ *
+ * That is a real change in exposure and it is documented as one — see migration
+ * 018 and docs/SECURITY.md. The field is optional, so a terminal on older
+ * firmware still enrols successfully; its teacher simply stays local to that
+ * sensor.
  */
 final class FingerprintEnrollmentApiController extends Controller
 {
@@ -95,8 +104,13 @@ final class FingerprintEnrollmentApiController extends Controller
             'sensor_template_id' => 'required|int|between:1,999',
             'quality_score'      => 'nullable|int|between:0,255',
             'sample_count'       => 'nullable|int|between:0,10',
+            // The template the sensor handed back, base64. Optional: a
+            // terminal on older firmware sends nothing and the enrolment still
+            // stands, it just cannot be copied to the other rooms.
+            'template'           => 'nullable|string|max:4096',
         ], [
             'sensor_template_id' => 'Sensor slot',
+            'template'           => 'Template',
         ]);
 
         $result = FingerprintEnrollmentService::complete(
@@ -104,7 +118,8 @@ final class FingerprintEnrollmentApiController extends Controller
             (int) $device['id'],
             (int) $data['sensor_template_id'],
             isset($data['quality_score']) ? (int) $data['quality_score'] : null,
-            (int) ($data['sample_count'] ?? 0)
+            (int) ($data['sample_count'] ?? 0),
+            (string) ($data['template'] ?? '')
         );
 
         return $this->json([

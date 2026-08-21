@@ -16,8 +16,9 @@ use App\Services\TeacherService;
  * Fingerprint enrolment management.
  *
  * The capture itself happens on the R307 attached to a terminal; this
- * controller records the resulting sensor slot and its owner. No biometric
- * template is transmitted to or stored by the server.
+ * controller records the resulting sensor slot and its owner, and since
+ * migration 018 the encrypted template as well, so one enrolment can be copied
+ * to every terminal the teacher teaches at.
  */
 final class FingerprintController extends Controller
 {
