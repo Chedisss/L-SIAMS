@@ -87,6 +87,11 @@
 #include <ArduinoJson.h>
 #include <esp_system.h>
 #include <esp_attr.h>
+#if defined(__has_include)
+#  if __has_include(<esp_mac.h>)
+#    include <esp_mac.h>          /* esp_read_mac moved here in core 3.x */
+#  endif
+#endif
 #include <time.h>
 #include <sys/time.h>
 #include "mbedtls/md.h"
@@ -246,6 +251,28 @@ static String randomHex(size_t bytes) {
   return out;
 }
 
+/* The board's own MAC, straight out of eFuse.
+ *
+ * NOT WiFi.macAddress(). That reads through the Wi-Fi driver, and WiFi.mode()
+ * only *requests* the mode change — the driver comes up a moment later. Read
+ * it too soon and you get 00:00:00:00:00:00, which is not an error anybody
+ * would recognise as a timing problem: it looks like a dead board, and it is
+ * the value you would then type into the Devices page.
+ *
+ * esp_read_mac() reads the factory value out of eFuse. No driver, no radio, no
+ * network, no waiting — and it is the same address the STA interface ends up
+ * using, so what is registered matches what the claim later presents. */
+static String boardMac() {
+  uint8_t mac[6] = { 0, 0, 0, 0, 0, 0 };
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+  char buf[18];
+  snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+  return String(buf);
+}
+
 static String sha256Hex(const String &message) {
   uint8_t digest[32];
   mbedtls_md_context_t ctx;
@@ -399,7 +426,7 @@ static bool claimDevice() {
   LsJson body;
   body["claim_token"] = CLAIM_TOKEN;
   body["device_id"]   = DEVICE_ID;
-  body["mac_address"] = WiFi.macAddress();
+  body["mac_address"] = boardMac();
 
   LsJson response;
   int    status = unsignedPost("/api/device/claim", jsonToString(body), &response);
@@ -424,7 +451,7 @@ static bool claimDevice() {
   if (strcmp(code, "CLAIM_IDENTITY_MISMATCH") == 0) {
     Serial.println("       The MAC registered on the server is not this board's.");
     Serial.printf("       This board is %s — correct it on the Devices page.\n",
-                  WiFi.macAddress().c_str());
+                  boardMac().c_str());
   }
   if (status < 0) {
     Serial.println("       The server could not be reached at all. Check that start.bat is");
@@ -1312,12 +1339,26 @@ void setup() {
    * which means the MAC has to be printed before it, or there is no way to
    * read it off this sketch at all.
    *
-   * WiFi.macAddress() answers as soon as the radio is in station mode. No
-   * network, no credentials, no connection needed. */
-  WiFi.mode(WIFI_STA);
+   * boardMac() reads it out of eFuse, so it needs no radio, no network and no
+   * credentials — and cannot return zeros because the driver was still
+   * starting. */
+  String mac = boardMac();
+
   Serial.print("MAC:   ");
-  Serial.println(WiFi.macAddress());
-  Serial.println("       Register this terminal with that MAC on the Devices page.");
+  Serial.println(mac);
+
+  /* Belt and braces. eFuse should never read back as zeros, but printing
+   * 00:00:00:00:00:00 as though it were an address is worse than saying so —
+   * that value looks plausible enough to type into the Devices page, and the
+   * claim would then be refused for a reason that points nowhere near here. */
+  if (mac == "00:00:00:00:00:00") {
+    Serial.println("       ^ that is not a real address. The MAC could not be read from");
+    Serial.println("       eFuse, which on a genuine ESP32 should not happen — suspect a");
+    Serial.println("       clone or a damaged module before registering anything.");
+  } else {
+    Serial.println("       Register this terminal with that MAC on the Devices page.");
+  }
+
   Serial.println();
 
   if (!checkConfig()) return;
@@ -1341,6 +1382,7 @@ void setup() {
   }
 
   Serial.printf("Wi-Fi: connecting to %s", WIFI_SSID);
+  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   uint32_t started = millis();
