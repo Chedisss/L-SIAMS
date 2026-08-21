@@ -20,5 +20,5 @@ int mbedtls_md_finish(mbedtls_md_context_t*,unsigned char*){return 0;}
 int mbedtls_md_hmac_starts(mbedtls_md_context_t*,const unsigned char*,size_t){return 0;}
 int mbedtls_md_hmac_update(mbedtls_md_context_t*,const unsigned char*,size_t){return 0;}
 int mbedtls_md_hmac_finish(mbedtls_md_context_t*,unsigned char*){return 0;}
-#include "../../L_SIAMS_Terminal/L_SIAMS_Terminal.ino"
+#include "../../L_SIAMS_Bench/L_SIAMS_Bench.ino"
 int main(){ setup(); loop(); return 0; }

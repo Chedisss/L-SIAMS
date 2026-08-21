@@ -146,6 +146,32 @@ echo   themselves will be replaced by the official version.
 echo   Your .env, photos, reports and backups are untouched.
 echo.
 
+REM ------------------------------------------------- terminal credentials ---
+REM The Arduino sketch is a tracked file, so the reset below replaces it with
+REM the official version - and with it the Wi-Fi password, API key and HMAC
+REM secret typed into the top of it. That loss used to be silent, and it
+REM presented as a terminal that worked yesterday and cannot find the network
+REM today, which is a long way from "I ran the updater".
+REM
+REM Saved rather than merged: picking the seven values back out of a file is a
+REM ten-second job a person can verify, whereas a script splicing them into
+REM someone else's C would be a guess with no way to check it.
+set "SKETCH=firmware\L_SIAMS_Bench\L_SIAMS_Bench.ino"
+if exist "%SKETCH%" (
+    "%GIT%" diff --quiet -- "%SKETCH%"
+    if errorlevel 1 (
+        copy /y "%SKETCH%" "%SKETCH%.your-copy" >nul
+        echo   [!] Your terminal sketch had edits - almost certainly your Wi-Fi
+        echo       and provisioning values. They were saved as:
+        echo.
+        echo         %SKETCH%.your-copy
+        echo.
+        echo       Paste the seven values back into the new sketch after this,
+        echo       or keep them in a secrets.h so future updates leave them be.
+        echo.
+    )
+)
+
 "%GIT%" reset -q --hard origin/%BRANCH%
 if errorlevel 1 goto :gitfailed
 

@@ -1,14 +1,13 @@
 # Firmware
 
-**Flash `L_SIAMS_Terminal`.** It is the only sketch here, and it runs a whole
+**Flash `L_SIAMS_Bench`.** It is the only sketch here, and it runs a whole
 classroom: a teacher's finger opens the attendance session, a student's card
 records against it, and the server decides every outcome.
 
 ```
 firmware/
-  L_SIAMS_Terminal/       the sketch — flash this
-    L_SIAMS_Terminal.ino
-    secrets.h.example     copy to secrets.h and fill in
+  L_SIAMS_Bench/
+    L_SIAMS_Bench.ino     one file — edit the seven values at the top
   tools/syntax-check/     type-check it without an ESP32
 ```
 
@@ -69,25 +68,29 @@ Board: **ESP32 Dev Module**. Serial Monitor: **115200**.
 
 ### Before flashing
 
-Copy `secrets.h.example` to `secrets.h` in the same folder and fill it in — your
-Wi-Fi name and password, the server's LAN address with its port, and the four
-values from the provisioning JSON you downloaded at **Devices → Register
-terminal**.
+Open `L_SIAMS_Bench.ino` and edit the seven values at the top — your Wi-Fi name
+and password, the server's LAN address with its port, and the four from the
+provisioning JSON you downloaded at **Devices → Register Device**. The block
+says where each one comes from.
 
-```
-cd firmware\L_SIAMS_Terminal
-copy secrets.h.example secrets.h
-```
-
-**Put them in `secrets.h`, not in the `.ino`.** `secrets.h` is gitignored;
-the sketch is not, and `update.bat` updates by replacing every tracked file. A
-key typed into the sketch survives until the next update and then silently
-reverts to the placeholder — which presents as a terminal that worked yesterday
-and cannot find the Wi-Fi today.
+`LS_SERVER_URL` is the one that catches people. It must be the PC's LAN
+address, the one `start.bat` prints, like `http://192.168.1.14:8080`. Never
+`localhost` — to the ESP32 that means the ESP32, so the request never leaves
+the board.
 
 The sketch refuses to start with placeholders still in place and names the one
 that is unset, rather than failing later in a way that looks like a network
 fault.
+
+> **`update.bat` replaces this file.** It is tracked, so an update overwrites
+> your seven values with the placeholders. `update.bat` now saves a copy first,
+> as `L_SIAMS_Bench.ino.your-copy`, and tells you — but you still have to paste
+> them back.
+>
+> To stop that happening at all, put the same seven `#define` lines in a file
+> called `secrets.h` beside the sketch. It is gitignored, so updates leave it
+> alone, and anything in it wins over the block in the sketch. Optional, and
+> worth doing once you stop changing them.
 
 ### Serial console
 
