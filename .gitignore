@@ -16,6 +16,8 @@
 node_modules/
 
 # Terminal credentials. The sketch is tracked and update.bat replaces every
-# tracked file, so the API key and Wi-Fi password live beside it in a file
-# that is not — see firmware/L_SIAMS_Terminal/secrets.h.example.
+# tracked file, so both of these have to be invisible to git or the update
+# would eat them: the optional secrets.h, and the copy update.bat saves of a
+# sketch you had edited.
 /firmware/*/secrets.h
+/firmware/*/*.ino.your-copy

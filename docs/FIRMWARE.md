@@ -7,7 +7,7 @@ whether a student is late, or whether attendance should be recorded at all.
 Those are server decisions, so a terminal with a wrong clock or modified
 firmware cannot manufacture a status.
 
-> **Which sketch:** `firmware/L_SIAMS_Terminal`. The other directories under
+> **Which sketch:** `firmware/L_SIAMS_Bench`. The other directories under
 > `firmware/` are diagnostics for when the terminal will not behave, and
 > Deleted sketches: the OLED terminal and the three diagnostics are gone as of
 > the rewrite; see
@@ -172,7 +172,7 @@ terminal. The same rule applies: that download is the only copy.
 
 ### Step 2 — put the values into `secrets.h`
 
-Copy `firmware/L_SIAMS_Terminal/secrets.h.example` to `secrets.h` beside it and
+Copy `firmware/L_SIAMS_Bench/L_SIAMS_Bench.ino` to `secrets.h` beside it and
 fill that in. Four values come from the provisioning JSON, three are your
 network and server:
 
@@ -211,8 +211,8 @@ reports nothing, and shows as Offline with no error anywhere.
 ### Step 3 — flash
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32 firmware/L_SIAMS_Terminal
-arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/ttyUSB0 firmware/L_SIAMS_Terminal
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware/L_SIAMS_Bench
+arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/ttyUSB0 firmware/L_SIAMS_Bench
 ```
 
 Or open the sketch in the IDE and press Upload.

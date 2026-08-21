@@ -386,7 +386,7 @@ sudo chmod 600 server.key ca.key
 sudo chown root:root /etc/ssl/lsiams/*
 ```
 
-Copy `ca.crt` into `firmware/L_SIAMS_Terminal/` and reference it from
+Copy `ca.crt` into `firmware/L_SIAMS_Bench/` and reference it from
 `config.h` so the terminals validate the server rather than trusting whatever
 answers. A terminal configured to skip validation would accept any device on the
 LAN claiming to be the server.
