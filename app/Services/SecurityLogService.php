@@ -60,6 +60,11 @@ final class SecurityLogService
     // scan is a control that did not run, and controls that did not run belong
     // where somebody reviews them rather than only in the audit trail among
     // the routine record edits.
+    // A scan matched a slot number that is enrolled on a DIFFERENT terminal.
+    // Slot numbers are per-sensor, so this is never a valid identification —
+    // it is a stale template, a reflashed sensor, or a deleted enrolment row.
+    public const FINGERPRINT_SLOT_CROSS_DEVICE       = 'FINGERPRINT_SLOT_CROSS_DEVICE';
+
     public const BIOMETRIC_OVERRIDE_USED             = 'BIOMETRIC_OVERRIDE_USED';
     public const BIOMETRIC_OVERRIDE_REFUSED          = 'BIOMETRIC_OVERRIDE_REFUSED';
 
