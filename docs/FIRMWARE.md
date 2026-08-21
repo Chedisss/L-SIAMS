@@ -9,7 +9,8 @@ firmware cannot manufacture a status.
 
 > **Which sketch:** `firmware/L_SIAMS_Terminal`. The other directories under
 > `firmware/` are diagnostics for when the terminal will not behave, and
-> `firmware/reference/` is not for flashing at all. See
+> Deleted sketches: the OLED terminal and the three diagnostics are gone as of
+> the rewrite; see
 > [`firmware/README.md`](../firmware/README.md).
 
 ---
@@ -156,7 +157,9 @@ Serial Monitor: **115200**.
 Devices → **Register terminal**. Enter the name, MAC address and classroom.
 
 The MAC has to be the board's own. If the terminal cannot join Wi-Fi yet and so
-never prints it, flash `firmware/L_SIAMS_WhoAmI` — it reads the MAC out of the
+never prints it, read the MAC off the sticker on the board, or watch the
+serial log — the terminal prints it as soon as it joins the Wi-Fi, on the line
+after the IP. It reads the MAC out of the
 radio without connecting to anything.
 
 The response carries the device id, API key, HMAC secret and a single-use claim
@@ -238,7 +241,7 @@ API key from the web interface if a terminal goes missing.
 
 ## 4. State machine
 
-> **This section describes `firmware/reference/L_SIAMS_Terminal_OLED`, not the
+> **This section describes the deleted OLED terminal, not the
 > shipping terminal.** The shipping sketch has no display and no explicit state
 > machine — it claims, syncs its clock, then polls in one loop. The states below
 > are the design the display build was written against, and the vocabulary the
@@ -414,7 +417,8 @@ queued tap, where it is the only record of when the tap actually happened.
 > down is refused at the terminal and **not recorded**. On a stable LAN that is
 > a fair trade for a sketch small enough to read in one sitting; before a
 > terminal runs unattended in a school, this is the gap to close. The
-> implementation below exists in `firmware/reference/L_SIAMS_Terminal_OLED`,
+> implementation below was in the deleted OLED terminal (recoverable from git
+> history if it is ever wanted),
 > written against an older server API — read it before writing the queue again.
 
 When a request fails, the reference terminal enters `OFFLINE` and queues taps in NVS. Each
