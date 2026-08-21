@@ -173,18 +173,25 @@ terminal. The same rule applies: that download is the only copy.
 ### Step 2 — put the values into `secrets.h`
 
 Copy `firmware/L_SIAMS_Bench/L_SIAMS_Bench.ino` to `secrets.h` beside it and
-fill that in. Four values come from the provisioning JSON, three are your
-network and server:
+edit the seven values at the top. Four come from the provisioning JSON, three
+are your network and server:
 
 ```cpp
-#define LS_WIFI_SSID    "YOUR_WIFI_NAME"
-#define LS_WIFI_PASS    "YOUR_WIFI_PASSWORD"
-#define LS_SERVER_URL   "http://192.168.0.100:8080"
-#define LS_DEVICE_ID    "DEV-2026-0001"
-#define LS_API_KEY      "lsk_xxxxxxxx.yyyyyyyy"
-#define LS_HMAC_SECRET  "zzzzzzzzzzzzzzzz"
+#define LS_WIFI_SSID    "StaffRoom-2G"
+#define LS_WIFI_PASS    "your wifi password"
+#define LS_SERVER_URL   "http://192.168.1.14:8080"
+#define LS_DEVICE_ID    "DEV-2026-0007"
+#define LS_API_KEY      "lsk_7Kq2mN4p.Xr9vB2eLd5..."
+#define LS_HMAC_SECRET  "a41f...
 #define LS_CLAIM_TOKEN  "…"
 ```
+
+> The shipped values all read `PASTE_SOMETHING`, and that is deliberate. An
+> earlier version used realistic examples, and one of them was not an example:
+> the server issues `DEV-{year}-0001` to the first terminal registered, so
+> `DEV-2026-0001` was simultaneously the placeholder and a real device id. A
+> correctly configured board was told its device id was still a placeholder.
+> A value nobody would legitimately hold cannot collide.
 
 > **Not into the `.ino`.** `secrets.h` is gitignored; the sketch is tracked, and
 > `update.bat` updates by `git reset --hard`, which replaces every tracked file
