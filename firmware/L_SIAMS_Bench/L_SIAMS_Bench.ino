@@ -410,7 +410,41 @@ static bool syncClockFromServer() {
   int    status = signedRequest("GET", "/api/device/time", "", &response);
 
   if (status != 200) {
-    Serial.printf("Clock: server refused the time request (HTTP %d)\n", status);
+    const char *code = response["code"] | "";
+
+    Serial.printf("Clock: server refused the time request (HTTP %d, %s)\n",
+                  status, strlen(code) ? code : "no code");
+    Serial.printf("       %s\n", (const char *) (response["message"] | ""));
+
+    /* 401 here means the signature chain failed, and it fails for five
+     * distinct reasons with five different fixes. Printing only "HTTP 401"
+     * threw all of that away and left somebody guessing between a wrong key,
+     * a wrong secret and an unregistered board. */
+    if (status == 401) {
+      if (strcmp(code, "DEVICE_UNKNOWN") == 0) {
+        Serial.println("       The server has no device with this LS_DEVICE_ID, or it was");
+        Serial.println("       archived. Check the id against the Devices page.");
+      } else if (strcmp(code, "API_KEY_INVALID") == 0) {
+        Serial.println("       The key was rejected. The usual cause is downloading the");
+        Serial.println("       provisioning file more than once: EVERY download issues a new");
+        Serial.println("       key and revokes the previous one, so an older copy stops");
+        Serial.println("       working the moment you download again.");
+        Serial.println("       Download once more, then use ONLY that file — all four values");
+        Serial.println("       together, not mixed with an earlier one.");
+      } else if (strcmp(code, "SIGNATURE_INVALID") == 0) {
+        Serial.println("       The key was accepted but the signature did not match, so");
+        Serial.println("       LS_HMAC_SECRET is from a different provisioning file than");
+        Serial.println("       LS_API_KEY. Take all four values from one download.");
+      } else {
+        Serial.println("       Check LS_DEVICE_ID, LS_API_KEY and LS_HMAC_SECRET all came");
+        Serial.println("       from the SAME provisioning download — mixing two is the");
+        Serial.println("       commonest cause.");
+      }
+
+      Serial.println("       Using two boards? Each needs its own registration and its own");
+      Serial.println("       file; one board's credentials will not work on the other.");
+    }
+
     return false;
   }
 
@@ -450,7 +484,7 @@ static bool claimDevice() {
    * they are told apart here rather than left to be guessed. */
   if (strcmp(code, "CLAIM_TOKEN_USED") == 0) {
     Serial.println("       This token was already spent — the board is claimed.");
-    Serial.println("       Blank LS_CLAIM_TOKEN in secrets.h and re-flash.");
+    Serial.println("       Blank LS_CLAIM_TOKEN at the top of this sketch and re-flash.");
     return true;
   }
   if (strcmp(code, "CLAIM_IDENTITY_MISMATCH") == 0) {
