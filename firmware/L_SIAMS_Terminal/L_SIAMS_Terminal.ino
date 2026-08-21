@@ -34,8 +34,13 @@
  *      GND    -> GND
  *
  * Wiring — AS608 fingerprint (UART2, 57600):
- *      TX  -> GPIO 16  (silkscreen RX2)   sensor transmits, ESP32 receives
- *      RX  -> GPIO 17  (silkscreen TX2)   ESP32 transmits, sensor receives
+ *      TX  -> GPIO 17   sensor transmits, ESP32 receives  (PIN_FINGER_RX)
+ *      RX  -> GPIO 16   ESP32 transmits, sensor receives  (PIN_FINGER_TX)
+ *
+ *      Note this is the REVERSE of the silkscreen: RX2 is printed on 16 and
+ *      TX2 on 17. UART2 is not fixed to those pins in either direction, and
+ *      the pair below is the one proven working on this hardware. Follow the
+ *      #defines, not the silkscreen.
  *      VCC -> 3V3  (3.3 V — a bare AS608 has NO regulator; 5 V destroys it)
  *      GND -> GND
  *
@@ -226,9 +231,32 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
  * output, which 34-39 cannot.
  *
  * Change the two numbers and nothing else; the port is opened with whatever
- * they say. */
-#define PIN_FINGER_RX      16      /* silkscreen RX2 — sensor TX lands here */
-#define PIN_FINGER_TX      17      /* silkscreen TX2 — sensor RX lands here */
+ * they say.
+ *
+ * These are the pair proven on the bench sketch that finally read a finger,
+ * and they are the REVERSE of the silkscreen convention. UART2 is not fixed
+ * to 16 and 17 in either direction — the ESP32 routes any pin to any UART
+ * signal — so the only thing that decides which is which is the wiring on the
+ * board in front of you.
+ *
+ * The order matters and is easy to get backwards, because it is not the order
+ * the names suggest:
+ *
+ *      fingerSerial.begin(baud, SERIAL_8N1, rxPin, txPin)
+ *                                           ^^^^^  ^^^^^
+ *                                    PIN_FINGER_RX is where the ESP32
+ *                                    LISTENS, so the SENSOR'S TX wire goes
+ *                                    there. PIN_FINGER_TX is where the ESP32
+ *                                    SPEAKS, so the sensor's RX wire goes
+ *                                    there.
+ *
+ * Wired the other way round both ends transmit, neither listens, and the
+ * sensor simply never answers — no error, nothing in any log. That is what
+ * this sketch did for days: it was configured 16/17 while the board was wired
+ * 17/16, so verifyPassword() failed on the configured pins every time and only
+ * findFingerprintSensor() below ever got a reply. */
+#define PIN_FINGER_RX      17      /* ESP32 listens here — SENSOR TX wire */
+#define PIN_FINGER_TX      16      /* ESP32 speaks here  — SENSOR RX wire */
 #define FINGERPRINT_BAUD   57600
 
 #define CARD_DEBOUNCE_MS       2500
@@ -1854,6 +1882,17 @@ void setup() {
     fingerReady = true;
     Serial.printf("Sensor: found — %d template(s) enrolled on this sensor\n",
                   finger.templateCount);
+
+    /* Capacity is worth one line because it is the number the server's slot
+     * allocation has to respect, and it is not the same on every module sold
+     * as an AS608 — 127, 162 and 1000 all exist. Reading it back also proves
+     * the link is good in both directions: verifyPassword() only shows the
+     * sensor answering, while this shows it answering with its own data. */
+    if (finger.getParameters() == FINGERPRINT_OK) {
+      Serial.printf("        capacity %u templates, security level %u\n",
+                    finger.capacity, finger.security_level);
+    }
+
     Serial.println("       console: type count, slots or wipe into the Serial Monitor");
     if (finger.templateCount == 0) {
       Serial.println("  none enrolled yet — that is fine. Open Fingerprints in");
