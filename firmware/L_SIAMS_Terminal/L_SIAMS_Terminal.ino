@@ -1796,8 +1796,16 @@ static void sendTap(const String &uid) {
   int status = signedRequest("POST", "/api/attendance/tap", body, &response, requestId);
 
   /* One retry after a clock correction. A device powered off for a while
-   * drifts, and re-reading the epoch is cheaper than failing a real tap. */
-  if (response["code"] == "TIMESTAMP_EXPIRED") {
+   * drifts, and re-reading the epoch is cheaper than failing a real tap.
+   *
+   * Pulled out to a const char* and compared with strcmp, like every other
+   * code check in this file. ArduinoJson does define == against a string
+   * literal, so the shorter form worked — but it was the one place here that
+   * relied on that operator existing, and it reads as a pointer comparison to
+   * anybody scanning the file. */
+  const char *tapCode = response["code"] | "";
+
+  if (strcmp(tapCode, "TIMESTAMP_EXPIRED") == 0) {
     Serial.println("  timestamp rejected — resyncing clock and retrying");
     if (syncClockFromServer()) {
       status = signedRequest("POST", "/api/attendance/tap", body, &response, requestId);
