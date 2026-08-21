@@ -1155,6 +1155,10 @@ static bool checkConfig() {
     Serial.println("  JSON you downloaded when you registered this terminal on the Devices");
     Serial.println("  page, plus your Wi-Fi and the server's LAN address.");
     Serial.println();
+    Serial.println("  Not registered yet? The MAC printed above is what the Devices page");
+    Serial.println("  asks for. Register with it, download the provisioning file, and come");
+    Serial.println("  back here.");
+    Serial.println();
     Serial.println("  LS_SERVER_URL must be the PC's LAN address with the port, such as");
     Serial.println("  http://192.168.1.14:8080 — never localhost, which to this board");
     Serial.println("  means this board.");
@@ -1300,6 +1304,22 @@ void setup() {
 
   reportBoot();
 
+  /* The MAC, before anything can stop the sketch.
+   *
+   * Registering this terminal on the Devices page asks for its MAC, and the
+   * provisioning JSON that registration produces is what fills in the values
+   * below. So a board fresh out of the box cannot get past checkConfig() —
+   * which means the MAC has to be printed before it, or there is no way to
+   * read it off this sketch at all.
+   *
+   * WiFi.macAddress() answers as soon as the radio is in station mode. No
+   * network, no credentials, no connection needed. */
+  WiFi.mode(WIFI_STA);
+  Serial.print("MAC:   ");
+  Serial.println(WiFi.macAddress());
+  Serial.println("       Register this terminal with that MAC on the Devices page.");
+  Serial.println();
+
   if (!checkConfig()) return;
 
   startRfid();
@@ -1321,7 +1341,6 @@ void setup() {
   }
 
   Serial.printf("Wi-Fi: connecting to %s", WIFI_SSID);
-  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   uint32_t started = millis();
@@ -1339,8 +1358,6 @@ void setup() {
 
   Serial.print("Wi-Fi: connected, IP ");
   Serial.println(WiFi.localIP());
-  Serial.print("       this board's MAC: ");
-  Serial.println(WiFi.macAddress());
   Serial.printf("       server: %s\n", SERVER_URL);
 
   checkSubnet();

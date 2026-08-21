@@ -66,6 +66,20 @@ By the exact name Library Manager shows:
 
 Board: **ESP32 Dev Module**. Serial Monitor: **115200**.
 
+### Finding the board's MAC
+
+Registering the terminal asks for it. Flash the sketch as it is — placeholders
+and all — and open the Serial Monitor at 115200. The MAC is the second line,
+printed before the sketch checks anything:
+
+```
+L-SIAMS classroom terminal
+MAC:   A0:B7:65:12:34:56
+       Register this terminal with that MAC on the Devices page.
+```
+
+It comes off the radio, so it needs no Wi-Fi, no credentials and no wiring.
+
 ### Before flashing
 
 Open `L_SIAMS_Bench.ino` and edit the seven values at the top — your Wi-Fi name
