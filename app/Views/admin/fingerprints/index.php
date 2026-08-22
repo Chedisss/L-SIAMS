@@ -361,7 +361,22 @@ $__view->start('scripts');
         const stillWaiting = !data.finished && data.stage === 'waiting_for_device';
         const silent = data.terminal_silent_for;
 
-        if (stillWaiting && data.terminal_health !== 'online') {
+        /* The case that used to fall between the two: online and useless.
+           A terminal whose fingerprint sensor did not answer at boot still
+           joins the network, still claims its key, still heartbeats every
+           thirty seconds — so it is online by every measure, and the warning
+           below it stayed hidden while this request was never picked up.
+           Checked first, because it is true even when liveness looks fine. */
+        if (stillWaiting && data.terminal_sensor_ok === false) {
+            document.getElementById('scan-terminal-warning-text').textContent =
+                data.device_id + ' is online, but its fingerprint sensor did not respond '
+                + 'when the terminal started up, so it cannot pick this request up. '
+                + 'Check the sensor wiring — TX to GPIO 16, RX to GPIO 17, and VCC on 3.3 V '
+                + 'for a bare AS608 or VIN for an R307 — then reset the board. Its Serial '
+                + 'Monitor prints the fault at every boot.';
+
+            warning.classList.remove('hidden');
+        } else if (stillWaiting && data.terminal_health !== 'online') {
             document.getElementById('scan-terminal-warning-text').textContent =
                 silent === null || silent === undefined
                     ? data.device_id + ' has never reported in, so nothing is listening for '

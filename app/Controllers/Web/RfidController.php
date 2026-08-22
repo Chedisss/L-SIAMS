@@ -190,8 +190,15 @@ final class RfidController extends Controller
         // "Waiting for the terminal" reads the same whether the reader is about
         // to answer or has been unplugged since Tuesday, so the terminal's
         // liveness travels with the status.
+        // Liveness alone was not enough. A terminal whose card reader did not
+        // answer at boot heartbeats perfectly and reads "online" here, while
+        // never picking this request up — so the reader's own verdict travels
+        // with it. NULL means firmware too old to report, not a fault.
         $terminal = Database::instance()->selectOne(
-            'SELECT health, seconds_since_heartbeat FROM v_device_status WHERE device_row_id = :id',
+            'SELECT v.health, v.seconds_since_heartbeat, d.rfid_ok
+               FROM v_device_status v
+               JOIN devices d ON d.id = v.device_row_id
+              WHERE v.device_row_id = :id',
             ['id' => (int) $enrolment['device_row_id']]
         );
 
@@ -214,6 +221,9 @@ final class RfidController extends Controller
             'terminal_silent_for' => $terminal === null || $terminal['seconds_since_heartbeat'] === null
                 ? null
                 : (int) $terminal['seconds_since_heartbeat'],
+            'terminal_reader_ok'  => $terminal === null || $terminal['rfid_ok'] === null
+                ? null
+                : (bool) $terminal['rfid_ok'],
         ];
     }
 
