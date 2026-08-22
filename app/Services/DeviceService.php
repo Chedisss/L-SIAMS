@@ -450,6 +450,14 @@ final class DeviceService
             'schema_version'  => '1.0',
             'device_id'       => (string) $device['device_id'],
             'device_name'     => (string) $device['device_name'],
+            // The MAC this device was registered with. The claim is refused
+            // unless the board presents exactly this, and a board can only
+            // present its own — so a typo here, or one provisioning file
+            // flashed onto two boards, produces CLAIM_IDENTITY_MISMATCH and a
+            // terminal that stays Offline for a reason nothing on the board
+            // could state. Carrying it in the file lets the firmware compare
+            // the two and name the difference instead of guessing.
+            'mac_address'     => (string) $device['mac_address'],
             'classroom_id'    => $device['classroom_id'] === null ? null : (int) $device['classroom_id'],
             'classroom_name'  => $device['room_number'] === null ? null : 'Room ' . $device['room_number'],
             'device_role'     => (string) $device['device_role'],

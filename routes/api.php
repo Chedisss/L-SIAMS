@@ -72,6 +72,14 @@ $router->get('/api/health', static function (): Response {
     return Response::ok([
         'status'      => 'ok',
         'server_time' => Clock::atom(),
+        // Unix seconds as well as the ISO string, because this is the only
+        // endpoint a terminal can reach before it can sign anything, and every
+        // signed request is refused if its clock is more than 30 s out. An
+        // ESP32 wakes with no clock at all. Parsing ISO-8601 on the board to
+        // recover a number the server already has is a step that can go wrong
+        // for no benefit, and /api/device/time — the documented cure for
+        // drift — sits behind the very freshness check a drifted board fails.
+        'server_epoch' => Clock::timestamp(),
     ], 'L-SIAMS is running.');
 }, ['security-headers', 'network-allowlist']);
 
