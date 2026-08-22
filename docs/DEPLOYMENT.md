@@ -118,41 +118,76 @@ CREATE DATABASE lsiams_db
 CREATE USER 'lsiams_app'@'localhost'
   IDENTIFIED BY '<a long random password>';
 
-GRANT SELECT, INSERT, UPDATE, DELETE
-  ON lsiams_db.* TO 'lsiams_app'@'localhost';
+-- Database-wide, this user only reads and appends. UPDATE and DELETE are
+-- granted per table in the next step, to the tables that may legitimately be
+-- changed. Granting them here instead would make the immutable tables
+-- unprotectable — see the note below.
+GRANT SELECT, INSERT ON lsiams_db.* TO 'lsiams_app'@'localhost';
 
 FLUSH PRIVILEGES;
 ```
 
-### Then take the write privileges away from the immutable tables
+### Then grant writes only to the tables that may change
 
 This is the third layer of the immutability guarantee, and the only one an
-attacker holding the application's own credentials cannot get around. Apply it
-**after** running the migrations, because migrations need DDL rights that this
-user must not keep:
+attacker holding the application's own credentials cannot get around.
+
+> **This cannot be done with REVOKE, and trying is worse than not trying.**
+> MySQL and MariaDB will not revoke a table-level privilege that was granted at
+> the database level: `GRANT ... ON lsiams_db.*` followed by
+> `REVOKE ... ON lsiams_db.audit_logs` fails with
+> `ERROR 1147 (42000): There is no such grant defined for user 'lsiams_app' on
+> host 'localhost' on table 'audit_logs'`. An administrator who runs a revoke
+> script and does not read every line of its output ends up believing this
+> layer is in place when the application still holds UPDATE and DELETE on every
+> table. Grant the narrow privilege instead of trying to take the broad one
+> back.
+
+The previous step granted only `SELECT` and `INSERT` across the database. Now
+add `UPDATE` and `DELETE` to the tables that may legitimately be changed,
+leaving the immutable ones with nothing but read and append. Run this
+**after** the migrations, because migrations need DDL rights this user must not
+keep:
 
 ```sql
--- These three are append-only. The application reads them and adds to them;
--- it has no legitimate reason to change or remove a row, so it cannot.
-REVOKE UPDATE, DELETE ON lsiams_db.audit_logs    FROM 'lsiams_app'@'localhost';
-REVOKE UPDATE, DELETE ON lsiams_db.security_logs FROM 'lsiams_app'@'localhost';
-REVOKE UPDATE, DELETE ON lsiams_db.login_history FROM 'lsiams_app'@'localhost';
-
--- Attendance rows are never deleted. They *are* updated — see below.
-REVOKE DELETE ON lsiams_db.attendance_records FROM 'lsiams_app'@'localhost';
-REVOKE DELETE ON lsiams_db.rfid_logs          FROM 'lsiams_app'@'localhost';
-REVOKE DELETE ON lsiams_db.fingerprint_logs   FROM 'lsiams_app'@'localhost';
-REVOKE DELETE ON lsiams_db.attendance_modifications FROM 'lsiams_app'@'localhost';
-
-FLUSH PRIVILEGES;
+-- Generates the grants: every table except the three append-only logs gets
+-- UPDATE; every table except those three and the four attendance-history
+-- tables also gets DELETE. Run the output, then FLUSH PRIVILEGES.
+SELECT CONCAT('GRANT UPDATE',
+       IF(table_name IN ('attendance_records','rfid_logs',
+                         'fingerprint_logs','attendance_modifications'),
+          '', ', DELETE'),
+       ' ON `lsiams_db`.`', table_name, '` TO ''lsiams_app''@''localhost'';')
+  FROM information_schema.tables
+ WHERE table_schema = 'lsiams_db'
+   AND table_type   = 'BASE TABLE'
+   AND table_name NOT IN ('audit_logs', 'security_logs', 'login_history')
+ ORDER BY table_name;
 ```
 
-> **Do not revoke UPDATE on `attendance_records`.** Unlike the log tables, an
+Generating the list matters: a new migration that adds a table adds it with no
+UPDATE or DELETE grant, and the feature that needs it fails with `ERROR 1142`
+until this is re-run. That is the safe direction to fail in, but it is only
+obvious if you know to expect it — re-run this after every upgrade that adds a
+table.
+
+Verify it took, rather than assuming:
+
+```sql
+SHOW GRANTS FOR 'lsiams_app'@'localhost';
+```
+
+`lsiams_db.*` must show `SELECT, INSERT` and nothing more. If it still lists
+`UPDATE` or `DELETE`, the database-wide grant is still in place and none of the
+table-level grants below it are protecting anything.
+
+> **`attendance_records` keeps UPDATE, and must.** Unlike the log tables, an
 > attendance row is legitimately written twice: the tap-in creates it, and the
 > tap-out writes `time_out`, `duration_minutes`, `departure_status` and
 > `final_status` onto the same row. Session close does the same for automatic
 > time-outs, and an administrator correction may amend times and statuses.
-> Revoking UPDATE here would break tap-out entirely.
+> Withholding UPDATE here would break tap-out entirely — which is why the
+> generated grants above give it UPDATE and withhold only DELETE.
 >
 > What protects the row instead is the `trg_attendance_immutable_identity`
 > trigger, which rejects any UPDATE that changes the student, session, section,
@@ -164,7 +199,9 @@ FLUSH PRIVILEGES;
 > the administrator, the field, the old and new values and a mandatory reason —
 > a second trigger rejects a blank one.
 
-Run the migrations as a separate, more privileged user:
+Run the migrations **before** the grants above, and as a separate, more
+privileged user — migrations need DDL rights this application user must never
+hold:
 
 ```sql
 CREATE USER 'lsiams_migrate'@'localhost' IDENTIFIED BY '<another long password>';

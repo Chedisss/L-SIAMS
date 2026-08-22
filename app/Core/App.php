@@ -271,7 +271,13 @@ final class App
     {
         if ($e instanceof AuthenticationException || $e->status() === 401) {
             if ($request->wantsJson()) {
-                return Response::fail($e->errorCode(), $e->getMessage(), 401);
+                // Pass the context through. A 401 is not always a dead end: a
+                // TIMESTAMP_EXPIRED rejection carries the server's clock, which
+                // is the only way a terminal whose clock has drifted past the
+                // skew window can correct itself — /api/device/time sits behind
+                // this same check, so a drifted device cannot reach it. Dropping
+                // the context here left that terminal with no way back.
+                return Response::fail($e->errorCode(), $e->getMessage(), 401, $e->context());
             }
 
             $reason = $e->errorCode() === 'SESSION_EXPIRED' ? '?reason=idle_timeout' : '';

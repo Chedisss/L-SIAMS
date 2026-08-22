@@ -639,15 +639,28 @@ function commandDoctor(): void
         return;
     }
 
-    ensureMigrationsTable($db);
+    // Doctor only reads. Creating the table here would need DDL rights, and a
+    // correctly deployed system does not give the application any — the
+    // deployment guide hands migrations to a separate user and leaves
+    // lsiams_app with SELECT/INSERT/UPDATE/DELETE. Calling
+    // ensureMigrationsTable() would make the one command an administrator runs
+    // when something is wrong the one command that dies. Migration 006 creates
+    // the table anyway, so its absence is a diagnosis, not something to repair.
+    try {
+        $applied = array_column($db->select('SELECT migration FROM schema_migrations'), 'migration');
+    } catch (Throwable $e) {
+        $applied = null;
+        $check(false, 'Migration history readable', 'schema_migrations unreadable — run migrate');
+    }
 
-    $applied = array_column($db->select('SELECT migration FROM schema_migrations'), 'migration');
-    $pending = array_values(array_filter(
-        array_column(discoverMigrations(), 'name'),
-        static fn (string $name): bool => !in_array($name, $applied, true)
-    ));
+    if ($applied !== null) {
+        $pending = array_values(array_filter(
+            array_column(discoverMigrations(), 'name'),
+            static fn (string $name): bool => !in_array($name, $applied, true)
+        ));
 
-    $check($pending === [], 'All migrations applied', $pending === [] ? count($applied) . ' applied' : implode(', ', $pending));
+        $check($pending === [], 'All migrations applied', $pending === [] ? count($applied) . ' applied' : implode(', ', $pending));
+    }
 
     $counts = [
         'departments'  => "SELECT COUNT(*) FROM departments WHERE deleted_at IS NULL",

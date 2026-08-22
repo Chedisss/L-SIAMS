@@ -437,6 +437,39 @@ return static function (Database $db): void {
         ]);
     }
 
+    // A template is only usable where a sensor actually holds it. Verification
+    // reads fingerprint_slots — a slot number means nothing without the device
+    // that allocated it — so seeding fingerprint_templates alone leaves every
+    // demo teacher unable to open a session anywhere, which is precisely the
+    // thing the demo exists to show. Bind each teacher to every terminal, the
+    // state migration 018 describes: enrolled on the first, synced to the rest.
+    $fingerprints = $db->select(
+        'SELECT fingerprint_id, teacher_id, sensor_template_id FROM fingerprint_templates'
+    );
+
+    $deviceList = array_values($deviceRowIds);
+
+    foreach ($fingerprints as $fingerprint) {
+        foreach ($deviceList as $position => $deviceRowId) {
+            $db->insert('fingerprint_slots', [
+                'fingerprint_id'     => (int) $fingerprint['fingerprint_id'],
+                'device_row_id'      => $deviceRowId,
+                'sensor_template_id' => (int) $fingerprint['sensor_template_id'],
+                'source'             => $position === 0 ? 'enrolled' : 'synced',
+                'status'             => 'present',
+                'synced_at'          => $now,
+                'created_at'         => $now,
+                'updated_at'         => $now,
+            ]);
+        }
+
+        // The master row records where the finger was actually presented.
+        $db->execute(
+            'UPDATE fingerprint_templates SET enrolled_device_row_id = :device WHERE fingerprint_id = :id',
+            ['device' => $deviceList[0], 'id' => (int) $fingerprint['fingerprint_id']]
+        );
+    }
+
     // No API keys are seeded. A key can only be shown once, at creation, and a
     // seeder cannot show anything to anybody — a key written here would be a
     // credential nobody holds and nobody can use. Register the terminals from

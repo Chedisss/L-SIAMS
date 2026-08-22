@@ -260,7 +260,7 @@ retroactively reattributed — reports have to show where the student actually s
 
 ```bash
 php tests/concurrency/run.php              # all groups
-php tests/concurrency/run.php --group=race # one group
+php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
