@@ -549,11 +549,27 @@ static bool syncClockFromServer() {
     long offered = response["data"]["server_epoch"] | 0L;
 
     if (offered > 0) {
+      /* Measured BEFORE the clock is set. Reading it afterwards compares the
+       * server's time with itself and always reports no drift at all, which
+       * is how a board fifty-six years out printed "0 years adrift". */
+      long drift = offered - (long) time(nullptr);
+      if (drift < 0) drift = -drift;
+
       struct timeval seed = { .tv_sec = (time_t) offered, .tv_usec = 0 };
       settimeofday(&seed, nullptr);
 
-      Serial.printf("Clock: board was %ld years adrift; taking the server's time and retrying\n",
-                    (long) ((offered - (long) time(nullptr)) / 31557600L));
+      /* Years is the right unit for a board fresh from power-on, whose clock
+       * starts at 1970, and the wrong one for a board that has merely drifted
+       * a few minutes — where it rounds to zero and says nothing. */
+      Serial.print("Clock: board was ");
+
+      if (drift >= 31557600L)   Serial.printf("%ld year(s)", drift / 31557600L);
+      else if (drift >= 86400L) Serial.printf("%ld day(s)", drift / 86400L);
+      else if (drift >= 3600L)  Serial.printf("%ld hour(s)", drift / 3600L);
+      else if (drift >= 60L)    Serial.printf("%ld minute(s)", drift / 60L);
+      else                      Serial.printf("%ld second(s)", drift);
+
+      Serial.println(" adrift; taking the server's time and retrying");
 
       status = signedRequest("GET", "/api/device/time", "", &response);
     }
