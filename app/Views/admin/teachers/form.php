@@ -429,7 +429,18 @@ $__view->start('scripts');
                 : data.status === 'cancelled' || data.status === 'abandoned' ? 'Cancelled'
                 : (data.stage === 'waiting_for_device' ? 'Waiting for the terminal…' : 'Scanning');
 
-            document.getElementById('fp-detail').textContent = data.message || '';
+            /* A terminal whose sensor did not answer at boot heartbeats
+               normally and looks online, so this dialog used to sit on
+               "Waiting for the terminal…" until somebody gave up. It cannot
+               ever be picked up, and the reason is knowable, so say it here
+               rather than leaving a blank detail line under a spinner. */
+            const sensorDead = !data.finished && data.terminal_sensor_ok === false;
+
+            document.getElementById('fp-detail').textContent = sensorDead
+                ? data.device_id + ' is online but its fingerprint sensor is not responding, '
+                  + 'so this scan cannot start. Check the sensor wiring and reset the board, '
+                  + 'or register the teacher on a terminal whose sensor works.'
+                : (data.message || '');
 
             const reached = FP_STAGES.indexOf(data.stage);
 

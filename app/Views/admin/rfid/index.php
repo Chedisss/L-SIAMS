@@ -675,7 +675,17 @@ window.rfidTable = {
         const stillWaiting = !data.finished;
         const silent = data.terminal_silent_for;
 
-        if (stillWaiting && data.terminal_health !== 'online') {
+        /* Online and useless: the reader did not answer when the terminal
+           started, so nothing here will ever be picked up — but the board
+           heartbeats normally and so passes every liveness test below. */
+        if (stillWaiting && data.terminal_reader_ok === false) {
+            document.getElementById('read-terminal-warning-text').textContent =
+                data.device_id + ' is online, but its card reader did not respond when the '
+                + 'terminal started up, so it cannot pick this request up. The MFRC522 is a '
+                + '3.3 V part — 5 V destroys it — and MISO/MOSI are the pair usually swapped. '
+                + 'Check the wiring, then reset the board.';
+            warning.classList.remove('hidden');
+        } else if (stillWaiting && data.terminal_health !== 'online') {
             document.getElementById('read-terminal-warning-text').textContent =
                 silent === null || silent === undefined
                     ? data.device_id + ' has never reported in, so nothing is listening for this request.'

@@ -196,9 +196,17 @@ final class FingerprintController extends Controller
         // terminal is thinking about it or has been unplugged since Tuesday.
         // The difference is knowable here, so it is sent rather than left for
         // somebody to work out from the Devices page.
+        // A terminal reporting on schedule with a dead sensor was the case
+        // this query could not see: health reads "online" because every
+        // measure of online is satisfied, while the sensor that would pick
+        // this request up never answered at boot. d.fingerprint_ok is the
+        // terminal's own verdict on itself, and NULL there means firmware too
+        // old to say — which must not be shown as a fault.
         $terminal = Database::instance()->selectOne(
-            'SELECT health, seconds_since_heartbeat
-               FROM v_device_status WHERE device_row_id = :id',
+            'SELECT v.health, v.seconds_since_heartbeat, d.fingerprint_ok
+               FROM v_device_status v
+               JOIN devices d ON d.id = v.device_row_id
+              WHERE v.device_row_id = :id',
             ['id' => (int) $enrolment['device_row_id']]
         );
 
@@ -209,6 +217,9 @@ final class FingerprintController extends Controller
         return [
             'terminal_health'     => $terminal === null ? 'unknown' : (string) $terminal['health'],
             'terminal_silent_for' => $silentFor,
+            'terminal_sensor_ok'  => $terminal === null || $terminal['fingerprint_ok'] === null
+                ? null
+                : (bool) $terminal['fingerprint_ok'],
             'request_id'         => (int) $enrolment['request_id'],
             'status'             => (string) $enrolment['status'],
             'stage'              => (string) $enrolment['stage'],

@@ -236,6 +236,17 @@ static bool     busy          = false;   /* an enrolment owns the board */
 static const char *haltReason = nullptr;
 static uint32_t    lastHaltNag = 0;
 
+/* Set when the board halts but is still authenticated and still has a clock —
+ * the dead-modules case. Such a board must go on heartbeating.
+ *
+ * If it stops, the server sees nothing for two minutes and marks it offline,
+ * and the enrolment modal reverts to "this terminal has not reported in a
+ * while", which sends somebody to check the network and the power on a board
+ * that is sitting there perfectly connected. Continuing to report is what
+ * keeps the accurate message on screen: online, and its sensors are dead. */
+static bool     haltedButReporting = false;
+static uint32_t lastModuleNag      = 0;
+
 /* Consecutive refused requests, and when that was last mentioned. */
 static uint32_t failStreak     = 0;
 static uint32_t lastFailReport = 0;
@@ -651,6 +662,17 @@ static void sendHeartbeat() {
   body["free_heap"]   = ESP.getFreeHeap();
   body["wifi_signal"] = WiFi.RSSI();
   body["queue"]       = 0;
+
+  /* Whether the two modules answered at boot.
+   *
+   * The board already knows this and prints it to a serial monitor nobody
+   * watching the browser can see. Sending it is what lets the enrolment modal
+   * say "this terminal's sensor is not responding" instead of "Waiting for
+   * the terminal…" for ever — a terminal with dead modules heartbeats
+   * perfectly and looks online by every other measure, which is exactly why
+   * it was the one failure the server could not see. */
+  body["rfid_ok"]        = rfidReady;
+  body["fingerprint_ok"] = fingerReady;
 
   /* What the sensor itself holds, so the server can spot the case where its
    * records and the sensor's flash have drifted apart. That mismatch used to
@@ -1609,6 +1631,14 @@ void setup() {
     Serial.println();
   }
 
+  /* Deliberately NOT a halt yet, even though a terminal with two dead modules
+   * can do nothing at all. It still has one useful job left: joining the
+   * network and heartbeating, which is how the server — and the person
+   * staring at "Waiting for the terminal…" in a browser — finds out that the
+   * modules are dead. Halting here would take that away and leave the board
+   * looking simply absent, which points at the network instead of at the
+   * wiring. The halt is set after the first heartbeat has gone out. */
+
   Serial.printf("Wi-Fi: connecting to %s", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -1645,10 +1675,47 @@ void setup() {
     return;
   }
 
+  /* Now the server knows which modules answered, so the browser can stop
+   * guessing. This has to happen before any halt below it. */
   sendHeartbeat();
 
   Serial.println();
-  Serial.println("Ready. A teacher scans a finger to open the session; students tap after.");
+
+  /* "Ready" used to be printed unconditionally, and that was the last thing a
+   * board with two dead modules ever said. It then sat in the loop doing
+   * nothing, because every poll begins by checking the module it needs and
+   * returning silently when it is missing — so an enrolment request was never
+   * picked up, a card was never read, and a finger never opened a session.
+   * From the outside that is indistinguishable from a terminal that is not
+   * running at all, and the word "Ready" actively argued against looking at
+   * the wiring.
+   *
+   * What the terminal can actually do is now what it claims. */
+  if (!rfidReady && !fingerReady) {
+    haltReason         = "neither module answered — this terminal cannot read a card or a "
+                         "finger, so nothing will ever be picked up (see the wiring notes above)";
+    haltedButReporting = true;
+    Serial.println("NOT ready: both modules are silent. The server has been told, so the");
+    Serial.println("           Fingerprints and RFID Cards pages will say so instead of");
+    Serial.println("           waiting for a terminal that cannot answer.");
+    Serial.println();
+    return;
+  }
+
+  if (!fingerReady) {
+    Serial.println("HALF ready: the card reader works, the fingerprint sensor does not.");
+    Serial.println("            Students can tap, but no teacher can open a session here");
+    Serial.println("            by fingerprint and no enrolment can be performed on this");
+    Serial.println("            terminal. Use the password failover on the teacher");
+    Serial.println("            dashboard until the sensor is fixed.");
+  } else if (!rfidReady) {
+    Serial.println("HALF ready: the fingerprint sensor works, the card reader does not.");
+    Serial.println("            A teacher can open a session here, but no student card");
+    Serial.println("            will be read and no card can be issued at this terminal.");
+  } else {
+    Serial.println("Ready. A teacher scans a finger to open the session; students tap after.");
+  }
+
   Serial.println();
 }
 
@@ -1671,8 +1738,28 @@ void loop() {
       Serial.println("        Nothing will be read or recorded until that is fixed.");
       Serial.println("        Fix it, then press the EN/RST button on the board.");
     }
+
+    /* Still reporting, so the server keeps showing the true reason rather
+     * than letting the terminal fade to "offline" and point at the network. */
+    if (haltedButReporting && millis() - lastHeartbeat >= HEARTBEAT_MS) {
+      lastHeartbeat = millis();
+      sendHeartbeat();
+    }
+
     delay(200);
     return;
+  }
+
+  /* One module down is not a halt — the other half of the terminal still
+   * works — but it must not be silent either. Each poll below begins by
+   * checking the module it needs and returning if it is missing, which is the
+   * right thing to do and reads from outside as a terminal that is simply
+   * ignoring the request. Once a minute, say which half is missing. */
+  if ((!rfidReady || !fingerReady) && millis() - lastModuleNag >= 60000) {
+    lastModuleNag = millis();
+    Serial.printf("Module: the %s is not responding, so anything needing it will not be\n",
+                  rfidReady ? "fingerprint sensor" : "card reader");
+    Serial.println("        picked up from the server. The rest of the terminal is working.");
   }
 
   /* Every poll below is a blocking HTTP request, and a card held against the

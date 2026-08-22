@@ -544,6 +544,18 @@ final class DeviceService
             $columns['sensor_reported_at']    = $now;
         }
 
+        // Module health, under the same rule: only written when the terminal
+        // actually said. Firmware that predates the field leaves the last
+        // known verdict alone rather than resetting it to "unknown".
+        //
+        // Both are reported together or not at all, so one isset() guards the
+        // pair and a half-written state cannot occur.
+        if (isset($payload['rfid_ok'], $payload['fingerprint_ok'])) {
+            $columns['rfid_ok']             = (bool) $payload['rfid_ok'] ? 1 : 0;
+            $columns['fingerprint_ok']      = (bool) $payload['fingerprint_ok'] ? 1 : 0;
+            $columns['modules_reported_at'] = $now;
+        }
+
         $db->update('devices', $columns, ['id' => $deviceRowId]);
 
         $db->insert('device_heartbeats', [

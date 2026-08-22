@@ -85,6 +85,18 @@ final class DeviceApiController extends Controller
             // older firmware, and absent is not the same as zero: one means
             // the terminal did not say, the other that it said "nothing".
             'fp_templates' => $request->has('fp_templates') ? $request->int('fp_templates') : null,
+            // Whether each module answered when the terminal probed it at
+            // boot. Same three-state rule as fp_templates above: absent means
+            // firmware too old to say, which is not the same as "no".
+            //
+            // This is the one fault the server could not see. A board with
+            // two dead modules joins the network, claims its key and
+            // heartbeats on schedule, so every signal the server had said
+            // "online" — while it read nothing, picked up no enrolment
+            // request, and left the browser waiting for a terminal that
+            // could never answer.
+            'rfid_ok'        => $request->has('rfid_ok') ? $request->bool('rfid_ok') : null,
+            'fingerprint_ok' => $request->has('fingerprint_ok') ? $request->bool('fingerprint_ok') : null,
         ]);
 
         return $this->json($result, 'Heartbeat received.');
