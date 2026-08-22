@@ -24,6 +24,10 @@ declare(strict_types=1);
  *                                     exits 1 if any are missing
  *   php bin/env-check.php optional    prints any missing optional extensions
  *                                     exits 1 if any are missing
+ *   php bin/env-check.php inihelp [required|optional]
+ *                                     prints the remedy for the extensions that
+ *                                     group is missing, naming the php.ini this
+ *                                     interpreter actually loaded
  *   php bin/env-check.php database    exits 0 if the database answers
  *
  * Kept free of the framework except where the check itself needs it: a
@@ -54,6 +58,107 @@ switch ($command) {
         }
 
         exit(0);
+
+    case 'inihelp':
+        // The remedy, worked out for the interpreter that is actually running.
+        //
+        // start.bat used to print "Open C:\xampp\php\php.ini" no matter which
+        // PHP it had found. When that PHP was a standalone build — say
+        // C:\php-8.4.3\php.exe, picked up from PATH because XAMPP was not in
+        // the usual place — the file it named belonged to a different
+        // interpreter, or did not exist at all. Editing it changed nothing, and
+        // the launcher then said the same thing again.
+        //
+        // Worse, a PHP unpacked from the .zip has no php.ini whatsoever: the
+        // archive ships php.ini-development and php.ini-production and neither
+        // is read until one is copied into place. There are no ';extension='
+        // lines to uncomment in a file that is not there, so the old
+        // instruction could not be followed even in principle.
+        $group  = $argv[2] ?? 'required';
+        $needed = $group === 'optional'
+            ? ['zip', 'gd']
+            : ['pdo_mysql', 'openssl', 'mbstring', 'json'];
+
+        $missing = array_values(array_filter(
+            $needed,
+            static fn (string $extension): bool => !extension_loaded($extension)
+        ));
+
+        if ($missing === []) {
+            exit(0);
+        }
+
+        $loaded  = php_ini_loaded_file();
+        $phpDir  = dirname(PHP_BINARY);
+        $extDir  = (string) ini_get('extension_dir');
+        $lines   = [];
+
+        if ($loaded === false || $loaded === '') {
+            // No php.ini at all. Say so, and say where one comes from — the
+            // sample files sit next to php.exe in every Windows build.
+            $sample = null;
+            foreach (['php.ini-development', 'php.ini-production'] as $candidate) {
+                if (is_file($phpDir . DIRECTORY_SEPARATOR . $candidate)) {
+                    $sample = $candidate;
+                    break;
+                }
+            }
+
+            $lines[] = 'This PHP has no php.ini at all, so these extensions are switched off';
+            $lines[] = 'and there is no line to uncomment yet. Create one first:';
+            $lines[] = '';
+            $lines[] = '  1. Go to  ' . $phpDir;
+
+            if ($sample !== null) {
+                $lines[] = '  2. Copy  ' . $sample . '  and name the copy  php.ini';
+            } else {
+                $lines[] = '  2. Create a file there called  php.ini';
+                $lines[] = '     (a stock Windows build ships php.ini-development to copy;';
+                $lines[] = '      if it is missing, re-download PHP from windows.php.net)';
+            }
+
+            $lines[] = '  3. Open that php.ini in Notepad and set the extension folder:';
+            $lines[] = '';
+            $lines[] = '       extension_dir = "' . $phpDir . DIRECTORY_SEPARATOR . 'ext"';
+            $lines[] = '';
+            $lines[] = '  4. Then delete the \';\' at the start of each of these lines:';
+        } else {
+            $lines[] = 'Open this file - it is the php.ini this PHP actually reads:';
+            $lines[] = '';
+            $lines[] = '  ' . $loaded;
+            $lines[] = '';
+            $lines[] = 'Delete the \';\' at the start of each of these lines:';
+        }
+
+        foreach ($missing as $extension) {
+            $lines[] = '    extension=' . $extension;
+        }
+
+        // An enabled extension still will not load if extension_dir points
+        // somewhere that does not exist — a standalone build's default is the
+        // relative "ext", which only resolves when PHP is started from its own
+        // directory. That failure looks identical to "not enabled", so name it.
+        if ($loaded !== false && $loaded !== '' && ($extDir === '' || !is_dir($extDir))) {
+            $lines[] = '';
+            $lines[] = 'Also set the extension folder in that same file - it currently';
+            $lines[] = $extDir === ''
+                ? 'is not set, so PHP will not find the .dll files:'
+                : 'points at "' . $extDir . '", which is not a folder that exists:';
+            $lines[] = '';
+            $lines[] = '    extension_dir = "' . $phpDir . DIRECTORY_SEPARATOR . 'ext"';
+        }
+
+        $lines[] = '';
+        $lines[] = 'Save the file, close this window, and run start.bat again.';
+
+        // Indented to the column start.bat uses for everything else, because
+        // this is printed straight to the console rather than echoed by the
+        // batch file line by line.
+        foreach ($lines as $line) {
+            echo $line === '' ? '' : '      ' . $line, PHP_EOL;
+        }
+
+        exit(1);
 
     case 'database':
         // Probed at the socket before PDO is allowed near it.

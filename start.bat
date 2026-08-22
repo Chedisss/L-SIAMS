@@ -80,11 +80,18 @@ REM --------------------------------------------------------- extensions ----
 REM Nothing runs without these.
 set "MISSING="
 for /f "delims=" %%X in ('"%PHP%" bin\env-check.php required 2^>nul') do set "MISSING=%%X"
+REM The remedy comes from PHP itself, which knows the php.ini it loaded. The
+REM launcher used to print "Open C:\xampp\php\php.ini" whichever PHP it had
+REM found, so a standalone build picked up from PATH sent people to edit an ini
+REM belonging to a different interpreter - or to one that does not exist, since
+REM a PHP unpacked from the .zip ships no php.ini at all.
+REM
+REM Printed straight through rather than captured: FOR /F drops blank lines,
+REM which would run the whole remedy together into a single block.
 if defined MISSING (
     echo   [X] PHP is missing: !MISSING!
     echo.
-    echo       Open C:\xampp\php\php.ini, remove the ';' in front of the
-    echo       matching 'extension=' lines, save, and run this again.
+    "%PHP%" bin\env-check.php inihelp required
     echo.
     pause
     exit /b 1
@@ -101,9 +108,9 @@ if defined OPTMISSING (
     echo         zip  -  Excel exports, firmware downloads
     echo         gd   -  profile photo uploads
     echo.
-    echo       To fix: open C:\xampp\php\php.ini, delete the ';' at the start
-    echo       of the 'extension=zip' and 'extension=gd' lines, save, then run
-    echo       this file again.
+    echo       To fix:
+    echo.
+    "%PHP%" bin\env-check.php inihelp optional
     echo.
 ) else (
     echo   [ok] Required PHP extensions present
