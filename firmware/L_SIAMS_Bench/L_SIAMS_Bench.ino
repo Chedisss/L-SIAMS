@@ -247,6 +247,18 @@ static uint32_t    lastHaltNag = 0;
 static bool     haltedButReporting = false;
 static uint32_t lastModuleNag      = 0;
 
+/* Some halts are permanent and some are not, and treating them alike is what
+ * turns a passing network fault into a site visit.
+ *
+ * Placeholder credentials and two dead modules need a person: no amount of
+ * waiting fixes either. A clock that could not be read does not — the server
+ * was unreachable for a moment and will very likely be reachable again in
+ * one, and the terminal is on a wall in a classroom that may well be locked.
+ * When the halt is this kind, the loop keeps trying and lifts it the moment
+ * it succeeds. */
+static bool     haltIsTransient = false;
+static uint32_t lastHaltRetry   = 0;
+
 /* Consecutive refused requests, and when that was last mentioned. */
 static uint32_t failStreak     = 0;
 static uint32_t lastFailReport = 0;
@@ -257,6 +269,18 @@ static uint32_t lastFailReport = 0;
  * with firmware/tools/syntax-check. */
 static void reportRequestHealth(const char *method, const String &path,
                                 int status, const String &payload);
+
+/* HTTPClient reports its own failures as negative numbers, and they were being
+ * printed raw and lumped into one message.
+ *
+ * They are not one problem. "-1" means the board never got a connection; "-11"
+ * means it connected, sent the whole request and the answer never came. Those
+ * point at different machines — the first at the address or the network, the
+ * second at something between the board and a server that is very probably
+ * running fine. Printing "HTTP -11" and then blaming the server address sends
+ * somebody to check a setting that was never wrong. */
+static const char *httpErrorText(int status);
+static void        describeHttpError(int status, const char *indent);
 
 static uint32_t lastHeartbeat = 0;
 static uint32_t lastFpPoll    = 0;
@@ -470,10 +494,10 @@ static void reportRequestHealth(const char *method, const String &path,
   Serial.printf("Server: %s %s -> ", method, path.c_str());
 
   if (status <= 0) {
-    /* Not a refusal — the request never arrived. Different problem, different
+    /* Not a refusal — the server never answered. Different problem, different
      * place to look, so it must not be reported as though the server said no. */
-    Serial.printf("no reply (%d). The server address in LS_SERVER_URL, the Wi-Fi\n", status);
-    Serial.println("        network, or a firewall on the PC running XAMPP.");
+    Serial.printf("%s\n", httpErrorText(status));
+    describeHttpError(status, "        ");
     return;
   }
 
@@ -487,6 +511,69 @@ static void reportRequestHealth(const char *method, const String &path,
     Serial.println("        Devices page and paste the new provisioning values into the sketch.");
   } else if (status == 429) {
     Serial.println("        Rate limited. Raise DEVICE_RATE_LIMIT in .env, or set it to 0.");
+  }
+}
+
+/* The HTTPClient error codes, in words. Values from the ESP32 core's
+ * HTTPClient.h; anything outside that range is printed as itself rather than
+ * guessed at. */
+static const char *httpErrorText(int status) {
+  switch (status) {
+    case  0:   return "no reply at all";
+    case -1:   return "could not connect";
+    case -2:   return "failed to send the request headers";
+    case -3:   return "failed to send the request body";
+    case -4:   return "not connected";
+    case -5:   return "the connection was lost mid-request";
+    case -6:   return "no response stream";
+    case -7:   return "the address answered, but not as an HTTP server";
+    case -8:   return "not enough memory";
+    case -9:   return "the reply used an encoding this client cannot read";
+    case -10:  return "failed while writing the reply";
+    case -11:  return "connected and sent, but the reply never arrived (timeout)";
+    default:   return "the request failed";
+  }
+}
+
+/* What to actually go and check, which differs sharply by code. */
+static void describeHttpError(int status, const char *indent) {
+  switch (status) {
+    case -1:
+    case -4:
+      Serial.printf("%sNothing accepted a connection at %s.\n", indent, SERVER_URL);
+      Serial.printf("%sCheck that XAMPP's Apache is running, that the PC still holds that\n", indent);
+      Serial.printf("%sIP — a DHCP lease can move it — and that the port is right.\n", indent);
+      break;
+
+    case -11:
+    case -5:
+      /* The important distinction. The board reached the server and said its
+       * piece; only the answer went missing. Sending somebody to re-check
+       * LS_SERVER_URL here wastes their time on a value that just proved
+       * itself correct by connecting. */
+      Serial.printf("%sThe connection to %s succeeded and the request went out,\n", indent, SERVER_URL);
+      Serial.printf("%sso the address and the port are right and Apache is listening.\n", indent);
+      Serial.printf("%sOnly the reply was lost. Usually a weak or busy Wi-Fi link — check\n", indent);
+      Serial.printf("%sthe signal where the terminal is mounted. If it is persistent, look\n", indent);
+      Serial.printf("%sfor something holding the PC busy, and confirm nothing ELSE on the\n", indent);
+      Serial.printf("%snetwork has taken that IP and is answering on the port without\n", indent);
+      Serial.printf("%sspeaking HTTP.\n", indent);
+      break;
+
+    case -7:
+      Serial.printf("%sSomething is listening at %s but it is not this system.\n", indent, SERVER_URL);
+      Serial.printf("%sAnother device may have taken that IP address.\n", indent);
+      break;
+
+    case -8:
+      Serial.printf("%sThe board ran out of memory. If this repeats, the reply is larger\n", indent);
+      Serial.printf("%sthan expected — report it rather than working around it.\n", indent);
+      break;
+
+    default:
+      Serial.printf("%sThe request did not complete. The Wi-Fi link and the PC running\n", indent);
+      Serial.printf("%sXAMPP are the two things to check.\n", indent);
+      break;
   }
 }
 
@@ -577,6 +664,17 @@ static bool syncClockFromServer() {
 
   if (status != 200) {
     const char *code = response["code"] | "";
+
+    /* A negative status is not a refusal. The server said nothing at all —
+     * it may never have seen the request — and reporting it as "the server
+     * refused the time request" accuses a machine that is very likely
+     * running perfectly, while hiding the fact that the fault is in the link
+     * between here and there. */
+    if (status <= 0) {
+      Serial.printf("Clock: could not read the server's time — %s\n", httpErrorText(status));
+      describeHttpError(status, "       ");
+      return false;
+    }
 
     Serial.printf("Clock: server refused the time request (HTTP %d, %s)\n",
                   status, strlen(code) ? code : "no code");
@@ -1685,9 +1783,35 @@ void setup() {
     return;
   }
 
-  if (!syncClockFromServer()) {
-    Serial.println("Stopping: without the server's clock, every signature is refused.");
-    haltReason = "no clock — the server's time could not be read, so nothing can be signed";
+  /* Retried, because one lost packet at boot used to cost a site visit.
+   *
+   * A single failure here halted the terminal until somebody walked over and
+   * pressed EN/RST — and the commonest cause is a timeout, which is transient
+   * by definition: a busy Wi-Fi moment while the classroom fills up, an access
+   * point still settling after a power cut. The board is mounted on a wall and
+   * may be powered on before the network is ready, so the first attempt is the
+   * least likely of the five to succeed.
+   *
+   * Backing off between tries rather than hammering: if the network is
+   * genuinely still coming up, spacing the attempts is what lets it. */
+  bool haveClock = false;
+
+  for (uint8_t attempt = 1; attempt <= 5 && !haveClock; attempt++) {
+    if (attempt > 1) {
+      Serial.printf("Clock: retrying (%u of 5)\n", attempt);
+      delay(attempt * 2000);
+    }
+
+    haveClock = syncClockFromServer();
+  }
+
+  if (!haveClock) {
+    Serial.println("Pausing: without the server's clock, every signature is refused.");
+    Serial.println("         This one recovers by itself — the terminal will keep trying");
+    Serial.println("         and start working the moment the server answers.");
+    haltReason      = "no clock yet — the server's time could not be read, so nothing "
+                      "can be signed. Still trying.";
+    haltIsTransient = true;
     return;
   }
 
@@ -1750,9 +1874,12 @@ void loop() {
   if (haltReason != nullptr) {
     if (lastHaltNag == 0 || millis() - lastHaltNag >= 10000) {
       lastHaltNag = millis();
-      Serial.printf("HALTED: %s\n", haltReason);
-      Serial.println("        Nothing will be read or recorded until that is fixed.");
-      Serial.println("        Fix it, then press the EN/RST button on the board.");
+      Serial.printf("%s: %s\n", haltIsTransient ? "PAUSED" : "HALTED", haltReason);
+      Serial.println("        Nothing will be read or recorded until that clears.");
+
+      if (!haltIsTransient) {
+        Serial.println("        Fix it, then press the EN/RST button on the board.");
+      }
     }
 
     /* Still reporting, so the server keeps showing the true reason rather
@@ -1760,6 +1887,29 @@ void loop() {
     if (haltedButReporting && millis() - lastHeartbeat >= HEARTBEAT_MS) {
       lastHeartbeat = millis();
       sendHeartbeat();
+    }
+
+    /* A halt that can clear itself gets retried, so a network that comes back
+     * puts the terminal back to work without anyone walking to the classroom.
+     * Every 30 seconds: often enough that a passing fault costs one lesson's
+     * first minute rather than the lesson, slow enough that a server which is
+     * genuinely down is not hammered by every terminal in the building. */
+    if (haltIsTransient && millis() - lastHaltRetry >= 30000) {
+      lastHaltRetry = millis();
+
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("        Wi-Fi is down; reconnecting before trying again.");
+        WiFi.reconnect();
+      } else if (syncClockFromServer()) {
+        Serial.println("Recovered: the server answered and the clock is set.");
+        Serial.println("           Back to normal — a teacher may open the session now.");
+
+        haltReason      = nullptr;
+        haltIsTransient = false;
+        lastHaltNag     = 0;
+
+        sendHeartbeat();
+      }
     }
 
     delay(200);
