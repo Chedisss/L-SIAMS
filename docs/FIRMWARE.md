@@ -497,8 +497,41 @@ five minutes locally, so a locked-out person cannot hammer the server endpoint.
 
 ## 9. Troubleshooting
 
+### Read the serial monitor first
+
+Open the Arduino IDE's Serial Monitor at **115200 baud** and press the board's
+EN/RST button. Everything below is diagnosed from what it prints, and two lines
+in particular answer most of the "the device does nothing" reports:
+
+**`HALTED: <reason>`, repeating every ten seconds.** Startup gave up, and the
+terminal will not read a card or a finger until the named problem is fixed.
+This is the important one. A `return` from `setup()` does not stop an Arduino
+sketch — `loop()` runs immediately afterwards regardless — so a board that had
+stopped for a good reason used to sit there polling endpoints that refused
+every request, discarding every refusal silently. It looked alive and did
+nothing, and the single line explaining why had scrolled off the top of the
+window long before anyone looked. The reason is now repeated until it is dealt
+with. Fix what it names, then press EN/RST.
+
+**`Server: POST /api/… -> HTTP 401 …`.** A request was refused, with the
+server's own reason on the next line. Refusals are reported once, then at most
+once every thirty seconds while the condition lasts, and once more when the
+server starts answering again — so a working terminal stays quiet without a
+broken one being able to fail invisibly.
+
+One 401 is normal and is deliberately *not* reported: the very first request of
+every boot is signed with a 1970 timestamp, because the board has no clock
+until the server gives it one. The server refuses that request with
+`TIMESTAMP_EXPIRED` and attaches its own epoch so the board can set itself and
+retry. That exchange is how startup is supposed to go, and reporting it would
+send you looking for an authentication fault that does not exist.
+
+### Symptom table
+
 | Symptom | Cause |
 |---|---|
+| Nothing at all happens; `HALTED:` repeats | Startup stopped for the reason printed beside it. Nothing works until that is fixed. |
+| The teacher's scan says `SESSION OPEN — ? with ?, roster 0` | Firmware older than the fix in this section: the session really did open and is in the database, but the sketch read the response one level too shallow. Run `update.bat` and re-flash. |
 | `SIGNATURE_INVALID` on every request | Clock drift. Check against `GET /api/device/time`. The window is ±30 s. |
 | `DEVICE_UNCLAIMED` | Never completed first boot. Re-provision with a fresh file. |
 | Claim fails with `CLAIM_TOKEN_INVALID` | The token was already used. Generate a new provisioning file. |

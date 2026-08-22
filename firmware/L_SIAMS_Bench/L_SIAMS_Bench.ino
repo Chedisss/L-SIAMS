@@ -219,6 +219,34 @@ static bool     rfidReady     = false;
 static bool     clockSet      = false;
 static bool     busy          = false;   /* an enrolment owns the board */
 
+/* Why the terminal is not working, kept for the loop to keep saying.
+ *
+ * setup() gives up in four places — no credentials, no Wi-Fi, an unclaimed
+ * board, no clock — and each one printed its reason and returned. But a
+ * return from setup() does not stop an Arduino sketch: loop() is called
+ * immediately afterwards regardless, and ran on happily with no clock, no
+ * claim, and in some cases no modules. Every poll it made was refused, and
+ * every poll discards its refusal without printing anything, so the board sat
+ * there looking alive and doing nothing at all.
+ *
+ * That is the failure that reads as "the device does not connect to the
+ * system". It does connect; it was told to stop and carried on anyway, and
+ * the one line explaining why had long since scrolled off the top of the
+ * serial monitor. So the reason is now held here and repeated. */
+static const char *haltReason = nullptr;
+static uint32_t    lastHaltNag = 0;
+
+/* Consecutive refused requests, and when that was last mentioned. */
+static uint32_t failStreak     = 0;
+static uint32_t lastFailReport = 0;
+
+/* Defined below signedRequest, which is its only caller, but declared here so
+ * the file still compiles as plain C++ — the Arduino IDE inserts prototypes
+ * for you, and a sketch that only builds because of that cannot be checked
+ * with firmware/tools/syntax-check. */
+static void reportRequestHealth(const char *method, const String &path,
+                                int status, const String &payload);
+
 static uint32_t lastHeartbeat = 0;
 static uint32_t lastFpPoll    = 0;
 static uint32_t lastCardPoll  = 0;
@@ -362,12 +390,93 @@ static int signedRequest(const char *method, const String &path, const String &b
 
   int status = (strcmp(method, "GET") == 0) ? http.GET() : http.POST(body);
 
+  String payload = (status > 0) ? http.getString() : String();
+
   if (status > 0 && responseOut != nullptr) {
-    deserializeJson(*responseOut, http.getString());
+    deserializeJson(*responseOut, payload);
   }
 
   http.end();
+
+  reportRequestHealth(method, path, status, payload);
+
   return status;
+}
+
+/* Whether the server is answering at all, said out loud.
+ *
+ * The three polls in the loop each end with `if (... != 200) return;` — the
+ * refusal is discarded and nothing is printed. That is correct for the normal
+ * case, where the answer is simply "nothing to do" and printing it every two
+ * seconds would bury everything else. It is badly wrong for the abnormal one:
+ * a terminal whose every request is being refused looks identical to a
+ * terminal with nothing to do. Silence for both.
+ *
+ * So refusals are counted here, at the one place every request passes
+ * through. The first one speaks, then at most one line every thirty seconds
+ * while the condition persists, and one more when it clears. Enough to see
+ * the problem from the serial monitor; not enough to flood it. */
+static void reportRequestHealth(const char *method, const String &path,
+                                int status, const String &payload) {
+  if (status == 200 || status == 201) {
+    if (failStreak >= 3) {
+      Serial.printf("Server: answering again (%lu request(s) had been refused)\n",
+                    (unsigned long) failStreak);
+    }
+    failStreak = 0;
+    return;
+  }
+
+  LsJson refusal;
+  if (status > 0) deserializeJson(refusal, payload);
+
+  const char *refusalCode = refusal["code"] | "";
+
+  /* The one refusal that is not a fault.
+   *
+   * A board fresh from power-on has no clock, so its first request is signed
+   * with a 1970 timestamp and the server refuses it as expired — on purpose,
+   * with its own epoch attached so the board can set itself and retry. That
+   * happens on every single boot, before anything is wrong.
+   *
+   * Reporting it would print "the board is not authenticated, re-register
+   * this terminal" at the top of every successful startup, which is both
+   * false and expensive: it is the wrong diagnosis, and it sends somebody off
+   * to regenerate a key that was never the problem. Let the clock bootstrap
+   * do its job silently and judge the retry instead. */
+  if (!clockSet && status == 401 && strcmp(refusalCode, "TIMESTAMP_EXPIRED") == 0) {
+    failStreak = 0;
+    return;
+  }
+
+  failStreak++;
+
+  bool first = (failStreak == 1);
+  if (!first && millis() - lastFailReport < 30000) return;
+
+  lastFailReport = millis();
+
+  Serial.printf("Server: %s %s -> ", method, path.c_str());
+
+  if (status <= 0) {
+    /* Not a refusal — the request never arrived. Different problem, different
+     * place to look, so it must not be reported as though the server said no. */
+    Serial.printf("no reply (%d). The server address in LS_SERVER_URL, the Wi-Fi\n", status);
+    Serial.println("        network, or a firewall on the PC running XAMPP.");
+    return;
+  }
+
+  Serial.printf("HTTP %d %s\n", status, refusalCode);
+
+  const char *message = refusal["message"] | "";
+  if (strlen(message)) Serial.printf("        %s\n", message);
+
+  if (status == 401) {
+    Serial.println("        The board is not authenticated. Re-register this terminal on the");
+    Serial.println("        Devices page and paste the new provisioning values into the sketch.");
+  } else if (status == 429) {
+    Serial.println("        Rate limited. Raise DEVICE_RATE_LIMIT in .env, or set it to 0.");
+  }
 }
 
 /* The claim is the one request that cannot be signed: the board has no proven
@@ -1070,10 +1179,24 @@ static void handleFingerprint() {
                                 jsonToString(body), &response, generateUuid());
 
   if (status == 200 || status == 201) {
+    /* The session details live under data.session, not directly under data.
+     *
+     * This read was one level too shallow, and the effect was worse than a
+     * cosmetic one: the session opened correctly and was written to the
+     * database, but the terminal reported it as "? with ?, roster 0" — which
+     * is exactly what a failure looks like to whoever is standing there. The
+     * teacher walks away believing the scan did nothing and the class taps
+     * into a session everyone has been told is not open. */
+    JsonVariantConst session = response["data"]["session"];
+
     Serial.printf("        SESSION OPEN — %s with %s, roster %d\n",
-                  (const char *) (response["data"]["subject_code"] | "?"),
-                  (const char *) (response["data"]["section_code"] | "?"),
-                  (int) (response["data"]["roster_count"] | 0));
+                  (const char *) (session["subject_code"]  | "?"),
+                  (const char *) (session["section_code"]  | "?"),
+                  (int)          (session["roster_count"]  | 0));
+    Serial.printf("        %s, teacher %s, until %s\n",
+                  (const char *) (session["session_code"]  | "?"),
+                  (const char *) (session["teacher_name"]  | "?"),
+                  (const char *) (session["scheduled_end"] | "?"));
     Serial.println("        Students may tap their cards now.");
     return;
   }
@@ -1462,7 +1585,11 @@ void setup() {
 
   Serial.println();
 
-  if (!checkConfig()) return;
+  if (!checkConfig()) {
+    haltReason = "the credentials above are still placeholders — paste this "
+                 "terminal's provisioning values into the top of the sketch";
+    return;
+  }
 
   startRfid();
   startFingerprint();
@@ -1496,6 +1623,7 @@ void setup() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Wi-Fi: could not join. Check the name and password in secrets.h, and");
     Serial.println("       that the network is 2.4 GHz — an ESP32 cannot see 5 GHz.");
+    haltReason = "not joined to Wi-Fi";
     return;
   }
 
@@ -1507,11 +1635,13 @@ void setup() {
 
   if (!claimDevice()) {
     Serial.println("Stopping: every signed request is refused until the board is claimed.");
+    haltReason = "this board has not claimed its API key — see the refusal above";
     return;
   }
 
   if (!syncClockFromServer()) {
     Serial.println("Stopping: without the server's clock, every signature is refused.");
+    haltReason = "no clock — the server's time could not be read, so nothing can be signed";
     return;
   }
 
@@ -1527,6 +1657,24 @@ void setup() {
  * ========================================================================= */
 
 void loop() {
+  /* setup() gave up, so there is nothing this loop can usefully do. Say why,
+   * once every ten seconds, instead of polling an endpoint that will refuse
+   * every request and throwing the refusal away.
+   *
+   * Ten seconds is deliberate: often enough that the reason is on screen
+   * whenever somebody opens the serial monitor, rare enough that it does not
+   * bury a line they are trying to read. */
+  if (haltReason != nullptr) {
+    if (lastHaltNag == 0 || millis() - lastHaltNag >= 10000) {
+      lastHaltNag = millis();
+      Serial.printf("HALTED: %s\n", haltReason);
+      Serial.println("        Nothing will be read or recorded until that is fixed.");
+      Serial.println("        Fix it, then press the EN/RST button on the board.");
+    }
+    delay(200);
+    return;
+  }
+
   /* Every poll below is a blocking HTTP request, and a card held against the
    * reader while one is in flight is not seen — invisible from outside, and
    * it reads as a dead reader. Card reading therefore comes last, after the
