@@ -202,11 +202,20 @@ final class FingerprintController extends Controller
         // this request up never answered at boot. d.fingerprint_ok is the
         // terminal's own verdict on itself, and NULL there means firmware too
         // old to say — which must not be shown as a fault.
-        $terminal = Database::instance()->selectOne(
-            'SELECT v.health, v.seconds_since_heartbeat, d.fingerprint_ok
-               FROM v_device_status v
-               JOIN devices d ON d.id = v.device_row_id
-              WHERE v.device_row_id = :id',
+        // Selected only where the schema has it. On a server whose files are
+        // newer than its database — pulled without running migrate — naming
+        // the column outright made this dialog fail to load at all, which
+        // replaces a useful warning with a broken page. The dialog degrades to
+        // what it said before instead.
+        $db      = Database::instance();
+        $hasFlag = $db->hasColumn('devices', 'fingerprint_ok');
+
+        $terminal = $db->selectOne(
+            'SELECT v.health, v.seconds_since_heartbeat'
+            . ($hasFlag ? ', d.fingerprint_ok' : ', NULL AS fingerprint_ok')
+            . ' FROM v_device_status v
+                JOIN devices d ON d.id = v.device_row_id
+               WHERE v.device_row_id = :id',
             ['id' => (int) $enrolment['device_row_id']]
         );
 

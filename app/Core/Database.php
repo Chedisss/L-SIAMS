@@ -307,6 +307,57 @@ final class Database
         return $this->query($sql, $bindings)->rowCount();
     }
 
+    /**
+     * Does this table actually have this column?
+     *
+     * For the narrow case of a schema that is behind the code — the server
+     * files updated but `migrate` not yet run, which happens whenever someone
+     * pulls and skips the database step, or restores an older backup over a
+     * newer checkout.
+     *
+     * It exists because of a real outage. A terminal's heartbeat began
+     * reporting two new optional fields; on an un-migrated database the
+     * UPDATE naming those columns threw, and the endpoint answered 500. The
+     * heartbeat is the terminal's lifeline — it is how the server knows the
+     * device is alive at all — so an optional telemetry field must never be
+     * able to take it down. Skipping a column the schema cannot hold loses
+     * one detail; failing the request loses the device.
+     *
+     * Use this only for genuinely optional data. Anything the system depends
+     * on should fail loudly against a schema that cannot store it, and a
+     * misspelled required column silently vanishing is far worse than an
+     * error.
+     *
+     * Cached per process: the answer cannot change while a request runs, and
+     * this is called on a path that executes every thirty seconds per
+     * terminal.
+     *
+     * @var array<string,bool>|null
+     */
+    private ?array $columnCache = null;
+
+    public function hasColumn(string $table, string $column): bool
+    {
+        $key = $table . '.' . $column;
+
+        if ($this->columnCache === null) {
+            $this->columnCache = [];
+        }
+
+        if (!array_key_exists($key, $this->columnCache)) {
+            $this->columnCache[$key] = $this->scalar(
+                'SELECT 1 FROM information_schema.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = :t
+                    AND COLUMN_NAME  = :c
+                  LIMIT 1',
+                ['t' => $table, 'c' => $column]
+            ) !== null;
+        }
+
+        return $this->columnCache[$key];
+    }
+
     /** @param array<string,mixed> $data */
     public function insert(string $table, array $data): string
     {

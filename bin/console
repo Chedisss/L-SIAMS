@@ -713,9 +713,15 @@ function commandDoctor(): void
     // ------------------------------------------------------------ devices --
     heading('Terminals');
 
+    // Module health is only selected where migration 019 has run, so doctor
+    // still works on a database that is behind the code — which is exactly
+    // the situation somebody runs doctor to diagnose.
+    $hasModuleHealth = $db->hasColumn('devices', 'rfid_ok');
+
     $devices = $db->select(
-        'SELECT device_id, mac_address, status, claim_status, last_heartbeat_at, classroom_id
-           FROM devices WHERE deleted_at IS NULL ORDER BY device_id'
+        'SELECT device_id, mac_address, status, claim_status, last_heartbeat_at, classroom_id'
+        . ($hasModuleHealth ? ', rfid_ok, fingerprint_ok' : ', NULL AS rfid_ok, NULL AS fingerprint_ok')
+        . ' FROM devices WHERE deleted_at IS NULL ORDER BY device_id'
     );
 
     if ($devices === []) {
@@ -746,6 +752,20 @@ function commandDoctor(): void
             $warn((string) $device['device_id'], $detail . ' — no classroom assigned, so no schedule can match');
         } elseif ($device['last_heartbeat_at'] === null || $stale) {
             $warn((string) $device['device_id'], $detail . ' — not currently reporting');
+        } elseif ($device['rfid_ok'] !== null
+               && ((int) $device['rfid_ok'] === 0 || (int) $device['fingerprint_ok'] === 0)) {
+            // Reporting on schedule and still unable to do its job. This is
+            // the state that used to be invisible from every page: online by
+            // every measure the server had, while reading nothing at all.
+            $dead = (int) $device['rfid_ok'] === 0 && (int) $device['fingerprint_ok'] === 0
+                ? 'neither module answered at boot'
+                : ((int) $device['rfid_ok'] === 0
+                    ? 'the card reader did not answer at boot'
+                    : 'the fingerprint sensor did not answer at boot');
+
+            $warn((string) $device['device_id'], $detail . ' — online, but ' . $dead);
+            $note('It is connected and reporting, so this is wiring or power at the terminal,');
+            $note('not the network. Its Serial Monitor prints the fault on every boot.');
         } else {
             ok(sprintf('%-20s %s', $device['device_id'], $detail));
         }

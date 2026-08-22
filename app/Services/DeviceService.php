@@ -550,10 +550,30 @@ final class DeviceService
         //
         // Both are reported together or not at all, so one isset() guards the
         // pair and a half-written state cannot occur.
+        //
+        // The schema check is not belt-and-braces. Firmware reporting these
+        // fields against a database that has not run migration 019 made the
+        // UPDATE name columns that did not exist, and the heartbeat answered
+        // 500 — so a terminal that had correctly diagnosed its own dead
+        // sensors could not tell anyone, and every terminal on that server
+        // went dark the moment it was re-flashed. A field that exists to
+        // report a fault must not be able to cause a larger one.
+        //
+        // Losing the module verdict on an un-migrated server is the right
+        // trade: the terminal stays visible, and the warning below says what
+        // to run to get the detail back.
         if (isset($payload['rfid_ok'], $payload['fingerprint_ok'])) {
-            $columns['rfid_ok']             = (bool) $payload['rfid_ok'] ? 1 : 0;
-            $columns['fingerprint_ok']      = (bool) $payload['fingerprint_ok'] ? 1 : 0;
-            $columns['modules_reported_at'] = $now;
+            if ($db->hasColumn('devices', 'rfid_ok')) {
+                $columns['rfid_ok']             = (bool) $payload['rfid_ok'] ? 1 : 0;
+                $columns['fingerprint_ok']      = (bool) $payload['fingerprint_ok'] ? 1 : 0;
+                $columns['modules_reported_at'] = $now;
+            } else {
+                Logger::warning(
+                    'Terminal reported module health but devices.rfid_ok does not exist. '
+                    . 'Run: php bin/console migrate',
+                    ['device_id' => (string) $device['device_id']]
+                );
+            }
         }
 
         $db->update('devices', $columns, ['id' => $deviceRowId]);

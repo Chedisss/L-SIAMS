@@ -194,11 +194,18 @@ final class RfidController extends Controller
         // answer at boot heartbeats perfectly and reads "online" here, while
         // never picking this request up — so the reader's own verdict travels
         // with it. NULL means firmware too old to report, not a fault.
-        $terminal = Database::instance()->selectOne(
-            'SELECT v.health, v.seconds_since_heartbeat, d.rfid_ok
-               FROM v_device_status v
-               JOIN devices d ON d.id = v.device_row_id
-              WHERE v.device_row_id = :id',
+        // Named only where the schema has it, so a database that has not run
+        // migrate yet degrades to the old warning rather than breaking the
+        // dialog outright. Same reasoning as the fingerprint wizard.
+        $db      = Database::instance();
+        $hasFlag = $db->hasColumn('devices', 'rfid_ok');
+
+        $terminal = $db->selectOne(
+            'SELECT v.health, v.seconds_since_heartbeat'
+            . ($hasFlag ? ', d.rfid_ok' : ', NULL AS rfid_ok')
+            . ' FROM v_device_status v
+                JOIN devices d ON d.id = v.device_row_id
+               WHERE v.device_row_id = :id',
             ['id' => (int) $enrolment['device_row_id']]
         );
 
