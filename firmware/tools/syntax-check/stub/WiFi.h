@@ -23,6 +23,7 @@ public:
   void mode(int){}
   void begin(const char*,const char*){}
   void disconnect(bool=false){}
+  bool reconnect(){ return true; }
   int status(){return WL_CONNECTED;}
   IPAddress localIP(){return IPAddress();}
   String macAddress(){return String();}

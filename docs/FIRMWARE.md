@@ -530,7 +530,9 @@ send you looking for an authentication fault that does not exist.
 
 | Symptom | Cause |
 |---|---|
-| Nothing at all happens; `HALTED:` repeats | Startup stopped for the reason printed beside it. Nothing works until that is fixed. |
+| Nothing at all happens; `HALTED:` repeats | Startup stopped for the reason printed beside it. Nothing works until that is fixed, and it needs a person — the board will not recover on its own. |
+| `PAUSED:` repeats instead of `HALTED:` | A fault that can clear itself, currently only "no clock yet". The terminal retries every 30 seconds and prints `Recovered:` when the server answers. No action needed unless it persists. |
+| A negative number where an HTTP status belongs | Not an HTTP status. `HTTPClient` reports its own failures as negative values, and the terminal now names each one. The important split: **`-1` never got a connection** — wrong address, wrong port, or Apache not running; **`-11` connected and sent, and the reply never came** — the address and port are proven right by the connection succeeding, so look at the Wi-Fi link, not at `LS_SERVER_URL`. |
 | The teacher's scan says `SESSION OPEN — ? with ?, roster 0` | Firmware older than the fix in this section: the session really did open and is in the database, but the sketch read the response one level too shallow. Run `update.bat` and re-flash. |
 | `SIGNATURE_INVALID` on every request | Clock drift. Check against `GET /api/device/time`. The window is ±30 s. |
 | `DEVICE_UNCLAIMED` | Never completed first boot. Re-provision with a fresh file. |
