@@ -5,7 +5,7 @@ materials for the Week 6 prototype presentation.
 
 | File | What it is |
 |---|---|
-| [`WEEK-5-Accomplished-Forms.docx`](WEEK-5-Accomplished-Forms.docx) | Forms 1–7, filled in. The document to submit |
+| [`WEEK-5-Accomplished-Forms.docx`](WEEK-5-Accomplished-Forms.docx) | The official WEEK 5 activity template with Forms 1–7 filled in — original layout, header and CCIT logos untouched. The document to submit |
 | [`WEEK-5-REPORT.md`](WEEK-5-REPORT.md) | The same content in Markdown, readable in the repository |
 | [`TEST-EVIDENCE.md`](TEST-EVIDENCE.md) | Raw output from every check, with the commands that produced it |
 | [`DEMONSTRATION-SCRIPT.md`](DEMONSTRATION-SCRIPT.md) | Word-for-word script for the Week 6 demonstration, with fallbacks |
