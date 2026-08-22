@@ -404,10 +404,40 @@ static int unsignedPost(const String &path, const String &body, LsJson *response
 
 /* The board has no battery-backed clock, and every signature covers a
  * timestamp the server checks against a 30-second window. Without this the
- * first request of every boot is refused as expired. */
+ * first request of every boot is refused as expired.
+ *
+ * Which is a circle, and it has to be broken deliberately: the board asks
+ * /api/device/time BECAUSE it has no clock, and that request is signed with
+ * the clock it does not have. Fresh from power-on, time(nullptr) returns
+ * seconds since boot — about fifty-six years adrift — so the server refuses it
+ * with TIMESTAMP_EXPIRED and the board never gets the answer it asked for.
+ *
+ * The server anticipated this. A TIMESTAMP_EXPIRED refusal carries the
+ * server's own epoch in its body, for exactly this purpose. So a rejection is
+ * not a dead end here: read the epoch out of it, set the clock, and ask again
+ * with a timestamp that will pass.
+ *
+ * That is safe to trust because the refusal only happens after the API key and
+ * signature have been checked — the device is authenticated by then, and only
+ * the clock was wrong. */
 static bool syncClockFromServer() {
   LsJson response;
   int    status = signedRequest("GET", "/api/device/time", "", &response);
+
+  /* Recover from the one refusal that contains its own remedy. */
+  if (status == 401 && strcmp(response["code"] | "", "TIMESTAMP_EXPIRED") == 0) {
+    long offered = response["data"]["server_epoch"] | 0L;
+
+    if (offered > 0) {
+      struct timeval seed = { .tv_sec = (time_t) offered, .tv_usec = 0 };
+      settimeofday(&seed, nullptr);
+
+      Serial.printf("Clock: board was %ld years adrift; taking the server's time and retrying\n",
+                    (long) ((offered - (long) time(nullptr)) / 31557600L));
+
+      status = signedRequest("GET", "/api/device/time", "", &response);
+    }
+  }
 
   if (status != 200) {
     const char *code = response["code"] | "";
@@ -435,6 +465,10 @@ static bool syncClockFromServer() {
         Serial.println("       The key was accepted but the signature did not match, so");
         Serial.println("       LS_HMAC_SECRET is from a different provisioning file than");
         Serial.println("       LS_API_KEY. Take all four values from one download.");
+      } else if (strcmp(code, "TIMESTAMP_EXPIRED") == 0) {
+        Serial.println("       The clock was refused even after taking the server's own time,");
+        Serial.println("       so the two drifted apart between the two requests. Check the");
+        Serial.println("       PC's clock is correct — the window is 30 seconds either way.");
       } else {
         Serial.println("       Check LS_DEVICE_ID, LS_API_KEY and LS_HMAC_SECRET all came");
         Serial.println("       from the SAME provisioning download — mixing two is the");

@@ -271,7 +271,19 @@ final class App
     {
         if ($e instanceof AuthenticationException || $e->status() === 401) {
             if ($request->wantsJson()) {
-                return Response::fail($e->errorCode(), $e->getMessage(), 401);
+                /* Carry the context. This branch dropped it, and one refusal
+                 * depends on it: TIMESTAMP_EXPIRED attaches the server's own
+                 * epoch precisely so a device with no clock can set itself and
+                 * retry. Losing it deadlocked every terminal on its first boot
+                 * — the board asks /api/device/time BECAUSE it has no clock,
+                 * and the request was refused for having no clock, with the
+                 * answer stripped out of the refusal.
+                 *
+                 * Safe to include: the API key is validated at step 2 of the
+                 * device chain and the timestamp at step 4, so anything
+                 * reaching this line has already proved which device it is.
+                 * Rejections that pass no context are unchanged. */
+                return Response::fail($e->errorCode(), $e->getMessage(), 401, $e->context());
             }
 
             $reason = $e->errorCode() === 'SESSION_EXPIRED' ? '?reason=idle_timeout' : '';
