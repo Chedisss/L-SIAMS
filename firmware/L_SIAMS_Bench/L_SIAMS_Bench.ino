@@ -2168,10 +2168,23 @@ void loop() {
    * there with one module proven good, working on the other, and the board
    * will not look until it is reset.
    *
-   * Twenty seconds rather than the fifteen used while halted, because this
-   * terminal is also serving a classroom and a probe is not free. Skipped
-   * entirely while an enrolment owns the board. */
-  if ((!rfidReady || !fingerReady) && !busy && millis() - lastModuleRetry >= 20000) {
+   * The interval is fast for the first five minutes after a reset and slow
+   * afterwards, because those two periods have different people in them.
+   *
+   * A board that has just been reset almost always has somebody in front of
+   * it holding a wire, and a cracked joint is found by pressing one
+   * connection at a time and seeing whether the reading moves. At twenty
+   * seconds that loop is unusable — press, wait, forget which one you pressed.
+   * At three it is a conversation with the hardware.
+   *
+   * A terminal that has been up for hours has nobody near it, so the probe is
+   * pure cost against a classroom it is also serving, and slow is right.
+   *
+   * Nothing is printed unless the reading changes, so the fast phase is not
+   * noisy — it is silent until something you touch makes a difference. */
+  uint32_t retryEvery = (millis() - bootMillis < 300000UL) ? 3000 : 20000;
+
+  if ((!rfidReady || !fingerReady) && !busy && millis() - lastModuleRetry >= retryEvery) {
     lastModuleRetry = millis();
 
     bool hadRfid   = rfidReady;
