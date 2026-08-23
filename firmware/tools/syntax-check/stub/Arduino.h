@@ -21,7 +21,7 @@ public:
   const char* c_str() const {return s.c_str();}
   unsigned length() const {return (unsigned)s.size();}
   void reserve(unsigned){}
-  void trim(){}
+  void trim(){size_t a=s.find_first_not_of(" \t\r\n");size_t b=s.find_last_not_of(" \t\r\n");s=(a==std::string::npos)?std::string():s.substr(a,b-a+1);}
   void toLowerCase(){}
   void toUpperCase(){}
   int indexOf(const char*n) const {auto p=s.find(n);return p==std::string::npos?-1:(int)p;}
@@ -29,6 +29,9 @@ public:
   String substring(unsigned a) const {return String(s.substr(a));}
   String substring(unsigned a,unsigned b) const {return String(s.substr(a,b-a));}
   bool startsWith(const char*p) const {return s.rfind(p,0)==0;}
+  bool endsWith(const char*p) const {size_t n=std::string(p).size();return s.size()>=n&&s.compare(s.size()-n,n,p)==0;}
+  void remove(unsigned int i) {if(i<s.size())s.erase(i);}
+  void remove(unsigned int i,unsigned int n) {if(i<s.size())s.erase(i,n);}
   int toInt() const {return atoi(s.c_str());}
   String& operator+=(const String&o){s+=o.s;return *this;}
   String& operator+=(const char*o){s+=o;return *this;}
