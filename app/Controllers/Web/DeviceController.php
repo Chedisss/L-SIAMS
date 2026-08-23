@@ -487,6 +487,12 @@ final class DeviceController extends Controller
             'These credentials cannot be recovered. If a file is lost, rotate the',
             "device's key from Admin → IoT Devices and regenerate the file.",
             '',
+            'Paste all FIVE values into the sketch, including claim_token.',
+            'Regenerating a file puts the device back to unclaimed and issues a new',
+            'claim token, so a board that had its LS_CLAIM_TOKEN blanked after its',
+            'first claim will be refused with DEVICE_UNCLAIMED until the new token',
+            'is pasted in. The token is spent on first use; blank it again after.',
+            '',
             'Treat this bundle as you would a set of physical keys to the building.',
         ]));
 

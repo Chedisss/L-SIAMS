@@ -731,6 +731,24 @@ static bool syncClockFromServer() {
      * distinct reasons with five different fixes. Printing only "HTTP 401"
      * threw all of that away and left somebody guessing between a wrong key,
      * a wrong secret and an unregistered board. */
+    /* 403 DEVICE_UNCLAIMED, and the reason it is easy to arrive at by
+     * accident. Regenerating a terminal's provisioning file — the fix for a
+     * lost key, and for a server whose APP_KEY no longer matches its database
+     * — also issues a fresh claim token and puts the device back to
+     * unclaimed. A board whose LS_CLAIM_TOKEN was blanked after its FIRST
+     * claim then has nothing to present, and every signed request is refused
+     * with a message about activation that says nothing about where the token
+     * went. */
+    if (status == 403 && strcmp(code, "DEVICE_UNCLAIMED") == 0) {
+      Serial.println("       This terminal has to claim its key before the server will");
+      Serial.println("       accept anything signed, and LS_CLAIM_TOKEN is blank.");
+      Serial.println("       If you just regenerated the provisioning file on the Devices");
+      Serial.println("       page, that put this device back to unclaimed and issued a NEW");
+      Serial.println("       claim token. Paste it into LS_CLAIM_TOKEN and upload again.");
+      Serial.println("       It is spent on first use, so blank it again afterwards.");
+      return false;
+    }
+
     if (status == 401) {
       if (strcmp(code, "DEVICE_UNKNOWN") == 0) {
         Serial.println("       The server has no device with this LS_DEVICE_ID, or it was");
