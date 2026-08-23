@@ -203,6 +203,65 @@ $rotateDays = (int) config('security.api_key.age_rotate_days', 365);
                     </div>
                 <?php endif; ?>
 
+                <?php
+                /* Everything above reports only the LAST attempt, and that
+                   loses something the page already knows.
+
+                   A board with two problems — a wrong MAC on the registration
+                   AND a stale claim token — is refused for the token first,
+                   because the token is checked before the identity. The MAC
+                   comparison is then never rendered, even though an earlier
+                   attempt captured the address the board presented. The token
+                   gets fixed, the file re-flashed, and the MAC failure appears
+                   for the first time on the next boot: a second trip to the
+                   classroom that this page had the data to prevent.
+
+                   So: if ANY recent attempt presented an address that is not
+                   the registered one, say so regardless of what failed most
+                   recently. */
+                $seenMac = null;
+
+                foreach ($claimAttempts as $attempt) {
+                    $candidate = $attempt['presented_mac'] ?? null;
+
+                    if ($candidate !== null && $candidate !== (string) $device['mac_address']) {
+                        $seenMac = (string) $candidate;
+                        break;
+                    }
+                }
+                ?>
+
+                <?php /* The guard is what keeps the id unique: the panel above
+                         renders its own #adopt-mac only when the reason IS
+                         identity_mismatch, and this one only when it is not,
+                         so exactly one is ever in the document. Keep the two
+                         conditions opposites if either is edited. */ ?>
+                <?php if ($seenMac !== null && $latest['reason'] !== 'identity_mismatch'): ?>
+                    <div class="alert alert-warning mt-2">
+                        <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+                        <div class="alert__body">
+                            <strong>There is a second problem waiting behind that one.</strong>
+                            A board claiming this terminal reported its address as
+                            <span class="mono"><?= e($seenMac) ?></span>, but this registration says
+                            <span class="mono"><?= e($device['mac_address']) ?></span>. Fixing the token
+                            alone will not be enough — the next attempt will be refused on the address.
+
+                            <div class="flex gap-1 mt-2">
+                                <button class="btn btn-primary btn-sm" id="adopt-mac"
+                                        data-mac="<?= e($seenMac) ?>">
+                                    <i class="fa-solid fa-check"></i>
+                                    Use <?= e($seenMac) ?>
+                                </button>
+                            </div>
+
+                            <div class="text-xs text-muted mt-1">
+                                Only if that is the board you mean to use. If it is not, another board
+                                is holding this terminal's provisioning file — revoke the key instead.
+                            </div>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
                 <details class="mt-2">
                     <summary class="text-sm text-muted" style="cursor:pointer">
                         All <?= e(count($claimAttempts)) ?> attempt(s)
