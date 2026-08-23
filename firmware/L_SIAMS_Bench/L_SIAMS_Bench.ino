@@ -1705,7 +1705,20 @@ static bool checkConfig() {
 }
 
 static void startRfid(bool verbose = true) {
-  SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI, PIN_RFID_SS);
+  /* Three pins, deliberately not four.
+   *
+   * SPI.begin() takes an optional fourth argument for the chip-select pin,
+   * and passing PIN_RFID_SS there was wrong: the MFRC522 library already owns
+   * that pin. It is given to the constructor above, and the library drives it
+   * by hand around every transfer.
+   *
+   * Handing the same pin to the SPI peripheral as well gives it two owners.
+   * Whether that bites depends on the core version — hardware chip-select is
+   * off unless setHwCs(true) is called, so today it is merely redundant — and
+   * a redundancy that becomes a conflict after a library update is not worth
+   * keeping. The argument defaults to -1, which means "the peripheral does not
+   * touch a CS pin", and that is exactly right here. */
+  SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI);
   rfid.PCD_Init();
   delay(50);
 
