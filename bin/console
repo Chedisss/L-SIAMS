@@ -843,6 +843,55 @@ function commandDoctor(): void
     }
 
     // ----------------------------------------------------------- realtime --
+    // -------------------------------------------------------- the website --
+    //
+    // The check that was missing, and the one everything else depends on.
+    //
+    // doctor probed the realtime server but never the site itself, so an
+    // installation whose web server simply was not running passed every check
+    // and reported nothing wrong. The terminals then failed with "could not
+    // connect", which reads as a network fault and sends the search to the
+    // Wi-Fi, the IP address and the router.
+    //
+    // XAMPP makes it easy to believe the site is up when it is not. Its
+    // control panel shows Apache running in green on ports 80 and 443 — and
+    // Apache does not serve this system. start.bat does, on 8080, in its own
+    // window. Two green rows in XAMPP and a stopped site look identical from
+    // the outside.
+    heading('The website');
+
+    $webPort = 8080;
+    $appUrl  = (string) Env::get('APP_URL', '');
+
+    if ($appUrl !== '') {
+        $parsedPort = parse_url($appUrl, PHP_URL_PORT);
+        if (is_int($parsedPort)) {
+            $webPort = $parsedPort;
+        } elseif (str_starts_with($appUrl, 'https://')) {
+            $webPort = 443;
+        } elseif (str_starts_with($appUrl, 'http://')) {
+            $webPort = 80;
+        }
+    }
+
+    $site = @fsockopen('127.0.0.1', $webPort, $siteErrno, $siteErrstr, 1.5);
+
+    if (is_resource($site)) {
+        fclose($site);
+        $check(true, 'Website is listening on port ' . $webPort);
+    } else {
+        $check(false, 'Website is listening on port ' . $webPort,
+            $siteErrstr ?: 'nothing is listening');
+
+        $note('Nothing is serving the system right now, so no browser and no terminal');
+        $note('can reach it. Run start.bat — it serves the site on port ' . $webPort . ' and');
+        $note('must stay open while the system is in use.');
+        $note('');
+        $note('XAMPP\'s Apache does NOT serve L-SIAMS, so Apache showing green on ports');
+        $note('80 and 443 in the XAMPP Control Panel does not mean the site is up. Only');
+        $note('MySQL is needed from XAMPP; start.bat provides the web server itself.');
+    }
+
     heading('Live updates');
 
     $realtimeEnabled = (bool) Config::get('realtime.enabled', true);
