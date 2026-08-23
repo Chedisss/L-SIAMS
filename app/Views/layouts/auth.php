@@ -95,7 +95,7 @@
         </div>
 
         <div class="auth-hero__footer">
-            This system is for authorised staff only. All access attempts are logged.
+            
         </div>
     </aside>
 
