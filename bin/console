@@ -939,6 +939,76 @@ function commandDoctor(): void
     if (is_resource($site)) {
         fclose($site);
         $check(true, 'Website is listening on port ' . $webPort);
+
+        // Reaching it from this PC proves nothing about reaching it from a
+        // classroom. A terminal connects to the LAN address, and a server
+        // bound only to loopback, or a firewall rule that never got its
+        // "allow", answers on 127.0.0.1 and refuses everything else.
+        //
+        // That failure is invisible from the browser on the same machine,
+        // which is where anyone naturally checks, and it presents at the
+        // terminal as "could not connect" — indistinguishable from a stopped
+        // server. Probing the machine's own LAN address separates the two.
+        $lanIp = null;
+
+        $viaHostname = @gethostbyname(@gethostname() ?: '');
+
+        if (is_string($viaHostname)
+            && filter_var($viaHostname, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+            && !str_starts_with($viaHostname, '127.')
+        ) {
+            $lanIp = $viaHostname;
+        }
+
+        if ($lanIp === null) {
+            // No packets leave: connecting a UDP socket only fixes the local
+            // end, and the address it picks is the one this machine would
+            // send from. Needs a route to exist, nothing more.
+            $probe = @stream_socket_client('udp://192.0.2.1:53', $e1, $e2, 0.5);
+
+            if (is_resource($probe)) {
+                $local = (string) @stream_socket_get_name($probe, false);
+                fclose($probe);
+
+                $candidate = substr($local, 0, (int) strrpos($local, ':') ?: 0);
+
+                if (filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+                    && !str_starts_with($candidate, '127.')
+                ) {
+                    $lanIp = $candidate;
+                }
+            }
+        }
+
+        if ($lanIp === null) {
+            $note('This PC\'s LAN address could not be determined here, so whether a');
+            $note('terminal can reach the site was not tested. Run ipconfig and open');
+            $note('http://<that address>:' . $webPort . ' in a browser to check by hand.');
+        } else {
+            $lanSocket = @fsockopen($lanIp, $webPort, $lanErrno, $lanErrstr, 1.5);
+
+            if (is_resource($lanSocket)) {
+                fclose($lanSocket);
+                $check(true, 'Reachable from the network on ' . $lanIp . ':' . $webPort);
+                $note('That is the address the terminals must have in LS_SERVER_URL,');
+                $note('written in full: http://' . $lanIp . ':' . $webPort);
+            } else {
+                $check(false, 'Reachable from the network on ' . $lanIp . ':' . $webPort,
+                    $lanErrstr ?: 'refused');
+
+                $note('The site answers on this PC but not on its own network address, so no');
+                $note('terminal can reach it while the browser here works perfectly — which');
+                $note('is why this looks like a fault at the board.');
+                $note('');
+                $note('Windows Firewall is the usual cause: it asks once whether to allow');
+                $note('php.exe, and a "Cancel" or a "Public networks only" answer produces');
+                $note('exactly this. Allow php.exe on Private networks.');
+                $note('');
+                $note('The other cause is a server bound to localhost. start.bat binds');
+                $note('0.0.0.0 deliberately, so this points at the firewall unless the site');
+                $note('is being started some other way.');
+            }
+        }
     } else {
         $check(false, 'Website is listening on port ' . $webPort,
             $siteErrstr ?: 'nothing is listening');
