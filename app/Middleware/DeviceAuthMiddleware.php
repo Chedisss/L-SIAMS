@@ -111,6 +111,36 @@ final class DeviceAuthMiddleware extends Middleware
             ]);
         }
 
+        // The key is genuine and the server cannot read the secret paired with
+        // it — an APP_KEY that no longer matches the database, not a bad
+        // credential. Named separately so the terminal stops advising a
+        // re-download, which masks the condition instead of naming it, and so
+        // the security log does not record a legitimate device as an attacker.
+        if (isset($verified['undecryptable'])) {
+            $this->reject(
+                'SERVER_KEY_MISMATCH',
+                'This server cannot decrypt its own copy of this device\'s secret. '
+                . 'APP_KEY in .env does not match the key this database was encrypted with. '
+                . 'Restore the original .env, or re-register the terminal.',
+                401,
+                [
+                    'event'     => SecurityLogService::API_KEY_INVALID,
+                    // Not "high". Nothing hostile happened: a valid device
+                    // presented a valid key to a server that has lost the
+                    // means to read it. Filing it as an attack buries a
+                    // configuration fault among the intrusion attempts.
+                    'severity'  => 'medium',
+                    'message'   => sprintf(
+                        'Device "%s" presented a valid key whose HMAC secret could not be decrypted. '
+                        . 'APP_KEY does not match this database.',
+                        $deviceId
+                    ),
+                    'device_id' => $deviceId,
+                    'row_id'    => (int) $device['id'],
+                ]
+            );
+        }
+
         // A key that authenticates but belongs to a different device is the
         // signature of a stolen credential being replayed from other hardware.
         if ((int) $verified['key']['device_row_id'] !== (int) $device['id']) {

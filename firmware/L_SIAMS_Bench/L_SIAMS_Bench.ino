@@ -738,6 +738,18 @@ static bool syncClockFromServer() {
         Serial.println("       working the moment you download again.");
         Serial.println("       Download once more, then use ONLY that file — all four values");
         Serial.println("       together, not mixed with an earlier one.");
+      } else if (strcmp(code, "SERVER_KEY_MISMATCH") == 0) {
+        /* Nothing is wrong on this board. Every value in the sketch is
+         * correct, and re-flashing it changes nothing. */
+        Serial.println("       Nothing is wrong with this terminal — do not re-flash it.");
+        Serial.println("       The SERVER cannot read its own copy of this device's secret.");
+        Serial.println("       Its APP_KEY does not match the database it is using, which");
+        Serial.println("       happens when a database is copied to another PC and new keys");
+        Serial.println("       are generated there instead of carrying the original .env.");
+        Serial.println("       On the PC: run doctor.bat and read the Encryption key section.");
+        Serial.println("       The fix is to restore the original .env. Failing that, register");
+        Serial.println("       this terminal again — but note the fingerprint templates cannot");
+        Serial.println("       be recovered that way and will need re-enrolling.");
       } else if (strcmp(code, "SIGNATURE_INVALID") == 0) {
         Serial.println("       The key was accepted but the signature did not match, so");
         Serial.println("       LS_HMAC_SECRET is from a different provisioning file than");
