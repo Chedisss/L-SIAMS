@@ -698,41 +698,101 @@ function commandDoctor(): void
     // One decryption of each kind settles it in milliseconds.
     heading('Encryption key');
 
-    $encrypted = [
-        'terminal HMAC secrets' => $db->scalar(
-            'SELECT hmac_secret_encrypted FROM api_keys
-              WHERE hmac_secret_encrypted IS NOT NULL AND revoked_at IS NULL LIMIT 1'
-        ),
-        'fingerprint templates' => $db->hasColumn('fingerprint_templates', 'template_data')
-            ? $db->scalar('SELECT template_data FROM fingerprint_templates
-                            WHERE template_data IS NOT NULL LIMIT 1')
-            : null,
-    ];
+    // Every ACTIVE key, not one arbitrary row.
+    //
+    // The first version of this took a single sample with `LIMIT 1` and no
+    // status filter, and rotating a key is exactly what makes that wrong.
+    // Rotation leaves the superseded row behind with status 'rotating' and
+    // revoked_at still NULL, so the sample could land on a key that has been
+    // replaced — unreadable by design after an APP_KEY change, and no longer
+    // used by anything. It then reported a failure that had already been
+    // fixed, which is worse than reporting nothing: it sends somebody back to
+    // repair what they just repaired.
+    //
+    // The useful question is not "is some row readable" but "can every key a
+    // terminal might present still be read", and, when the answer is no,
+    // which terminals. Superseded and revoked rows are ignored throughout;
+    // they are history, and history being unreadable costs nothing.
+    $activeKeys = $db->select(
+        "SELECT k.api_key_id, k.hmac_secret_encrypted, d.device_id
+           FROM api_keys k
+      LEFT JOIN devices d ON d.id = k.device_row_id
+          WHERE k.status = 'active'
+            AND k.revoked_at IS NULL
+            AND k.hmac_secret_encrypted IS NOT NULL"
+    );
 
-    $anyEncrypted = false;
+    $unreadableDevices = [];
 
-    foreach ($encrypted as $label => $sample) {
-        if ($sample === null) {
-            out(sprintf('  %-44s %s', $label, 'none stored yet'), 'grey');
-            continue;
-        }
-
-        $anyEncrypted = true;
-
+    foreach ($activeKeys as $row) {
         try {
-            Crypto::decrypt((string) $sample);
-            $check(true, 'APP_KEY decrypts the ' . $label);
+            Crypto::decrypt((string) $row['hmac_secret_encrypted']);
         } catch (Throwable $e) {
-            $check(false, 'APP_KEY decrypts the ' . $label, 'FAILED');
-            $note('This database was encrypted with a DIFFERENT APP_KEY than the one in');
-            $note('.env now. The data is intact but unreadable until the original key is');
-            $note('restored — it cannot be recovered or regenerated from anything here.');
-            $note('If you moved this system to another PC, copy the ORIGINAL .env across');
-            $note('rather than running key:generate. See docs/MOVING-TO-ANOTHER-PC.md');
+            $unreadableDevices[] = (string) ($row['device_id'] ?? ('key #' . $row['api_key_id']));
         }
     }
 
-    if (!$anyEncrypted) {
+    $templatesTotal      = 0;
+    $templatesUnreadable = 0;
+
+    if ($db->hasColumn('fingerprint_templates', 'template_data')) {
+        foreach ($db->select('SELECT template_data FROM fingerprint_templates
+                               WHERE template_data IS NOT NULL') as $row) {
+            $templatesTotal++;
+
+            try {
+                Crypto::decrypt((string) $row['template_data']);
+            } catch (Throwable $e) {
+                $templatesUnreadable++;
+            }
+        }
+    }
+
+    if ($activeKeys === []) {
+        out(sprintf('  %-44s %s', 'terminal keys', 'none issued yet'), 'grey');
+    } else {
+        $check(
+            $unreadableDevices === [],
+            'APP_KEY decrypts every terminal key',
+            $unreadableDevices === []
+                ? count($activeKeys) . ' of ' . count($activeKeys) . ' readable'
+                : count($unreadableDevices) . ' of ' . count($activeKeys) . ' UNREADABLE'
+        );
+    }
+
+    if ($templatesTotal === 0) {
+        out(sprintf('  %-44s %s', 'fingerprint templates', 'none stored yet'), 'grey');
+    } else {
+        $check(
+            $templatesUnreadable === 0,
+            'APP_KEY decrypts every fingerprint template',
+            $templatesUnreadable === 0
+                ? $templatesTotal . ' of ' . $templatesTotal . ' readable'
+                : $templatesUnreadable . ' of ' . $templatesTotal . ' UNREADABLE'
+        );
+    }
+
+    if ($unreadableDevices !== [] || $templatesUnreadable > 0) {
+        $note('APP_KEY in .env is not the key this data was encrypted with — the usual');
+        $note('cause is a database copied to another PC where new keys were generated.');
+        $note('');
+
+        if ($unreadableDevices !== []) {
+            $note('Terminals that cannot authenticate: ' . implode(', ', $unreadableDevices));
+            $note('Each is repaired by regenerating its provisioning file from Admin → IoT');
+            $note('Devices, which issues a key under the CURRENT APP_KEY. That also resets');
+            $note('the device to unclaimed, so paste the new claim token in as well.');
+        }
+
+        if ($templatesUnreadable > 0) {
+            $note($templatesUnreadable . ' fingerprint template(s) cannot be recovered this way and');
+            $note('must be enrolled again.');
+        }
+
+        $note('');
+        $note('Restoring the ORIGINAL .env fixes all of it at once and loses nothing.');
+        $note('See docs/MOVING-TO-ANOTHER-PC.md');
+    } elseif ($activeKeys === [] && $templatesTotal === 0) {
         $note('Nothing encrypted is stored yet, so there is nothing to verify. This is');
         $note('normal on a fresh installation.');
     }
