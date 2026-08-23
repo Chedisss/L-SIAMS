@@ -235,6 +235,28 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
 
 #define PIN_RFID_SS        5
 #define PIN_RFID_RST       22
+
+/* The three SPI pins, named rather than left to the default.
+ *
+ * SPI.begin() with no arguments uses the ESP32's VSPI defaults — 18, 19, 23 —
+ * which are these exact values, so nothing changes by writing them down. What
+ * changes is that they can now be MOVED, and that is a diagnostic the sketch
+ * could not perform before.
+ *
+ * When the reader answers 0x00 and 0xFF alternately, MISO is floating: nothing
+ * is driving it. Three things can cause that — the wire, the module, or the
+ * ESP32's own pin — and swapping the module rules out one of them. Moving MISO
+ * to a free GPIO here, and moving the wire to match, rules out a second: if
+ * the reading changes, GPIO 19 is damaged; if it does not, the fault is the
+ * wire or its joints.
+ *
+ * Free pins on a 30-pin DOIT board, with nothing else in this sketch using
+ * them: 21, 25, 26, 27, 32, 33. Avoid 34-39, which are input-only and cannot
+ * be used for MOSI or SCK, and avoid 0, 2, 12 and 15, which are strapping pins
+ * and affect how the board boots. */
+#define PIN_RFID_SCK       18
+#define PIN_RFID_MISO      19
+#define PIN_RFID_MOSI      23
 #define PIN_FINGER_RX      17    /* ESP32 listens here — SENSOR TX wire */
 #define PIN_FINGER_TX      16    /* ESP32 speaks here  — SENSOR RX wire */
 #define FINGERPRINT_BAUD   57600
@@ -1683,7 +1705,7 @@ static bool checkConfig() {
 }
 
 static void startRfid(bool verbose = true) {
-  SPI.begin();
+  SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI, PIN_RFID_SS);
   rfid.PCD_Init();
   delay(50);
 

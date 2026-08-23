@@ -51,6 +51,27 @@ of this section and is not wired to anything in the shipping firmware.
 > RST is GPIO 22 because nothing else claims it. If you later add an SSD1306,
 > its SCL wants 22 too — move RST to 27 and change `PIN_RFID_RST` to match.
 
+#### Isolating a reader that answers `0x00` and `0xFF`
+
+Alternating `0x00` and `0xFF` means MISO is **floating** — nothing is driving
+it — and three things can cause that. Rule them out in this order, because
+each step is cheaper than the one after it:
+
+1. **Swap the module.** If a second MFRC522 behaves identically, the module was
+   never the fault, and the remaining two are on the board's side.
+2. **Move MISO to a different pin.** Change `PIN_RFID_MISO` to a free GPIO —
+   21, 25, 26, 27, 32 and 33 are unused by this sketch — and move the wire to
+   match. If the reading changes, GPIO 19 is damaged. If it does not, GPIO 19
+   is fine and the fault is the wire or its joints.
+3. **Replace the wire**, rather than re-seating it. A conductor broken inside
+   the sheath still fits snugly and is invisible.
+
+`PIN_RFID_SCK`, `PIN_RFID_MISO` and `PIN_RFID_MOSI` hold the ESP32's own VSPI
+defaults, so writing them down changes nothing electrically — it only makes
+step 2 possible. Do not use GPIO 34–39 for SCK or MOSI: they are input-only.
+Avoid 0, 2, 12 and 15 entirely; they are strapping pins and change how the
+board boots.
+
 **Fingerprint sensor → ESP32** (UART2)
 
 | Sensor | ESP32 |
