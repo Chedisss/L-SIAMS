@@ -1713,9 +1713,22 @@ static void startRfid(bool verbose = true) {
     if (bits < nearestBits) { nearestBits = bits; nearest = KNOWN[i]; }
   }
 
-  Serial.printf("Reader: version 0x%02X %s\n", version,
-                known ? (stable ? "(ok)" : "(known version but UNSTABLE)")
-                      : "<-- not a version any MFRC522 reports");
+  /* On a quiet re-probe, speak only when the reading has moved.
+   *
+   * The version byte is the whole diagnostic while somebody is working on the
+   * wiring, and a line every twenty seconds saying the same thing buries it —
+   * the eye stops reading a repeating line. A CHANGE is the signal: it means
+   * whatever was just touched altered how the module answers, which is how a
+   * bad joint is found. Silence in between means nothing has changed. */
+  static byte lastReported = 0x01;         /* no real reading is 0x01 */
+
+  if (verbose || version != lastReported) {
+    Serial.printf("Reader: version 0x%02X %s\n", version,
+                  known ? (stable ? "(ok)" : "(known version but UNSTABLE)")
+                        : "<-- not a version any MFRC522 reports");
+  }
+
+  lastReported = version;
 
   rfidReady = known && stable;
 
@@ -2127,11 +2140,44 @@ void loop() {
    * checking the module it needs and returning if it is missing, which is the
    * right thing to do and reads from outside as a terminal that is simply
    * ignoring the request. Once a minute, say which half is missing. */
-  if ((!rfidReady || !fingerReady) && millis() - lastModuleNag >= 60000) {
-    lastModuleNag = millis();
-    Serial.printf("Module: the %s is not responding, so anything needing it will not be\n",
-                  rfidReady ? "fingerprint sensor" : "card reader");
-    Serial.println("        picked up from the server. The rest of the terminal is working.");
+  /* Retry the missing half, not merely complain about it.
+   *
+   * The re-probe added for a fully dead terminal only ran while it was
+   * halted, and a terminal with ONE working module is not halted — it goes
+   * on doing real work and never touches the other again. Which removes the
+   * retry at exactly the moment it becomes most useful: somebody is standing
+   * there with one module proven good, working on the other, and the board
+   * will not look until it is reset.
+   *
+   * Twenty seconds rather than the fifteen used while halted, because this
+   * terminal is also serving a classroom and a probe is not free. Skipped
+   * entirely while an enrolment owns the board. */
+  if ((!rfidReady || !fingerReady) && !busy && millis() - lastModuleRetry >= 20000) {
+    lastModuleRetry = millis();
+
+    bool hadRfid   = rfidReady;
+    bool hadFinger = fingerReady;
+
+    if (!rfidReady)   startRfid(false);
+    if (!fingerReady) startFingerprint(false);
+
+    if (rfidReady != hadRfid || fingerReady != hadFinger) {
+      Serial.println();
+      Serial.printf("Recovered: the %s is answering now.\n",
+                    rfidReady != hadRfid ? "card reader" : "fingerprint sensor");
+
+      if (rfidReady && fingerReady) {
+        Serial.println("           Both modules are working — this terminal is fully ready.");
+      }
+
+      Serial.println();
+      sendHeartbeat();        /* the pages should stop saying it is broken */
+    } else if (millis() - lastModuleNag >= 60000) {
+      lastModuleNag = millis();
+      Serial.printf("Module: the %s is not responding, so anything needing it will not be\n",
+                    rfidReady ? "fingerprint sensor" : "card reader");
+      Serial.println("        picked up from the server. The rest of the terminal is working.");
+    }
   }
 
   /* Every poll below is a blocking HTTP request, and a card held against the
