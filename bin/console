@@ -562,6 +562,24 @@ function commandBackup(): void
         $result['filename'], $result['tables'], BackupService::humanSize($result['size'])));
     out('  SHA-256: ' . $result['checksum'], 'grey');
     out('  Duration: ' . $result['duration'] . 's', 'grey');
+
+    // The half of a backup that is easy to leave behind.
+    //
+    // The file is encrypted with this installation's APP_KEY, so it can only
+    // be read back by an installation holding that same key. Copy the database
+    // to another PC, run key:generate there, and the backup you carefully took
+    // is permanently unreadable — along with every fingerprint template and
+    // every terminal's HMAC secret, which are encrypted with it too.
+    //
+    // Nothing said so until somebody needed the backup, which is the worst
+    // possible moment to find out.
+    out('');
+    out('  Keep .env with this file.', 'yellow');
+    out('  It is encrypted with this installation\'s APP_KEY and cannot be read', 'grey');
+    out('  back without it — not by this project, not by anyone. The same key', 'grey');
+    out('  also decrypts the fingerprint templates and the terminals\' HMAC', 'grey');
+    out('  secrets, so a database restored beside a NEW key loses all three.', 'grey');
+    out('  Moving to another PC? See docs/MOVING-TO-ANOTHER-PC.md', 'grey');
 }
 
 /**
@@ -666,6 +684,59 @@ function commandDoctor(): void
     }
 
     // -------------------------------------------------------- fingerprints --
+    // ---------------------------------------------------- key vs the data --
+    //
+    // Does APP_KEY still open what APP_KEY encrypted?
+    //
+    // A database and an .env travel separately, and the commonest way they get
+    // separated is moving to another PC: copy the data, run key:generate on
+    // the new machine, and every encrypted value in the database becomes
+    // unreadable at once. Nothing announced it. The terminals simply stopped
+    // authenticating and the fingerprints simply stopped matching, each of
+    // which looks like its own hardware fault, and neither of which is.
+    //
+    // One decryption of each kind settles it in milliseconds.
+    heading('Encryption key');
+
+    $encrypted = [
+        'terminal HMAC secrets' => $db->scalar(
+            'SELECT hmac_secret_encrypted FROM api_keys
+              WHERE hmac_secret_encrypted IS NOT NULL AND revoked_at IS NULL LIMIT 1'
+        ),
+        'fingerprint templates' => $db->hasColumn('fingerprint_templates', 'template_data')
+            ? $db->scalar('SELECT template_data FROM fingerprint_templates
+                            WHERE template_data IS NOT NULL LIMIT 1')
+            : null,
+    ];
+
+    $anyEncrypted = false;
+
+    foreach ($encrypted as $label => $sample) {
+        if ($sample === null) {
+            out(sprintf('  %-44s %s', $label, 'none stored yet'), 'grey');
+            continue;
+        }
+
+        $anyEncrypted = true;
+
+        try {
+            Crypto::decrypt((string) $sample);
+            $check(true, 'APP_KEY decrypts the ' . $label);
+        } catch (Throwable $e) {
+            $check(false, 'APP_KEY decrypts the ' . $label, 'FAILED');
+            $note('This database was encrypted with a DIFFERENT APP_KEY than the one in');
+            $note('.env now. The data is intact but unreadable until the original key is');
+            $note('restored — it cannot be recovered or regenerated from anything here.');
+            $note('If you moved this system to another PC, copy the ORIGINAL .env across');
+            $note('rather than running key:generate. See docs/MOVING-TO-ANOTHER-PC.md');
+        }
+    }
+
+    if (!$anyEncrypted) {
+        $note('Nothing encrypted is stored yet, so there is nothing to verify. This is');
+        $note('normal on a fresh installation.');
+    }
+
     heading('Fingerprints');
 
     $teachers = (int) $db->scalar("SELECT COUNT(*) FROM teachers WHERE deleted_at IS NULL AND status = 'active'");
