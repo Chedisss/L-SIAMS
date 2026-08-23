@@ -126,7 +126,43 @@ $rotateDays = (int) config('security.api_key.age_rotate_days', 365);
                     because what it presented does not match this registration.
                 </p>
 
+                <?php
+                /* Judge the two columns that are actually on screen.
+                 *
+                 * "Registered here" prints the device's CURRENT value, while
+                 * the badge beside it used mac_matches out of the security log
+                 * — the verdict as it stood at the moment of the refusal. The
+                 * two agree only until somebody fixes the registration, which
+                 * is the entire point of the panel. Correct the MAC and the
+                 * row then shows two identical addresses labelled "differs",
+                 * with a banner underneath offering to adopt the address that
+                 * is already registered.
+                 *
+                 * Comparing what is displayed cannot drift from what is
+                 * displayed. The stored verdict stays in the attempt list
+                 * below, where a historical record belongs. */
+                $latestMac      = $latest['presented_mac'] ?? null;
+                $latestDeviceId = $latest['presented_device_id'] ?? null;
+
+                $macMatchesNow = $latestMac !== null
+                    && $latestMac === (string) $device['mac_address'];
+
+                $deviceIdMatchesNow = $latestDeviceId !== null
+                    && $latestDeviceId === (string) $device['device_id'];
+                ?>
+
                 <?php if ($latest['reason'] === 'identity_mismatch'): ?>
+                    <?php if ($macMatchesNow && $deviceIdMatchesNow): ?>
+                        <div class="alert alert-success mt-2">
+                            <span class="alert__icon"><i class="fa-solid fa-check"></i></span>
+                            <div class="alert__body">
+                                <strong>That has been corrected.</strong> The registration now matches
+                                what the board sent. Press EN/RST on the terminal — it will claim
+                                itself, and this panel will disappear once it does.
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
                     <div class="table-wrap mt-2">
                         <table class="data">
                             <thead><tr><th></th><th>Registered here</th><th>Sent by the board</th><th></th></tr></thead>
@@ -136,7 +172,7 @@ $rotateDays = (int) config('security.api_key.age_rotate_days', 365);
                                     <td class="mono text-sm"><?= e($device['device_id']) ?></td>
                                     <td class="mono text-sm"><?= e($latest['presented_device_id'] ?? '—') ?></td>
                                     <td>
-                                        <?php if ($latest['device_id_matches']): ?>
+                                        <?php if ($deviceIdMatchesNow): ?>
                                             <span class="badge badge-success">matches</span>
                                         <?php else: ?>
                                             <span class="badge badge-danger">differs</span>
@@ -148,7 +184,7 @@ $rotateDays = (int) config('security.api_key.age_rotate_days', 365);
                                     <td class="mono text-sm"><?= e($device['mac_address']) ?></td>
                                     <td class="mono text-sm"><?= e($latest['presented_mac'] ?? '—') ?></td>
                                     <td>
-                                        <?php if ($latest['mac_matches']): ?>
+                                        <?php if ($macMatchesNow): ?>
                                             <span class="badge badge-success">matches</span>
                                         <?php else: ?>
                                             <span class="badge badge-danger">differs</span>
@@ -159,7 +195,7 @@ $rotateDays = (int) config('security.api_key.age_rotate_days', 365);
                         </table>
                     </div>
 
-                    <?php if (!$latest['mac_matches'] && $latest['presented_mac'] !== null): ?>
+                    <?php if (!$macMatchesNow && $latestMac !== null): ?>
                         <div class="alert alert-warning mt-2">
                             <span class="alert__icon"><i class="fa-solid fa-circle-question"></i></span>
                             <div class="alert__body">
@@ -176,7 +212,7 @@ $rotateDays = (int) config('security.api_key.age_rotate_days', 365);
                                 </div>
                             </div>
                         </div>
-                    <?php elseif (!$latest['device_id_matches']): ?>
+                    <?php elseif (!$deviceIdMatchesNow): ?>
                         <p class="text-sm mt-2">
                             The Device ID is fixed once registered. Change <span class="mono">DEVICE_ID</span>
                             in the sketch to <span class="mono"><?= e($device['device_id']) ?></span> and flash again.
