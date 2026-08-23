@@ -584,8 +584,12 @@ static void describeHttpError(int status, const char *indent) {
     case -1:
     case -4:
       Serial.printf("%sNothing accepted a connection at %s.\n", indent, serverBase.c_str());
-      Serial.printf("%sCheck that XAMPP's Apache is running, that the PC still holds that\n", indent);
-      Serial.printf("%sIP — a DHCP lease can move it — and that the port is right.\n", indent);
+      Serial.printf("%s1. Is start.bat running on the PC? It serves the site, and it must\n", indent);
+      Serial.printf("%s   stay open. XAMPP's Apache does NOT serve L-SIAMS — Apache showing\n", indent);
+      Serial.printf("%s   green in the XAMPP Control Panel does not mean the site is up.\n", indent);
+      Serial.printf("%s   Only MySQL is needed from XAMPP.\n", indent);
+      Serial.printf("%s2. Does the PC still hold that IP? A DHCP lease can move it.\n", indent);
+      Serial.printf("%s3. Is the port right? start.bat uses 8080 unless APP_URL says else.\n", indent);
       break;
 
     case -11:
@@ -614,8 +618,8 @@ static void describeHttpError(int status, const char *indent) {
       break;
 
     default:
-      Serial.printf("%sThe request did not complete. The Wi-Fi link and the PC running\n", indent);
-      Serial.printf("%sXAMPP are the two things to check.\n", indent);
+      Serial.printf("%sThe request did not complete. The Wi-Fi link, and start.bat still\n", indent);
+      Serial.printf("%srunning on the PC, are the two things to check.\n", indent);
       break;
   }
 }
