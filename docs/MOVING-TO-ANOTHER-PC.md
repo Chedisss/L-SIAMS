@@ -30,7 +30,7 @@ there, all three become permanently unreadable.
 
 The symptoms do not point at the cause. Terminals stop authenticating, and
 fingerprints stop matching, and each looks like its own fault at its own
-device. Run `php bin/console doctor` — it decrypts one sample of each and says
+device. Double-click **`doctor.bat`** — it decrypts one sample of each and says
 so plainly if the key no longer fits.
 
 > **Take `.env` first, before anything else.** It is a small text file and it
@@ -80,7 +80,7 @@ sections, schedules, cards and fingerprints to come across.
 
 8. **Check it landed.**
    ```
-   php bin\console doctor
+   doctor.bat
    ```
    The **Encryption key** section must show a tick. A cross there means the
    `.env` and the database do not belong together — go back to step 5.
@@ -146,7 +146,7 @@ encrypted with the old key.
 ## Quick check afterwards
 
 ```
-php bin\console doctor
+doctor.bat
 ```
 
 Read three sections:

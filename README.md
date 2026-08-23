@@ -77,10 +77,17 @@ starts everything and opens the browser at <http://localhost:8080>.
 
 Three windows stay open while the system runs — the site, the maintenance
 worker and the realtime server. **`stop.bat`** closes all three.
-**`console.bat`** runs any console command without hunting for `php.exe`:
+
+When something is wrong and it is not obvious why, double-click
+**`doctor.bat`**. It checks PHP, the keys, the database, the migrations,
+whether `APP_KEY` still opens the encrypted data, every registered terminal
+and the realtime server, and changes nothing.
+
+**`console.bat`** runs any other console command without hunting for
+`php.exe`:
 
 ```
-console.bat doctor             check the installation and report problems
+doctor.bat                     check the installation and report problems
 mysql-doctor.bat               find out why MySQL will not stay started
 console.bat seed --demo        fill the system with sample data
 console.bat user:create-admin  add another administrator
