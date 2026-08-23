@@ -224,6 +224,43 @@ arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/ttyUSB0 firmware/L_SIAMS_Be
 
 Or open the sketch in the IDE and press Upload.
 
+#### When the upload will not connect
+
+```
+A fatal error occurred: Failed to connect to ESP32: No serial data received.
+```
+
+The sketch compiled — this is the board refusing to enter its bootloader, and
+it says nothing about your code. Work down this list; the first two account for
+most of it.
+
+1. **Close the Serial Monitor.** It holds the port open, and the uploader
+   cannot have it at the same time.
+
+2. **Hold the BOOT button.** Press Upload, wait for `Connecting......`, then
+   hold BOOT until it starts writing. Some boards have no auto-reset circuit;
+   others have one that a marginal supply defeats.
+
+3. **Try a different USB cable.** Charge-only cables carry power and no data,
+   and look identical to the one that works. A board that appears in Device
+   Manager is not proof — it can enumerate and still be on a cable with
+   degraded data lines.
+
+4. **Unplug both modules and upload with a bare board.** They share the 3.3 V
+   rail with the ESP32, and a module dragging that rail down during the reset
+   pulse stops the bootloader from starting. If the upload then succeeds, the
+   supply is the fault — not the upload.
+
+5. **Check the port.** Tools → Port, and confirm it is the board and not
+   another USB serial device.
+
+6. **Lower the upload speed** to 115200 in Tools → Upload Speed. Long or thin
+   cables fail at 921600 while working at the slower rate.
+
+If step 4 is what fixes it, treat that as a finding rather than a workaround:
+the same sagging rail is what makes the reader report a different version on
+every boot, and it will keep doing so after the upload succeeds.
+
 ### Step 4 — first boot claims the device
 
 On boot the terminal presents its claim token to `POST /api/device/claim`. The
@@ -530,6 +567,8 @@ send you looking for an authentication fault that does not exist.
 
 | Symptom | Cause |
 |---|---|
+| `Failed to connect to ESP32: No serial data received` | An upload problem, not a code problem — the sketch already compiled. See [When the upload will not connect](#when-the-upload-will-not-connect). Close the Serial Monitor first, then hold BOOT. |
+| A module works at boot on one run and not the next | Intermittent, not broken. Both modules share the 3.3 V rail and the ground, so a module that comes and goes — or a reader answering a different version each boot — is a supply or a joint. Use a 1 A wall supply, fix the shared joints, fit 100 µF + 100 nF at each module. |
 | Nothing at all happens; `HALTED:` repeats | Startup stopped for the reason printed beside it. Nothing works until that is fixed, and it needs a person — the board will not recover on its own. |
 | `PAUSED:` repeats instead of `HALTED:` | A fault that can clear itself, currently only "no clock yet". The terminal retries every 30 seconds and prints `Recovered:` when the server answers. No action needed unless it persists. |
 | `failed to send the request headers` (`-2`) on every attempt | `LS_SERVER_URL` is missing its `http://`. `HTTPClient` splits a URL at the first colon to find the protocol, so `192.168.1.193:8080` makes `192.168.1.193` the scheme and the request is malformed before it leaves. The terminal now completes a bare `host:port` and prints that it did — write it in full anyway. |
