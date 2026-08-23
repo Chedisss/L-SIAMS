@@ -289,6 +289,7 @@ static uint32_t    lastHaltNag = 0;
  * keeps the accurate message on screen: online, and its sensors are dead. */
 static bool     haltedButReporting = false;
 static uint32_t lastModuleNag      = 0;
+static uint32_t lastModuleRetry    = 0;
 
 /* Some halts are permanent and some are not, and treating them alike is what
  * turns a passing network fault into a site visit.
@@ -1662,7 +1663,7 @@ static bool checkConfig() {
   return ok;
 }
 
-static void startRfid() {
+static void startRfid(bool verbose = true) {
   SPI.begin();
   rfid.PCD_Init();
   delay(50);
@@ -1688,7 +1689,7 @@ static void startRfid() {
 
   rfidReady = known && stable;
 
-  if (!rfidReady) {
+  if (!rfidReady && verbose) {
     Serial.println("        No card will read until this is fixed. Check, in order:");
     Serial.println("          1. VCC on 3.3 V. NEVER 5 V — it damages this module.");
     Serial.println("          2. GND shared with the ESP32.");
@@ -1701,13 +1702,14 @@ static void startRfid() {
   rfid.PCD_AntennaOn();
 }
 
-static void startFingerprint() {
+static void startFingerprint(bool verbose = true) {
   fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
   delay(100);
 
   fingerReady = finger.verifyPassword();
 
   if (!fingerReady) {
+    if (!verbose) return;
     Serial.printf("Sensor: NOT FOUND — the sensor's TX must reach GPIO %d and its RX GPIO %d.\n",
                   PIN_FINGER_RX, PIN_FINGER_TX);
     Serial.println("        They cross: the sensor's transmit goes to the pin this board");
@@ -1998,6 +2000,47 @@ void loop() {
     if (haltedButReporting && millis() - lastHeartbeat >= HEARTBEAT_MS) {
       lastHeartbeat = millis();
       sendHeartbeat();
+    }
+
+    /* Re-probe the modules while halted for them.
+     *
+     * The modules are started once in setup(), so a wire re-seated afterwards
+     * changes nothing until somebody presses EN/RST — and the person holding
+     * the screwdriver is usually not the person watching the serial monitor.
+     * Worse, the commonest fault here is a cracked or dirty joint, which is
+     * found by moving connections one at a time and seeing what happens. That
+     * loop is unusable at one reset per attempt.
+     *
+     * Fifteen seconds is the width of that loop: wiggle a connection, wait,
+     * read the line. The reader's version byte is printed every time on
+     * purpose — 0x00 or 0xFF means no communication at all, while a value
+     * that CHANGES between probes means the link is alive but unreliable,
+     * which points at the joint rather than at the module. */
+    if (haltedButReporting && millis() - lastModuleRetry >= 15000) {
+      lastModuleRetry = millis();
+
+      startRfid(false);
+      startFingerprint(false);
+
+      Serial.printf("Modules: reader %s, sensor %s\n",
+                    rfidReady   ? "OK" : "silent",
+                    fingerReady ? "OK" : "silent");
+
+      if (rfidReady || fingerReady) {
+        Serial.println();
+        Serial.println("Recovered: a module answered. Resuming normal service.");
+
+        if (!rfidReady)   Serial.println("           The card reader is still silent.");
+        if (!fingerReady) Serial.println("           The fingerprint sensor is still silent.");
+
+        Serial.println();
+
+        haltReason         = nullptr;
+        haltedButReporting = false;
+        lastHaltNag        = 0;
+
+        sendHeartbeat();     /* tell the server straight away, not in 30 s */
+      }
     }
 
     /* A halt that can clear itself gets retried, so a network that comes back
