@@ -1427,7 +1427,26 @@ static void handleFingerprint() {
                   (const char *) (session["session_code"]  | "?"),
                   (const char *) (session["teacher_name"]  | "?"),
                   (const char *) (session["scheduled_end"] | "?"));
-    Serial.println("        Students may tap their cards now.");
+    /* Only if they actually can.
+     *
+     * The session opens on the fingerprint alone, so a terminal whose card
+     * reader is dead reaches this line and invites a class to tap against a
+     * reader that will never see them. The teacher then has an open session,
+     * a room full of students who have all "tapped", and an attendance record
+     * that stays empty — discovered at the end of the period, or the end of
+     * the week, by which time nobody can reconstruct who was there.
+     *
+     * The session is still worth opening: it is on the server, the roster is
+     * known, and an administrator can record attendance against it by hand.
+     * What must not happen is anyone believing the taps landed. */
+    if (rfidReady) {
+      Serial.println("        Students may tap their cards now.");
+    } else {
+      Serial.println("        BUT this terminal's card reader is not working, so no tap will");
+      Serial.println("        be recorded here. The session is open on the server and the");
+      Serial.println("        roster is known, so attendance can be entered from the");
+      Serial.println("        Attendance page — do not let the class tap and walk away.");
+    }
     return;
   }
 
