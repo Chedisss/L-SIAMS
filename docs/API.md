@@ -319,6 +319,7 @@ Rejections are business outcomes, not failures. Each returns HTTP 200 with
 | `REPLAY_DETECTED` | Nonce reused. |
 | `SIGNATURE_INVALID` | HMAC did not verify. |
 | `API_KEY_INVALID` | Key unknown, revoked, expired or suspended. |
+| `SERVER_KEY_MISMATCH` | The key is genuine; the **server** cannot decrypt its own copy of the paired HMAC secret. `APP_KEY` in `.env` is not the key this database was encrypted with — usually a database copied to another machine where new keys were generated. Nothing is wrong with the terminal. See [`MOVING-TO-ANOTHER-PC.md`](MOVING-TO-ANOTHER-PC.md). |
 | `DEVICE_UNKNOWN` / `DEVICE_UNCLAIMED` / `DEVICE_DISABLED` / `DEVICE_BLOCKED` / `DEVICE_LOCKED` | Device lifecycle states. |
 | `SESSION_ALREADY_OPEN` | A session is already open on this classroom or device. |
 | `SESSION_ALREADY_CLOSED` | The session was closed already; closing twice is refused, not double-counted. |

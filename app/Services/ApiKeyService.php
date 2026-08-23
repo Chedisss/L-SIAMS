@@ -138,7 +138,24 @@ final class ApiKeyService
                 'error'      => $e->getMessage(),
             ]);
 
-            return null;
+            /* Distinguished from "no such key", because the two mean opposite
+             * things and only one of them is the device's fault.
+             *
+             * The key presented here is genuine: it matched the stored hash,
+             * which is what step 3 above just proved. What failed is the
+             * server reading its OWN copy of the paired HMAC secret, and that
+             * happens for one reason — APP_KEY is not the key this row was
+             * encrypted with. Copying a database to another PC and generating
+             * fresh keys there does it to every device at once.
+             *
+             * Reported as API_KEY_INVALID, the terminal told its operator the
+             * key had been rejected and to download the provisioning file
+             * again. Re-provisioning does clear it, by re-encrypting under the
+             * current key — so the advice appeared to work while the real
+             * condition went unnamed, and the fingerprint templates, which
+             * cannot be re-provisioned, stayed unreadable with nobody looking
+             * for them. */
+            return ['undecryptable' => true];
         }
 
         return ['key' => $key, 'hmac_secret' => $hmacSecret];
