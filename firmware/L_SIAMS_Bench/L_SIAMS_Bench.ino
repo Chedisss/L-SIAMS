@@ -127,9 +127,18 @@ using LsJson = JsonDocument;
  *      LS_WIFI_PASS    "your wifi password"
  *      LS_SERVER_URL   "http://192.168.1.14:8080"
  *
- * LS_SERVER_URL is the one people get wrong. It must be the PC's LAN address
- * WITH the port — the address start.bat prints. Never localhost or 127.0.0.1,
- * which to this board mean this board, so the request never leaves it.
+ * LS_SERVER_URL is the one people get wrong, in three ways:
+ *
+ *   1. Leaving off the http://  — "192.168.1.193:8080" looks complete and is
+ *      not. The board completes it for you and says so, but write it in full.
+ *   2. localhost or 127.0.0.1  — to this board those mean THIS BOARD, so the
+ *      request never leaves it.
+ *   3. A stale address. The PC's IP is a DHCP lease and moves when the router
+ *      restarts. If the terminal worked yesterday and not today, check this
+ *      before anything else: run ipconfig on the PC and compare.
+ *
+ * It must be the PC's current LAN address WITH the port — the address
+ * start.bat prints. Reserve that address in the router so it stops moving.
  *
  * ---------------------------------------------------------------------------
  * ONE WARNING, WORTH READING ONCE
@@ -183,6 +192,40 @@ using LsJson = JsonDocument;
 static const char *WIFI_SSID   = LS_WIFI_SSID;
 static const char *WIFI_PASS   = LS_WIFI_PASS;
 static const char *SERVER_URL  = LS_SERVER_URL;
+
+/* The address every request is built on, after normalisation.
+ *
+ * LS_SERVER_URL is typed by hand, and "192.168.1.193:8080" — no http:// — is
+ * the natural way to write an address you have just read off ipconfig. It is
+ * also unusable: HTTPClient splits a URL at the first colon to find the
+ * protocol, so it took "192.168.1.193" to be the scheme and the rest to be the
+ * host, and every request then failed while sending its headers.
+ *
+ * The failure gave no hint of the cause. It surfaced as error -2 on the clock
+ * request, which reads as a network fault and sent the search to the Wi-Fi,
+ * the router and the PC — none of which were wrong. A missing five characters
+ * should not cost that.
+ *
+ * So a bare host:port is accepted and completed, out loud. Guessing silently
+ * would be worse than refusing: the log says exactly what it used. */
+static String serverBase;
+
+static void normaliseServerUrl() {
+  serverBase = String(SERVER_URL);
+  serverBase.trim();
+
+  /* A trailing slash would double up against paths that all begin with one. */
+  while (serverBase.endsWith("/")) serverBase.remove(serverBase.length() - 1);
+
+  if (serverBase.indexOf("://") < 0) {
+    Serial.println("Config: LS_SERVER_URL has no http:// in front of it.");
+    Serial.printf("        Reading it as http://%s\n", serverBase.c_str());
+    Serial.println("        Add the http:// to the sketch — this is a guess, and the next");
+    Serial.println("        person to read that line deserves not to have to make it.");
+
+    serverBase = "http://" + serverBase;
+  }
+}
 static const char *DEVICE_ID   = LS_DEVICE_ID;
 static const char *API_KEY     = LS_API_KEY;
 static const char *HMAC_SECRET = LS_HMAC_SECRET;
@@ -395,7 +438,7 @@ static int signedRequest(const char *method, const String &path, const String &b
                          LsJson *responseOut, const String &requestId = "") {
   if (WiFi.status() != WL_CONNECTED) return -1;
 
-  String url   = String(SERVER_URL) + path;
+  String url   = serverBase + path;
   bool   isTls = url.startsWith("https://");
 
   WiFiClient       plain;
@@ -540,7 +583,7 @@ static void describeHttpError(int status, const char *indent) {
   switch (status) {
     case -1:
     case -4:
-      Serial.printf("%sNothing accepted a connection at %s.\n", indent, SERVER_URL);
+      Serial.printf("%sNothing accepted a connection at %s.\n", indent, serverBase.c_str());
       Serial.printf("%sCheck that XAMPP's Apache is running, that the PC still holds that\n", indent);
       Serial.printf("%sIP — a DHCP lease can move it — and that the port is right.\n", indent);
       break;
@@ -551,7 +594,7 @@ static void describeHttpError(int status, const char *indent) {
        * piece; only the answer went missing. Sending somebody to re-check
        * LS_SERVER_URL here wastes their time on a value that just proved
        * itself correct by connecting. */
-      Serial.printf("%sThe connection to %s succeeded and the request went out,\n", indent, SERVER_URL);
+      Serial.printf("%sThe connection to %s succeeded and the request went out,\n", indent, serverBase.c_str());
       Serial.printf("%sso the address and the port are right and Apache is listening.\n", indent);
       Serial.printf("%sOnly the reply was lost. Usually a weak or busy Wi-Fi link — check\n", indent);
       Serial.printf("%sthe signal where the terminal is mounted. If it is persistent, look\n", indent);
@@ -561,7 +604,7 @@ static void describeHttpError(int status, const char *indent) {
       break;
 
     case -7:
-      Serial.printf("%sSomething is listening at %s but it is not this system.\n", indent, SERVER_URL);
+      Serial.printf("%sSomething is listening at %s but it is not this system.\n", indent, serverBase.c_str());
       Serial.printf("%sAnother device may have taken that IP address.\n", indent);
       break;
 
@@ -582,7 +625,7 @@ static void describeHttpError(int status, const char *indent) {
 static int unsignedPost(const String &path, const String &body, LsJson *responseOut) {
   if (WiFi.status() != WL_CONNECTED) return -1;
 
-  String url   = String(SERVER_URL) + path;
+  String url   = serverBase + path;
   bool   isTls = url.startsWith("https://");
 
   WiFiClient       plain;
@@ -1536,6 +1579,21 @@ static bool checkConfig() {
     return false;
   }
 
+  /* A scheme that is present but wrong. normaliseServerUrl() only supplies a
+   * missing one; it cannot rescue "htp://" or "ws://", and HTTPClient will
+   * refuse those in a way that looks like a network fault rather than a typo. */
+  const char *scheme = strstr(SERVER_URL, "://");
+
+  if (ok && scheme != nullptr
+      && strncmp(SERVER_URL, "http://", 7) != 0
+      && strncmp(SERVER_URL, "https://", 8) != 0) {
+    Serial.println("Config: LS_SERVER_URL does not start with http:// or https://");
+    Serial.printf("        It reads %s\n", SERVER_URL);
+    Serial.println("        Only those two work. Anything else fails while sending the");
+    Serial.println("        request, which reads as a network fault and is not one.");
+    return false;
+  }
+
   if (!ok) {
     Serial.println();
     Serial.println("  Edit the seven values at the top of this sketch, from the provisioning");
@@ -1657,7 +1715,7 @@ static void reportBoot() {
  * Offline with no error anywhere: the PC's address was typed by hand and the
  * router hands out a different subnet. Comparing costs nothing. */
 static void checkSubnet() {
-  String host = String(SERVER_URL);
+  String host = serverBase;
   int    from = host.indexOf("//");
   if (from >= 0) host = host.substring(from + 2);
 
@@ -1727,6 +1785,9 @@ void setup() {
     return;
   }
 
+  /* Before anything builds a URL from it, and before checkSubnet() reads it. */
+  normaliseServerUrl();
+
   startRfid();
   startFingerprint();
 
@@ -1773,7 +1834,7 @@ void setup() {
 
   Serial.print("Wi-Fi: connected, IP ");
   Serial.println(WiFi.localIP());
-  Serial.printf("       server: %s\n", SERVER_URL);
+  Serial.printf("       server: %s\n", serverBase.c_str());
 
   checkSubnet();
 
