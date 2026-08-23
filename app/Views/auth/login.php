@@ -57,7 +57,7 @@ $__view->start('content');
 </div>
 
 <p class="text-subtle text-xs text-center mt-3 mb-0">
-    Students do not sign in. Attendance is recorded with an RFID card at the classroom terminal.
+   
 </p>
 
 <?php
