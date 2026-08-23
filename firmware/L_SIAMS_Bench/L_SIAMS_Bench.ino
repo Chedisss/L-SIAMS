@@ -834,8 +834,24 @@ static bool claimDevice() {
   }
   if (strcmp(code, "CLAIM_IDENTITY_MISMATCH") == 0) {
     Serial.println("       The MAC registered on the server is not this board's.");
-    Serial.printf("       This board is %s — correct it on the Devices page.\n",
-                  boardMac().c_str());
+    Serial.printf("       This board is %s\n", boardMac().c_str());
+    Serial.println("       Open this terminal on the Devices page. If that address is the");
+    Serial.println("       board you mean to use, there is a button offering to adopt it —");
+    Serial.println("       one click, then press EN/RST here. If it is NOT, some other board");
+    Serial.println("       is holding this terminal's provisioning file: revoke the key.");
+    Serial.println();
+
+    /* The trap this refusal sets. A claim token is single use, so "claim
+     * refused" reads as "that token is spent, regenerate the file" — and
+     * regenerating issues another token, un-claims the device again, and
+     * requires another edit and another upload. None of which was needed.
+     *
+     * A refused claim consumes nothing. The token below is still valid, and
+     * once the MAC is corrected it works unchanged. Verified against the
+     * server: fix the address, reset the board, same token, claim accepted. */
+    Serial.println("       Do NOT regenerate the provisioning file for this. A refused claim");
+    Serial.println("       does not spend the token — the one already in this sketch will");
+    Serial.println("       work as soon as the MAC matches.");
   }
   if (status < 0) {
     Serial.println("       The server could not be reached at all. Check that start.bat is");
