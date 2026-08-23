@@ -1674,14 +1674,44 @@ static void startRfid(bool verbose = true) {
    * retrying in the card code will change that. */
   byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
   bool stable  = true;
+  byte other   = version;          /* one differing value, for the report */
 
   for (uint8_t i = 0; i < 8; i++) {
     delay(5);
-    if (rfid.PCD_ReadRegister(MFRC522::VersionReg) != version) stable = false;
+    byte again = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+
+    if (again != version) {
+      stable = false;
+      other  = again;
+    }
   }
 
-  bool known = (version == 0x91 || version == 0x92 || version == 0x88
-             || version == 0x90 || version == 0x12);
+  static const byte KNOWN[] = { 0x91, 0x92, 0x88, 0x90, 0x12 };
+
+  bool known = false;
+  for (uint8_t i = 0; i < 5; i++) if (version == KNOWN[i]) known = true;
+
+  /* How far the answer is from a real one, in bits.
+   *
+   * This is the difference between "no module" and "a module whose answer is
+   * being corrupted", and it was being thrown away. 0x82 is 0x92 — a genuine
+   * MFRC522 v2.0 — with a single bit missing. A module that is absent, or
+   * unpowered, or wired to the wrong pins does not produce a value one bit
+   * away from the right one; a marginal joint or a sagging supply does,
+   * because the chip really is answering and the answer is not surviving the
+   * trip.
+   *
+   * Reported as bits rather than as a verdict, because the number is the
+   * evidence: one or two is a signal problem, eight is silence. */
+  uint8_t nearestBits = 8;
+  byte    nearest     = 0;
+
+  for (uint8_t i = 0; i < 5; i++) {
+    uint8_t bits = 0;
+    for (byte diff = version ^ KNOWN[i]; diff; diff >>= 1) bits += diff & 1;
+
+    if (bits < nearestBits) { nearestBits = bits; nearest = KNOWN[i]; }
+  }
 
   Serial.printf("Reader: version 0x%02X %s\n", version,
                 known ? (stable ? "(ok)" : "(known version but UNSTABLE)")
@@ -1690,6 +1720,28 @@ static void startRfid(bool verbose = true) {
   rfidReady = known && stable;
 
   if (!rfidReady && verbose) {
+    /* The reading, interpreted, before the checklist. Which of these four it
+     * is decides whether the next hour goes on wiring or on a replacement. */
+    if (!stable) {
+      Serial.printf("        UNSTABLE: it answered 0x%02X and 0x%02X on the same boot.\n",
+                    version, other);
+      Serial.println("        A module that is absent answers the same way every time. One that");
+      Serial.println("        changes its answer is connected and being disturbed — a cracked or");
+      Serial.println("        dirty joint, or a supply dipping under load. Not a dead module.");
+    } else if (version == 0x00) {
+      Serial.println("        0x00 means nothing is driving the MISO line at all: no power to the");
+      Serial.println("        module, or MISO not connected.");
+    } else if (version == 0xFF) {
+      Serial.println("        0xFF means the MISO line is sitting high with nothing driving it —");
+      Serial.println("        usually MISO disconnected, or the module unpowered.");
+    } else if (nearestBits <= 2) {
+      Serial.printf("        0x%02X is 0x%02X with %u bit(s) lost — and 0x%02X IS a real MFRC522.\n",
+                    version, nearest, nearestBits, nearest);
+      Serial.println("        So the module is answering; the answer is being corrupted on the way.");
+      Serial.println("        That is signal integrity, not a fault in the module: the supply, the");
+      Serial.println("        ground, or the joints. Replacing the reader will not change it.");
+    }
+
     Serial.println("        No card will read until this is fixed. Check, in order:");
     Serial.println("          1. VCC on 3.3 V. NEVER 5 V — it damages this module.");
     Serial.println("          2. GND shared with the ESP32.");
