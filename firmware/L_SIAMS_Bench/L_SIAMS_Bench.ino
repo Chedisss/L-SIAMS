@@ -1705,19 +1705,39 @@ static bool checkConfig() {
 }
 
 static void startRfid(bool verbose = true) {
-  /* Three pins, deliberately not four.
+  /* Is anything electrically attached to MISO?
    *
-   * SPI.begin() takes an optional fourth argument for the chip-select pin,
-   * and passing PIN_RFID_SS there was wrong: the MFRC522 library already owns
-   * that pin. It is given to the constructor above, and the library drives it
-   * by hand around every transfer.
+   * Every register read goes out over MISO, so once that line is dead the
+   * SPI answer is 0x00 or 0xFF whatever the cause — a broken wire, a module
+   * with no power, and a damaged pin are indistinguishable through the
+   * library. This asks the question underneath it, using nothing but the
+   * ESP32's own pull resistors.
    *
-   * Handing the same pin to the SPI peripheral as well gives it two owners.
-   * Whether that bites depends on the core version — hardware chip-select is
-   * off unless setHwCs(true) is called, so today it is merely redundant — and
-   * a redundancy that becomes a conflict after a library update is not worth
-   * keeping. The argument defaults to -1, which means "the peripheral does not
-   * touch a CS pin", and that is exactly right here. */
+   * A powered MFRC522 that is connected holds MISO at a defined level and
+   * will not be moved by a ~45 kOhm internal pull. A bare wire, or a wire to
+   * an unpowered module, follows the pull exactly. So: pull it up and read,
+   * pull it down and read. Two readings that follow the pull mean nothing is
+   * on the other end. One that resists means something is.
+   *
+   * Only at boot, and only before SPI.begin(). Changing pinMode detaches the
+   * pin from the SPI peripheral, and SPI.begin() re-attaches it — but it does
+   * that only on the FIRST call, returning early once initialised, so running
+   * this on a later retry would leave MISO detached and break a reader that
+   * was working. */
+  bool misoFloating = false;
+
+  if (verbose) {
+    pinMode(PIN_RFID_MISO, INPUT_PULLUP);
+    delay(2);
+    int pulledUp = digitalRead(PIN_RFID_MISO);
+
+    pinMode(PIN_RFID_MISO, INPUT_PULLDOWN);
+    delay(2);
+    int pulledDown = digitalRead(PIN_RFID_MISO);
+
+    misoFloating = (pulledUp == HIGH && pulledDown == LOW);
+  }
+
   SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI);
   rfid.PCD_Init();
   delay(50);
@@ -1807,6 +1827,34 @@ static void startRfid(bool verbose = true) {
       Serial.println("        So the module is answering; the answer is being corrupted on the way.");
       Serial.println("        That is signal integrity, not a fault in the module: the supply, the");
       Serial.println("        ground, or the joints. Replacing the reader will not change it.");
+    }
+
+    /* The electrical answer, which narrows the list above to one line of it.
+     *
+     * This is measured rather than inferred, and it is the one question the
+     * SPI reading cannot settle: whether a powered module is on the end of
+     * that wire at all. */
+    if (verbose) {
+      if (misoFloating) {
+        Serial.println();
+        Serial.println("        MEASURED: the MISO line follows an internal pull-up and an");
+        Serial.println("        internal pull-down exactly, so NOTHING is driving it. A powered,");
+        Serial.println("        connected module holds that line and would not move. So either");
+        Serial.println("        the MISO wire is not making contact, or the module has no power.");
+        Serial.println("        The other SPI pins do not matter until this one is fixed:");
+        Serial.printf("          - the wire between the module's MISO and GPIO %d\n", PIN_RFID_MISO);
+        Serial.println("          - the module's VCC (3.3 V) and GND");
+        Serial.println("        Replace those three wires rather than re-seating them; a broken");
+        Serial.println("        core inside the sheath still fits and cannot be seen.");
+        Serial.println();
+      } else {
+        Serial.println();
+        Serial.println("        MEASURED: something IS holding the MISO line against the internal");
+        Serial.println("        pulls, so a powered module is connected to it. The wire and the");
+        Serial.println("        module's supply are therefore not the fault — look at the other");
+        Serial.println("        SPI pins, at the joints, and at the supply under load.");
+        Serial.println();
+      }
     }
 
     Serial.println("        No card will read until this is fixed. Check, in order:");
