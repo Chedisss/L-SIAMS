@@ -156,7 +156,25 @@ final class Clock
 
     public static function parse(string $value): DateTimeImmutable
     {
-        return new DateTimeImmutable($value, self::timezone());
+        /* The timezone argument only applies when the string does not carry
+         * one of its own. Given "2026-08-25T16:22:00Z" PHP honours the Z and
+         * ignores the parameter entirely, so the result is a UTC moment — and
+         * everything downstream formats it as 'Y-m-d H:i:s' into columns that
+         * hold local time. The moment is right and the number written is
+         * eight hours out.
+         *
+         * That had no way of showing until a terminal sent its first
+         * timestamped record: everything else parsed here is already local,
+         * where the parameter does apply and the bug cannot appear. An offline
+         * tap held through a network outage is the first caller to supply an
+         * absolute time, and it would have been recorded against the wrong
+         * hour — plausibly the wrong lesson, or the wrong day.
+         *
+         * Converting afterwards is right for both: a string with no zone is
+         * already in the application timezone and the conversion does nothing,
+         * and a string with one is moved to the zone the database speaks. */
+        return (new DateTimeImmutable($value, self::timezone()))
+            ->setTimezone(self::timezone());
     }
 
     /** Combines a date with a HH:MM[:SS] time in the application timezone. */
