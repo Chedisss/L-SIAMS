@@ -453,8 +453,9 @@ rather than standing at a sensor.
   template to the slot the server allocated, and report back which slot it
   actually used.
 - Sign every request with HMAC-SHA256 over the canonical string.
-- Queue taps to NVS when the network is down, and replay them oldest-first with
-  their original timestamps and request ids.
+- Hold taps that could not be sent, and replay them oldest-first with their
+  original timestamps and request ids, so a card presented at 08:05 is recorded
+  at 08:05 and not at whatever time the network came back.
 - Heartbeat every 30 seconds, with jitter so a hall full of terminals does not
   synchronise into a thundering herd.
 - Correct its clock from the server every six hours.
@@ -478,26 +479,35 @@ queued tap, where it is the only record of when the tap actually happened.
 
 ## 6. Offline behaviour
 
-> **The shipping terminal does not do this yet.** A tap while the network is
-> down is refused at the terminal and **not recorded**. On a stable LAN that is
-> a fair trade for a sketch small enough to read in one sitting; before a
-> terminal runs unattended in a school, this is the gap to close. The
-> implementation below was in the deleted OLED terminal (recoverable from git
-> history if it is ever wanted),
-> written against an older server API — read it before writing the queue again.
+Only a tap the server never answered is held. An HTTP refusal — no session
+open, unknown card — is **not** queued: the server considered that tap and said
+no, for a reason that will not change by asking again, and retrying it would
+turn a clear answer into a silent loop that still ends in nothing recorded.
 
-When a request fails, the reference terminal enters `OFFLINE` and queues taps in NVS. Each
-queued entry carries the card UID, the timestamp at the moment of the tap, and a
-`request_id` generated *then* — not at replay time.
+**The shipping terminal does this.** A tap the server never answered is held on
+the terminal and sent later with the time it actually happened. The numbers
+below describe the OLED terminal that was deleted; the shipping sketch holds
+**40** taps in RTC memory rather than 500 in NVS, and differs where noted.
+
+Each held entry carries the card UID, the timestamp at the moment of the tap,
+and a `request_id` generated *then* — not at replay time.
 
 That detail is what makes replay safe. If a sync succeeds but the response is
 lost, the terminal retries with the same `request_id`, the server recognises it,
 and the original response is replayed instead of recording the tap twice.
 
-- Queue limit: 500 entries by default, configurable per device.
-- Warning at 100 entries — the display shows the depth, and the server raises a
-  notification from the heartbeat.
-- At the limit, the **oldest** entry is dropped and logged. Losing the oldest tap
+- Queue limit: **40 entries** in the shipping sketch (`TAP_QUEUE_MAX`), held in
+  RTC memory. That survives a reset or a watchdog reboot but **not a power cut** —
+  the honest limit of it is forty taps through a network outage, not through a
+  mains failure.
+- Depth is reported on every heartbeat, so the server raises its queue warning
+  from real data.
+- At the limit the shipping sketch **refuses the new tap** and says so, rather
+  than dropping the oldest. Both lose a tap and there is no version of a full
+  queue that does not, but the entries already held are facts that have been
+  captured; overwriting them to make room for one that has not been confirmed
+  destroys known data to store unknown data. The OLED terminal below did the
+  opposite — at the limit, the **oldest** entry is dropped and logged. Losing the oldest tap
   is the least-bad option; refusing new taps would lose the ones still arriving.
 
 On reconnection the terminal syncs in batches of 25, oldest first, and returns to

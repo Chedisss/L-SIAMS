@@ -108,6 +108,19 @@ struct LsJson : public DynamicJsonDocument { LsJson() : DynamicJsonDocument(4096
 using LsJson = JsonDocument;
 #endif
 
+/* Building an array of objects differs between the two as well, and the v6
+ * spelling was removed in v7 rather than merely deprecated. Same reasoning as
+ * the alias above: one place to look, so a sketch that compiles under one
+ * library does not fail under the other with a message about a member that
+ * does not exist. */
+#if ARDUINOJSON_VERSION_MAJOR < 7
+#  define LS_ARRAY(doc, key)  (doc).createNestedArray(key)
+#  define LS_ADD_OBJECT(arr)  (arr).createNestedObject()
+#else
+#  define LS_ARRAY(doc, key)  (doc)[key].template to<JsonArray>()
+#  define LS_ADD_OBJECT(arr)  (arr).template add<JsonObject>()
+#endif
+
 /* ===========================================================================
  * EDIT THESE SEVEN LINES, THEN UPLOAD
  * ---------------------------------------------------------------------------
@@ -312,6 +325,24 @@ static uint32_t    lastHaltNag = 0;
 static bool     haltedButReporting = false;
 static uint32_t lastModuleNag      = 0;
 static uint32_t lastModuleRetry    = 0;
+
+#define TAP_QUEUE_MAX 40
+
+struct QueuedTap {
+  char     uid[15];        /* up to a 7-byte UID in hex, plus terminator */
+  char     requestId[37];  /* the UUID, so the server can refuse a duplicate */
+  uint32_t at;             /* UTC epoch when the card was actually presented */
+};
+
+static RTC_DATA_ATTR QueuedTap tapQueue[TAP_QUEUE_MAX];
+static RTC_DATA_ATTR uint16_t  tapQueueCount;
+
+static uint32_t lastQueueFlush = 0;
+
+/* RTC memory is only zeroed on a power-on reset, so after a crash the count
+ * could be anything. A queue that claims 40000 entries would read far past
+ * the array. */
+
 
 /* Some halts are permanent and some are not, and treating them alike is what
  * turns a passing network fault into a site visit.
@@ -891,7 +922,9 @@ static void sendHeartbeat() {
   body["uptime"]      = (millis() - bootMillis) / 1000;
   body["free_heap"]   = ESP.getFreeHeap();
   body["wifi_signal"] = WiFi.RSSI();
-  body["queue"]       = 0;
+  /* The real depth, so the server's queue warning means something. It read a
+   * hard-coded zero for as long as there was no queue to report. */
+  body["queue"]       = tapQueueCount;
 
   /* Whether the two modules answered at boot.
    *
@@ -1576,6 +1609,128 @@ static void pollCardEnrollment() {
  * A student's card records attendance
  * ========================================================================= */
 
+/* =========================================================================
+ * Taps that could not be sent
+ *
+ * The server has carried an offline-queue endpoint all along — POST
+ * /api/device/sync, which takes a batch of taps WITH their original
+ * timestamps, so a card presented at 08:05 is recorded at 08:05 and not at
+ * whatever time the network came back. The firmware never used it, and
+ * reported queue: 0 on every heartbeat because there was nothing to report.
+ *
+ * What that meant in a classroom: the Wi-Fi wavers for ninety seconds during
+ * registration, and every student who tapped in that window is simply not
+ * marked. Nobody finds out at the time — the terminal said "refused" to a
+ * corridor nobody was watching — and by the time the register is checked, the
+ * class has gone and there is no way to reconstruct who was there.
+ *
+ * A tap is a fact about a person that has already happened. It should not be
+ * discarded because of a router.
+ *
+ * Held in RTC memory so a watchdog reset or a brownout does not take the
+ * queue with it. That memory survives a reset but not a power cut, which is
+ * the honest limit of this: forty taps through a network outage, not through
+ * a mains failure.
+ * ========================================================================= */
+
+static void sanityCheckQueue() {
+  if (tapQueueCount > TAP_QUEUE_MAX) tapQueueCount = 0;
+}
+
+static void queueTap(const String &uid, const String &requestId, uint32_t at) {
+  if (tapQueueCount >= TAP_QUEUE_MAX) {
+    /* Refusing the new one rather than dropping the oldest.
+     *
+     * Both lose a tap, and there is no version of a full queue that does not.
+     * But the entries already held are facts that have been captured, and
+     * overwriting them to make room for one that has not been confirmed
+     * destroys known data to store unknown data. Keep what you have. */
+    Serial.println("      QUEUE FULL — this tap could not be stored.");
+    Serial.printf("      %d earlier taps are still waiting to be sent. Record this\n", TAP_QUEUE_MAX);
+    Serial.println("      student by hand on the Attendance page.");
+    return;
+  }
+
+  QueuedTap &slot = tapQueue[tapQueueCount];
+
+  strncpy(slot.uid, uid.c_str(), sizeof(slot.uid) - 1);
+  slot.uid[sizeof(slot.uid) - 1] = '\0';
+
+  strncpy(slot.requestId, requestId.c_str(), sizeof(slot.requestId) - 1);
+  slot.requestId[sizeof(slot.requestId) - 1] = '\0';
+
+  slot.at = at;
+  tapQueueCount++;
+
+  Serial.printf("      HELD: the server could not be reached, so this tap is stored\n");
+  Serial.printf("      on the terminal (%u waiting) and will be sent with its own\n",
+                (unsigned) tapQueueCount);
+  Serial.println("      timestamp when the network returns. Nothing has been lost.");
+}
+
+/* The whole queue in one request. Timestamps are sent as UTC, which is what
+ * the board's clock holds after taking the server's epoch, and the server
+ * converts on arrival. */
+static void flushTapQueue() {
+  sanityCheckQueue();
+
+  if (tapQueueCount == 0 || !clockSet) return;
+
+  LsJson body;
+  JsonArray records = LS_ARRAY(body, "records");
+
+  for (uint16_t i = 0; i < tapQueueCount; i++) {
+    char when[24];
+    time_t seconds = (time_t) tapQueue[i].at;
+    struct tm utc;
+    gmtime_r(&seconds, &utc);
+    strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%SZ", &utc);
+
+    JsonObject record = LS_ADD_OBJECT(records);
+    record["rfid_uid"]   = tapQueue[i].uid;
+    record["request_id"] = tapQueue[i].requestId;
+    record["timestamp"]  = when;
+  }
+
+  Serial.printf("\nSync: sending %u held tap(s)\n", (unsigned) tapQueueCount);
+
+  LsJson response;
+  int    status = signedRequest("POST", "/api/device/sync",
+                                jsonToString(body), &response, generateUuid());
+
+  if (status != 200 && status != 201) {
+    Serial.printf("      still not reachable (HTTP %d) — keeping them\n", status);
+    return;
+  }
+
+  int accepted  = response["data"]["accepted"]  | 0;
+  int duplicate = response["data"]["duplicate"] | 0;
+
+  JsonArrayConst rejected = response["data"]["rejected"];
+  int rejectedCount = rejected.isNull() ? 0 : (int) rejected.size();
+
+  Serial.printf("      %d recorded, %d already known, %d refused\n",
+                accepted, duplicate, rejectedCount);
+
+  /* Refusals are printed rather than retried. The server refuses a queued tap
+   * for reasons that do not change with time — an unknown card, a session
+   * that was never open — so sending it again would fail identically and hide
+   * the fact that somebody is not in the register. */
+  for (int i = 0; i < rejectedCount; i++) {
+    Serial.printf("      refused: %s — %s\n",
+                  (const char *) (rejected[i]["code"]    | "?"),
+                  (const char *) (rejected[i]["message"] | ""));
+  }
+
+  if (rejectedCount > 0) {
+    Serial.println("      Those taps are NOT in the register. Enter them by hand.");
+  }
+
+  /* The server has now seen every record in the batch, whatever it decided
+   * about each, so none of them should be sent again. */
+  tapQueueCount = 0;
+}
+
 static void sendTap(const String &uid) {
   String requestId = generateUuid();
 
@@ -1603,6 +1758,29 @@ static void sendTap(const String &uid) {
 
   if (status == 200 || status == 201) {
     Serial.printf("      RECORDED: %s\n", (const char *) (response["message"] | ""));
+
+    /* The network is evidently up. If anything is waiting, this is the moment
+     * to send it, rather than leaving it for the next timer. */
+    if (tapQueueCount > 0) flushTapQueue();
+
+    return;
+  }
+
+  /* A negative status is not a refusal — the server never answered, so it has
+   * no opinion about this tap and the student is standing there having been
+   * told nothing. Hold it.
+   *
+   * An HTTP refusal is different and must NOT be queued: the server considered
+   * this tap and said no, for a reason that will not change by asking again.
+   * Queueing those would turn a clear "no session is open" into a silent
+   * retry loop that still ends in nothing being recorded. */
+  if (status <= 0) {
+    if (clockSet) {
+      queueTap(uid, requestId, (uint32_t) time(nullptr));
+    } else {
+      Serial.println("      LOST: no clock, so this tap cannot be timestamped and was");
+      Serial.println("      not stored. Record this student by hand.");
+    }
     return;
   }
 
@@ -2101,6 +2279,13 @@ void setup() {
   Serial.println("==========================");
 
   reportBoot();
+  sanityCheckQueue();
+
+  if (tapQueueCount > 0) {
+    Serial.printf("Queue: %u tap(s) held from before this restart — they will be sent\n",
+                  (unsigned) tapQueueCount);
+    Serial.println("       with their original times once the server is reachable.");
+  }
 
   /* The MAC, before anything can stop the sketch.
    *
@@ -2436,6 +2621,14 @@ void loop() {
   if (!busy && millis() - lastHeartbeat >= HEARTBEAT_MS) {
     lastHeartbeat = millis();
     sendHeartbeat();
+  }
+
+  /* Anything held during an outage goes as soon as there is a network again.
+   * Twenty seconds is soon enough that a class's taps land while the lesson
+   * is still running, and rare enough not to hammer a server that is down. */
+  if (tapQueueCount > 0 && !busy && millis() - lastQueueFlush >= 20000) {
+    lastQueueFlush = millis();
+    flushTapQueue();
   }
 
   pollEnrollment();
