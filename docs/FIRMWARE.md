@@ -91,8 +91,26 @@ assembly mistake, and it fails silently — the sensor simply never answers.
 
 ### Sharing the 3V3 pin
 
+> **If you have an R307, do not share it at all.** The R307 — the sealed
+> cylinder on a cable, as opposed to the bare AS608 board — carries its own
+> regulator and runs from 5 V. Put its VCC on **VIN**, not 3V3, and the
+> fingerprint sensor leaves the 3.3 V rail entirely, giving the whole of it to
+> the reader. That removes this section's problem rather than mitigating it.
+> A **bare AS608 has no regulator and 5 V destroys it** — that one must stay on
+> 3V3.
+
 Both modules want 3.3 V and the ESP32 has one 3V3 pin, so they share it. Two
 things go wrong there, and both present as a dead module:
+
+**The symptom that identifies this specifically: the two modules trade
+places.** The reader comes up on the boot the sensor drops, and back again. One
+module failing looks like one faulty module; a pair that alternates is one rail
+that cannot carry both. The firmware compares each boot against the last and
+says so when it sees the swap.
+
+It usually appears *after* a repair, which makes it confusing. While one module
+was dead it drew almost nothing and the other had the rail to itself — so
+fixing the first is what creates the contention that stops the second.
 
 **The joint.** Do not stack two solder joints on the same header pin — the upper
 one carries all the mechanical strain and cracks, giving a connection that works
@@ -599,6 +617,7 @@ send you looking for an authentication fault that does not exist.
 | Symptom | Cause |
 |---|---|
 | `Failed to connect to ESP32: No serial data received` | An upload problem, not a code problem — the sketch already compiled. See [When the upload will not connect](#when-the-upload-will-not-connect). Close the Serial Monitor first, then hold BOOT. |
+| The reader and the sensor take turns — one works, the other does not, and they swap on the next boot | One 3.3 V rail that cannot carry both, not two faults. If the sensor is an R307, move its VCC to **VIN** so it leaves the rail. A bare AS608 must stay on 3V3; then fit 100 µF + 100 nF at each module and use a 1 A supply. The firmware names this when it sees the swap. |
 | A module works at boot on one run and not the next | Intermittent, not broken. Both modules share the 3.3 V rail and the ground, so a module that comes and goes — or a reader answering a different version each boot — is a supply or a joint. Use a 1 A wall supply, fix the shared joints, fit 100 µF + 100 nF at each module. |
 | Nothing at all happens; `HALTED:` repeats | Startup stopped for the reason printed beside it. Nothing works until that is fixed, and it needs a person — the board will not recover on its own. |
 | `PAUSED:` repeats instead of `HALTED:` | A fault that can clear itself, currently only "no clock yet". The terminal retries every 30 seconds and prints `Recovered:` when the server answers. No action needed unless it persists. |
