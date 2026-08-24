@@ -1,5 +1,14 @@
 /* Stub. Just enough of the Arduino core to type-check the sketch on a PC. */
 #pragma once
+#define INPUT           0x01
+#define OUTPUT          0x03
+#define INPUT_PULLUP    0x05
+#define INPUT_PULLDOWN  0x09
+#define LOW             0
+#define HIGH            1
+inline void pinMode(int, int){}
+inline int  digitalRead(int){ return 0; }
+inline void digitalWrite(int, int){}
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
