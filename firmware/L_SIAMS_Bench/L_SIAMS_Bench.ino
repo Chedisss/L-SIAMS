@@ -1719,6 +1719,19 @@ static void startRfid(bool verbose = true) {
    * pull it down and read. Two readings that follow the pull mean nothing is
    * on the other end. One that resists means something is.
    *
+   * THE MODULE MUST BE SELECTED FIRST, and the first version of this did not
+   * do it. Every SPI slave releases MISO to high impedance when its chip
+   * select is idle — that is the whole point of the signal, since it lets
+   * several devices share one bus. Measuring an unselected module therefore
+   * reports "nothing is driving it" for hardware that is working perfectly,
+   * and it did: a board whose SPI read returned 0x82 — a real MFRC522
+   * answering with one bit corrupted — was told nothing was attached to MISO
+   * at all. Two diagnostics on the same line, flatly contradicting each
+   * other, and the wrong one was the confident one.
+   *
+   * NSS low, and RST high so the module is out of power-down, and only then
+   * is the line worth reading.
+   *
    * Only at boot, and only before SPI.begin(). Changing pinMode detaches the
    * pin from the SPI peripheral, and SPI.begin() re-attaches it — but it does
    * that only on the FIRST call, returning early once initialised, so running
@@ -1727,6 +1740,16 @@ static void startRfid(bool verbose = true) {
   bool misoFloating = false;
 
   if (verbose) {
+    /* Out of reset, so the module is powered up and driving its outputs. */
+    pinMode(PIN_RFID_RST, OUTPUT);
+    digitalWrite(PIN_RFID_RST, HIGH);
+    delay(50);
+
+    /* Selected, so MISO leaves high impedance. */
+    pinMode(PIN_RFID_SS, OUTPUT);
+    digitalWrite(PIN_RFID_SS, LOW);
+    delay(2);
+
     pinMode(PIN_RFID_MISO, INPUT_PULLUP);
     delay(2);
     int pulledUp = digitalRead(PIN_RFID_MISO);
@@ -1734,6 +1757,8 @@ static void startRfid(bool verbose = true) {
     pinMode(PIN_RFID_MISO, INPUT_PULLDOWN);
     delay(2);
     int pulledDown = digitalRead(PIN_RFID_MISO);
+
+    digitalWrite(PIN_RFID_SS, HIGH);      /* released before the library takes over */
 
     misoFloating = (pulledUp == HIGH && pulledDown == LOW);
   }
@@ -1833,8 +1858,28 @@ static void startRfid(bool verbose = true) {
      *
      * This is measured rather than inferred, and it is the one question the
      * SPI reading cannot settle: whether a powered module is on the end of
-     * that wire at all. */
-    if (verbose) {
+     * that wire at all.
+     *
+     * Except when the SPI reading has already settled it the other way. A
+     * value within two bits of a real version means a module received the
+     * register address, decoded it, and shifted eight bits back — evidence no
+     * pull-resistor test can outweigh. When the two disagree, the transaction
+     * is the stronger witness and the floating verdict is suppressed rather
+     * than printed beside it.
+     *
+     * Two diagnostics contradicting each other is worse than one of them
+     * being absent: it costs the reader their trust in both, and they cannot
+     * tell which to act on. */
+    bool moduleDidAnswer = known || nearestBits <= 2;
+
+    if (verbose && moduleDidAnswer && misoFloating) {
+      Serial.println();
+      Serial.println("        (The MISO line reads as undriven between transfers, which is");
+      Serial.println("        normal — an unselected SPI device releases it. The reading above");
+      Serial.println("        proves the module is answering, so trust that one.)");
+    }
+
+    if (verbose && !moduleDidAnswer) {
       if (misoFloating) {
         Serial.println();
         Serial.println("        MEASURED: the MISO line follows an internal pull-up and an");
