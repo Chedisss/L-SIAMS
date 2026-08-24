@@ -35,6 +35,8 @@ public:
   void toUpperCase(){}
   int indexOf(const char*n) const {auto p=s.find(n);return p==std::string::npos?-1:(int)p;}
   int indexOf(char n) const {auto p=s.find(n);return p==std::string::npos?-1:(int)p;}
+  int indexOf(char n, unsigned from) const {auto p=s.find(n,from);return p==std::string::npos?-1:(int)p;}
+  int indexOf(const char*n, unsigned from) const {auto p=s.find(n,from);return p==std::string::npos?-1:(int)p;}
   String substring(unsigned a) const {return String(s.substr(a));}
   String substring(unsigned a,unsigned b) const {return String(s.substr(a,b-a));}
   bool startsWith(const char*p) const {return s.rfind(p,0)==0;}

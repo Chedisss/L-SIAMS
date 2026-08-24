@@ -238,6 +238,57 @@ static void normaliseServerUrl() {
 
     serverBase = "http://" + serverBase;
   }
+
+  /* No port is not a typo the board can fix, but it is one it can name.
+   *
+   * start.bat serves on 8080. An address with the port left off goes to 80
+   * instead, and on a machine running XAMPP something IS listening there —
+   * Apache, which knows nothing about this system and answers 404. So the
+   * board gets a clean HTTP reply from a real web server that is not the
+   * right one, and "404" reads as a missing route rather than a missing port.
+   *
+   * Left as a warning rather than a correction: 80 is a legitimate choice
+   * behind a reverse proxy, and guessing 8080 for somebody who meant 80 would
+   * be a harder fault to see than this one. */
+  int afterScheme = serverBase.indexOf("://") + 3;
+  int colon       = serverBase.indexOf(':', afterScheme);
+
+  if (colon < 0) {
+    Serial.println("Config: LS_SERVER_URL has no port.");
+    Serial.printf("        %s goes to port 80, and start.bat serves on 8080.\n",
+                  serverBase.c_str());
+    Serial.println("        On a PC running XAMPP, Apache answers on 80 and returns 404 —");
+    Serial.println("        a real reply from the wrong server, which is why it looks like a");
+    Serial.println("        missing page rather than a missing port.");
+    Serial.printf("        Unless you meant port 80, this should read %s:8080\n",
+                  serverBase.c_str());
+  }
+}
+
+/* Credentials pasted with a stray space are the commonest way a correct key
+ * fails, and the least visible: the quotes hide it, the compiler keeps it, and
+ * the signature it produces is wrong in a way that looks like a wrong key.
+ * Reported by name and position rather than silently trimmed, because a value
+ * that is not what the file says it is causes worse confusion later. */
+static bool warnIfPadded(const char *value, const char *name) {
+  size_t length = strlen(value);
+
+  if (length == 0) return false;
+
+  bool leading  = (value[0] == ' ' || value[0] == '\t');
+  bool trailing = (value[length - 1] == ' ' || value[length - 1] == '\t');
+
+  if (!leading && !trailing) return false;
+
+  Serial.printf("Config: %s has a stray %s.\n", name,
+                leading && trailing ? "space at both ends"
+                                    : (leading ? "space at the start" : "space at the end"));
+  Serial.println("        It is inside the quotes, so it is part of the value. Every");
+  Serial.println("        signature built from it will be wrong, and the server will");
+  Serial.println("        report an invalid key rather than a mistyped one.");
+  Serial.println("        Delete the space and upload again.");
+
+  return true;
 }
 static const char *DEVICE_ID   = LS_DEVICE_ID;
 static const char *API_KEY     = LS_API_KEY;
@@ -606,6 +657,25 @@ static void reportRequestHealth(const char *method, const String &path,
   if (status == 401) {
     Serial.println("        The board is not authenticated. Re-register this terminal on the");
     Serial.println("        Devices page and paste the new provisioning values into the sketch.");
+  } else if (status == 404) {
+    /* Something answered, and it was not this system.
+     *
+     * Every device route exists on a working server, so a 404 is never a
+     * missing endpoint — it is a reply from a different web server. The
+     * commonest cause by far is a port: start.bat serves on 8080, and on a
+     * PC running XAMPP, Apache is listening on 80 and will answer any
+     * address it is given with a perfectly formed 404.
+     *
+     * That is worse than silence, because a clean HTTP reply looks like
+     * progress. It sends somebody to look for a broken route in a server
+     * that was never contacted. */
+    Serial.println("        A 404 here means something answered that is NOT L-SIAMS.");
+    Serial.println("        Every device route exists on a working server, so this is not a");
+    Serial.println("        missing page — it is the wrong server.");
+    Serial.printf("        LS_SERVER_URL is %s\n", serverBase.c_str());
+    Serial.println("        1. Is the port right? start.bat serves on 8080. Without a port");
+    Serial.println("           the request goes to 80, where XAMPP's Apache answers 404.");
+    Serial.println("        2. Has another device taken that IP address?");
   } else if (status == 429) {
     Serial.println("        Rate limited. Raise DEVICE_RATE_LIMIT in .env, or set it to 0.");
   }
@@ -1834,6 +1904,14 @@ static bool checkConfig() {
       ok = false;
     }
   }
+
+  /* Every credential, not just the five above, because the claim token is
+   * pasted the same way and fails the same way. */
+  if (warnIfPadded(DEVICE_ID,   "LS_DEVICE_ID"))   ok = false;
+  if (warnIfPadded(API_KEY,     "LS_API_KEY"))     ok = false;
+  if (warnIfPadded(HMAC_SECRET, "LS_HMAC_SECRET")) ok = false;
+  if (warnIfPadded(CLAIM_TOKEN, "LS_CLAIM_TOKEN")) ok = false;
+  if (warnIfPadded(WIFI_SSID,   "LS_WIFI_SSID"))   ok = false;
 
   /* Not a placeholder, so the loop above cannot see it — but it fails in the
    * most confusing way available: the board joins the Wi-Fi, reports nothing,
