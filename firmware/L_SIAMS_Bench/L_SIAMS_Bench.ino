@@ -1704,6 +1704,42 @@ static bool checkConfig() {
   return ok;
 }
 
+/* Read the version register directly, at a clock of our choosing.
+ *
+ * The MFRC522 library fixes its bus at 4 MHz — MFRC522_SPICLOCK, a constant
+ * in its header — and that is the one variable the library will not let us
+ * change. It matters because of what a STABLE single-bit error means.
+ *
+ * Random corruption is noise: supply ripple, a loose joint, interference.
+ * Corruption that lands on the same bit every time is not random, and noise
+ * does not behave that way. What does behave that way is a bus running faster
+ * than the wiring can carry: the data has not finished settling when the clock
+ * edge samples it, so the same bit is misread on every transfer. Long jumpers,
+ * a breadboard, no ground return beside the signal — any of those cost enough
+ * settling time to do it at 4 MHz while being perfectly fine at 1 MHz.
+ *
+ * So the test is to ask the same question more slowly. If the answer comes
+ * back correct at a lower clock, the module, the wire and the supply are all
+ * fine and the bus was simply being pushed too hard — which is a wiring
+ * length problem, not a fault to be replaced.
+ *
+ * The address byte is the library's own encoding: register number shifted
+ * left one, with the top bit set to mean read. */
+static byte readVersionAtClock(uint32_t hz) {
+  const byte VERSION_REG_READ = 0x80 | (0x37 << 1);
+
+  SPI.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE0));
+  digitalWrite(PIN_RFID_SS, LOW);
+
+  SPI.transfer(VERSION_REG_READ);
+  byte value = SPI.transfer(0);
+
+  digitalWrite(PIN_RFID_SS, HIGH);
+  SPI.endTransaction();
+
+  return value;
+}
+
 static void startRfid(bool verbose = true) {
   /* Is anything electrically attached to MISO?
    *
@@ -1840,6 +1876,23 @@ static void startRfid(bool verbose = true) {
       Serial.println("        A module that is absent answers the same way every time. One that");
       Serial.println("        changes its answer is connected and being disturbed — a cracked or");
       Serial.println("        dirty joint, or a supply dipping under load. Not a dead module.");
+    } else if (version == (0x80 | (0x37 << 1))) {
+      /* The board reading back the byte it just sent.
+       *
+       * 0xEE is the address the ESP32 transmits on MOSI to ask for this
+       * register. Getting it back on MISO means the two lines are carrying
+       * the same signal — swapped at one end, or shorted together — so the
+       * board is listening to itself and the module is never heard.
+       *
+       * Worth naming precisely, because it is indistinguishable from noise
+       * to anyone who does not know what 0xEE is, and it is the one wiring
+       * mistake on this module that people make most. */
+      Serial.println("        0xEE is the exact byte this board TRANSMITS to request that");
+      Serial.println("        register. Reading it back means MISO is carrying what MOSI sent,");
+      Serial.println("        so the two are swapped at one end or shorted together — the board");
+      Serial.println("        is listening to itself and never hears the module.");
+      Serial.printf("        MISO is the module's output and belongs on GPIO %d;\n", PIN_RFID_MISO);
+      Serial.printf("        MOSI is this board's output and belongs on GPIO %d.\n", PIN_RFID_MOSI);
     } else if (version == 0x00) {
       Serial.println("        0x00 means nothing is driving the MISO line at all: no power to the");
       Serial.println("        module, or MISO not connected.");
@@ -1871,6 +1924,42 @@ static void startRfid(bool verbose = true) {
      * being absent: it costs the reader their trust in both, and they cannot
      * tell which to act on. */
     bool moduleDidAnswer = known || nearestBits <= 2;
+
+    /* Ask the same question more slowly.
+     *
+     * Only worth doing when the module has proved it is there, because a
+     * slower clock cannot conjure an answer out of a disconnected wire — it
+     * would just return 0x00 twice more and waste the reader's attention. */
+    if (verbose && moduleDidAnswer && !rfidReady) {
+      byte slow   = readVersionAtClock(1000000);
+      byte slower = readVersionAtClock(250000);
+
+      Serial.println();
+      Serial.printf("        Same register at 1 MHz: 0x%02X, at 250 kHz: 0x%02X\n", slow, slower);
+
+      bool slowIsGood = (slow   == 0x91 || slow   == 0x92 || slow   == 0x88
+                      || slow   == 0x90 || slow   == 0x12);
+      bool slowerGood = (slower == 0x91 || slower == 0x92 || slower == 0x88
+                      || slower == 0x90 || slower == 0x12);
+
+      if (slowIsGood || slowerGood) {
+        /* The decisive result. Nothing is broken; the bus is too fast for
+         * the wiring, and the wiring is what has to change. */
+        Serial.println("        CORRECT at the slower clock. Nothing is faulty — the module, the");
+        Serial.println("        wires and the supply are all fine. The bus is being clocked");
+        Serial.println("        faster than this wiring can carry, so the data has not settled");
+        Serial.println("        when the clock samples it and the same bit is misread each time.");
+        Serial.println("        Shorten the jumpers, take the reader off the breadboard, and run");
+        Serial.println("        a ground wire alongside the SPI wires rather than to a far corner.");
+        Serial.println("        Under about 10 cm, direct board-to-board, is reliable at 4 MHz.");
+      } else {
+        Serial.println("        Still wrong at the slower clock, so this is not bus speed. The");
+        Serial.println("        module answers but the answer is corrupted at any rate, which");
+        Serial.println("        points at the joints and the ground rather than the length.");
+      }
+
+      Serial.println();
+    }
 
     if (verbose && moduleDidAnswer && misoFloating) {
       Serial.println();
