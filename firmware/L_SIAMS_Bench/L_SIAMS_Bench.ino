@@ -2442,6 +2442,52 @@ void setup() {
   startRfid();
   startFingerprint();
 
+  /* Have the two modules swapped places since the last boot?
+   *
+   * One working and the other not is easy to read as two unrelated faults,
+   * chased one at a time. But if the pair TRADE — the reader comes up on the
+   * boot the sensor drops, and back again — that is not two faults. It is one
+   * rail that cannot carry both, and every hour spent on the module that is
+   * currently quiet is spent on the wrong thing.
+   *
+   * A single boot cannot see it; only the comparison can, so the previous
+   * verdict is kept in RTC memory. It also explains why this arrives late in
+   * a diagnosis: while one module was dead it drew almost nothing, and the
+   * other had the whole rail to itself. Repairing the first is what creates
+   * the contention that stops the second. */
+  static RTC_DATA_ATTR bool  hadRfid    = false;
+  static RTC_DATA_ATTR bool  hadFinger  = false;
+  static RTC_DATA_ATTR bool  haveSeenAny = false;
+
+  if (haveSeenAny && rfidReady != hadRfid && fingerReady != hadFinger
+      && rfidReady != fingerReady) {
+    Serial.println();
+    Serial.println("  ---- THE TWO MODULES HAVE SWAPPED ----");
+    Serial.printf("  Last boot: reader %s, sensor %s\n",
+                  hadRfid ? "OK" : "silent", hadFinger ? "OK" : "silent");
+    Serial.printf("  This boot: reader %s, sensor %s\n",
+                  rfidReady ? "OK" : "silent", fingerReady ? "OK" : "silent");
+    Serial.println();
+    Serial.println("  They are on different buses and cannot interfere with each other's");
+    Serial.println("  signals. What they share is the 3.3 V rail and the ground, so a pair");
+    Serial.println("  that trades places is one supply that cannot carry both — not two");
+    Serial.println("  faults taking turns.");
+    Serial.println("  Note that repairing one is what creates this: a dead module draws");
+    Serial.println("  almost nothing, so the other had the whole rail until now.");
+    Serial.println();
+    Serial.println("  The fix is to stop sharing. If the sensor is an R307 — a sealed");
+    Serial.println("  cylinder on a cable — move its VCC from 3V3 to VIN. It has its own");
+    Serial.println("  regulator, runs from 5 V, and that takes it off the 3.3 V rail");
+    Serial.println("  entirely, leaving the whole of it for the reader.");
+    Serial.println("  A bare AS608 has no regulator and must stay on 3V3; then the answer");
+    Serial.println("  is 100 uF + 100 nF at EACH module and a supply that can deliver 1 A.");
+    Serial.println();
+  }
+
+  hadRfid     = rfidReady;
+  hadFinger   = fingerReady;
+  haveSeenAny = true;
+
   /* Two modules on two different buses do not usually fail in the same boot.
    * What they share is the 3.3 V rail and the ground, so when both go quiet
    * together that is the first suspect — not two separate faults, which is
@@ -2560,6 +2606,13 @@ void setup() {
     Serial.println("            by fingerprint and no enrolment can be performed on this");
     Serial.println("            terminal. Use the password failover on the teacher");
     Serial.println("            dashboard until the sensor is fixed.");
+    Serial.println();
+    Serial.println("            If the sensor worked before the reader did, suspect the");
+    Serial.println("            shared 3.3 V rail rather than the sensor. A dead reader draws");
+    Serial.println("            almost nothing; a working one takes its share, and the sensor");
+    Serial.println("            is what runs short. An R307 — the sealed cylinder on a cable —");
+    Serial.println("            has its own regulator: move its VCC from 3V3 to VIN and it");
+    Serial.println("            leaves the 3.3 V rail to the reader entirely.");
   } else if (!rfidReady) {
     Serial.println("HALF ready: the fingerprint sensor works, the card reader does not.");
     Serial.println("            A teacher can open a session here, but no student card");
