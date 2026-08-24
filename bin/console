@@ -178,6 +178,66 @@ function commandKeyGenerate(array $flags): void
     $force    = in_array('--force', $flags, true);
     $written  = 0;
 
+    // Is there already encrypted data that a new APP_KEY would orphan?
+    //
+    // The guarded case is obvious and handled below: a key that is present is
+    // skipped unless --force. The unguarded one is the dangerous one, because
+    // it does not look like a key change at all — .env goes missing, or is
+    // moved aside, and start.bat recreates it and calls this command. Every
+    // value is then "absent", so fresh keys are generated with no warning and
+    // the message on screen reads "First run - setting up".
+    //
+    // It is not a first run. The database is still full, and every terminal
+    // secret and fingerprint template in it has just become unreadable —
+    // permanently, because the key that opened them is the file that went
+    // missing. That is the single most destructive thing this project can do
+    // to itself, and until now it did it quietly.
+    //
+    // The database may legitimately not exist yet on a real first run, so a
+    // failure to look is not an error: it means there is nothing to lose.
+    $existingSecrets = 0;
+
+    try {
+        $probe = Database::instance();
+        $existingSecrets = (int) $probe->scalar(
+            "SELECT COUNT(*) FROM api_keys
+              WHERE hmac_secret_encrypted IS NOT NULL AND status = 'active'"
+        );
+
+        if ($probe->hasColumn('fingerprint_templates', 'template_data')) {
+            $existingSecrets += (int) $probe->scalar(
+                'SELECT COUNT(*) FROM fingerprint_templates WHERE template_data IS NOT NULL'
+            );
+        }
+    } catch (Throwable $e) {
+        $existingSecrets = 0;      // no reachable database, so nothing at risk
+    }
+
+    $appKeySet = preg_match('/^APP_KEY=(.+)$/m', $contents, $m) === 1 && trim($m[1]) !== '';
+
+    if ($existingSecrets > 0 && !$appKeySet && !$force) {
+        out('');
+        out('  ✗ Refusing to generate a new APP_KEY.', 'red');
+        out('');
+        out(sprintf('  This database already holds %d encrypted value(s) — terminal secrets', $existingSecrets), 'yellow');
+        out('  and fingerprint templates — and .env has no APP_KEY to read them with.', 'yellow');
+        out('');
+        out('  Generating one now would not recover them. It would replace the key they', 'grey');
+        out('  were encrypted with, permanently, and every terminal would stop', 'grey');
+        out('  authenticating while every enrolled fingerprint stopped matching.', 'grey');
+        out('');
+        out('  The original .env is what opens this data. Look for it before doing', 'grey');
+        out('  anything else — a backup, the machine this database came from, or a', 'grey');
+        out('  copy taken before the move. See docs/MOVING-TO-ANOTHER-PC.md', 'grey');
+        out('');
+        out('  If it is genuinely gone, --force generates a new key and accepts the', 'grey');
+        out('  loss: re-issue every terminal\'s provisioning file and enrol every', 'grey');
+        out('  fingerprint again. Nothing else in the database is affected.', 'grey');
+        out('');
+
+        fail('APP_KEY generation refused — run with --force only if the original .env is gone.');
+    }
+
     foreach (['APP_KEY', 'API_KEY_PEPPER', 'REALTIME_TICKET_SECRET'] as $name) {
         $hasValue = preg_match('/^' . $name . '=(.+)$/m', $contents, $matches) === 1
             && trim($matches[1]) !== '';
