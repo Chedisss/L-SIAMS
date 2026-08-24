@@ -1951,53 +1951,69 @@ static void startRfid(bool verbose = true) {
    * that only on the FIRST call, returning early once initialised, so running
    * this on a later retry would leave MISO detached and break a reader that
    * was working. */
-  bool misoFloating = false;
-
-  if (verbose) {
-    /* Out of reset, so the module is powered up and driving its outputs. */
-    pinMode(PIN_RFID_RST, OUTPUT);
-    digitalWrite(PIN_RFID_RST, HIGH);
-    delay(50);
-
-    /* Selected, so MISO leaves high impedance. */
-    pinMode(PIN_RFID_SS, OUTPUT);
-    digitalWrite(PIN_RFID_SS, LOW);
-    delay(2);
-
-    pinMode(PIN_RFID_MISO, INPUT_PULLUP);
-    delay(2);
-    int pulledUp = digitalRead(PIN_RFID_MISO);
-
-    pinMode(PIN_RFID_MISO, INPUT_PULLDOWN);
-    delay(2);
-    int pulledDown = digitalRead(PIN_RFID_MISO);
-
-    digitalWrite(PIN_RFID_SS, HIGH);      /* released before the library takes over */
-
-    misoFloating = (pulledUp == HIGH && pulledDown == LOW);
-  }
-
+  /* The MISO pull-test that used to sit here has been removed.
+   *
+   * It drove RST and NSS by hand before the library had initialised anything,
+   * to see whether the module held MISO against an internal pull. Two things
+   * were wrong with that. It answered "nothing is attached" for a module that
+   * was demonstrably answering, because an unselected SPI device releases
+   * MISO by design — that was patched. And it manipulated the module's pins
+   * before PCD_Init(), which the minimal sketch that reads cards on this
+   * hardware does not do.
+   *
+   * When a five-line sketch works and a long one does not, the difference is
+   * the place to look, not the thing to defend. What is left below is what
+   * that sketch does: begin the bus, initialise the reader, read.
+   */
   SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI);
   rfid.PCD_Init();
   delay(50);
 
-  /* Read the version several times. A reader answering 0x92 every time is
-   * wired correctly; one answering a DIFFERENT value each time has a
-   * connection problem, not a configuration problem, and no amount of
-   * retrying in the card code will change that. */
-  byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
-  bool stable  = true;
-  byte other   = version;          /* one differing value, for the report */
+  /* Read the version nine times and take the majority.
+   *
+   * The first version of this demanded all nine be identical, and that gate
+   * is stricter than the job it guards. A minimal sketch — SPI.begin(),
+   * PCD_Init(), then straight into PICC_IsNewCardPresent() — reads cards on
+   * this same hardware without ever touching the version register. So a
+   * reader that glitches one read in nine reads cards perfectly, and was
+   * being declared dead for it.
+   *
+   * That is the wrong trade. A glitch is worth reporting; it is not worth
+   * refusing to read anybody's card over, and the brownout detector firing on
+   * this hardware says glitches are to be expected rather than treated as
+   * proof of a fault.
+   *
+   * Majority of nine: five agreeing readings is a reader that is answering.
+   * The disagreements are still counted and still printed, because a reader
+   * that needs a majority is a reader with a wiring problem worth fixing —
+   * but it works in the meantime, and saying so is more useful than silence. */
+  const uint8_t SAMPLES = 9;
 
-  for (uint8_t i = 0; i < 8; i++) {
-    delay(5);
-    byte again = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  byte    values[SAMPLES];
+  uint8_t counts[SAMPLES] = { 0 };
+  uint8_t distinct        = 0;
 
-    if (again != version) {
-      stable = false;
-      other  = again;
-    }
+  for (uint8_t i = 0; i < SAMPLES; i++) {
+    if (i) delay(5);
+    byte reading = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+
+    uint8_t seen = 0xFF;
+    for (uint8_t j = 0; j < distinct; j++) if (values[j] == reading) seen = j;
+
+    if (seen == 0xFF) { values[distinct] = reading; counts[distinct] = 1; distinct++; }
+    else              { counts[seen]++; }
   }
+
+  uint8_t best = 0;
+  for (uint8_t j = 1; j < distinct; j++) if (counts[j] > counts[best]) best = j;
+
+  byte    version   = values[best];
+  uint8_t agreed    = counts[best];
+  bool    stable    = (distinct == 1);
+
+  /* One value that disagreed, for the report. */
+  byte other = version;
+  for (uint8_t j = 0; j < distinct; j++) if (j != best) other = values[j];
 
   static const byte KNOWN[] = { 0x91, 0x92, 0x88, 0x90, 0x12 };
 
@@ -2037,13 +2053,62 @@ static void startRfid(bool verbose = true) {
 
   if (verbose || version != lastReported) {
     Serial.printf("Reader: version 0x%02X %s\n", version,
-                  known ? (stable ? "(ok)" : "(known version but UNSTABLE)")
+                  known ? (stable ? "(ok)" : "(ok, but not on every read)")
                         : "<-- not a version any MFRC522 reports");
   }
 
   lastReported = version;
 
-  rfidReady = known && stable;
+  /* The gate is whether a module is there and talking — not whether one
+   * register reads perfectly.
+   *
+   * This was backwards, and the evidence that it was backwards is a five-line
+   * sketch: SPI.begin(), PCD_Init(), then straight into
+   * PICC_IsNewCardPresent(). It reads cards on hardware that this firmware
+   * declared dead, and it never looks at the version register at all. The
+   * check was refusing to do the job on the strength of a measurement the
+   * job does not depend on.
+   *
+   * The two are not equally trustworthy either, and the difference runs the
+   * other way from what the old gate assumed. A version read is one raw byte
+   * with no error detection of any kind: a single flipped bit turns 0x92 into
+   * 0x82 and nothing notices. A card read is a protocol — anticollision, a
+   * BCC check byte over the UID, a CRC — so a UID corrupted in transit is
+   * rejected by the reader rather than handed up as somebody else's card.
+   * Judging the safe operation by the unsafe measurement had it exactly
+   * inverted.
+   *
+   * So: a module that answers with a real version, or within a bit or two of
+   * one, is a module that is present and communicating, and cards may be
+   * read. 0x00 and 0xFF are excluded explicitly — they are what an undriven
+   * line reads, and 0x00 is coincidentally two bits from 0x88, which would
+   * otherwise let an absent module through. */
+  bool undriven      = (version == 0x00 || version == 0xFF);
+  bool majorityKnown = known && agreed * 2 > SAMPLES;
+
+  rfidReady = !undriven && (majorityKnown || nearestBits <= 2);
+
+  /* Working, but not cleanly. Say both halves: that cards will read, so
+   * nobody pulls a terminal out of a classroom that is doing its job, and
+   * that the wiring is worth fixing, so nobody leaves it like this. */
+  if (rfidReady && !majorityKnown && verbose) {
+    Serial.printf("        0x%02X is %u bit(s) off 0x%02X, so the module is present and\n",
+                  version, nearestBits, nearest);
+    Serial.println("        answering — the version byte is arriving corrupted.");
+    Serial.println("        CARDS WILL STILL READ. A card read is checked as it arrives —");
+    Serial.println("        anticollision, a BCC byte over the UID, a CRC — so a UID damaged");
+    Serial.println("        in transit is rejected rather than read as another student. The");
+    Serial.println("        version byte has no such check, which is why it shows the damage");
+    Serial.println("        first and why it is not a reason to refuse cards.");
+    Serial.println("        Worth fixing all the same: shorter leads, a firmer joint, a");
+    Serial.println("        steadier supply. Until then the reader works.");
+  } else if (rfidReady && !stable && verbose) {
+    Serial.printf("        %u of %u reads agreed; one returned 0x%02X.\n",
+                  (unsigned) agreed, (unsigned) SAMPLES, other);
+    Serial.println("        Cards will read. The disagreement is a wiring or supply problem");
+    Serial.println("        worth fixing — shorter leads, a firmer joint, a steadier supply —");
+    Serial.println("        but it is not stopping the reader from working.");
+  }
 
   if (!rfidReady && verbose) {
     /* The reading, interpreted, before the checklist. Which of these four it
@@ -2137,36 +2202,6 @@ static void startRfid(bool verbose = true) {
       }
 
       Serial.println();
-    }
-
-    if (verbose && moduleDidAnswer && misoFloating) {
-      Serial.println();
-      Serial.println("        (The MISO line reads as undriven between transfers, which is");
-      Serial.println("        normal — an unselected SPI device releases it. The reading above");
-      Serial.println("        proves the module is answering, so trust that one.)");
-    }
-
-    if (verbose && !moduleDidAnswer) {
-      if (misoFloating) {
-        Serial.println();
-        Serial.println("        MEASURED: the MISO line follows an internal pull-up and an");
-        Serial.println("        internal pull-down exactly, so NOTHING is driving it. A powered,");
-        Serial.println("        connected module holds that line and would not move. So either");
-        Serial.println("        the MISO wire is not making contact, or the module has no power.");
-        Serial.println("        The other SPI pins do not matter until this one is fixed:");
-        Serial.printf("          - the wire between the module's MISO and GPIO %d\n", PIN_RFID_MISO);
-        Serial.println("          - the module's VCC (3.3 V) and GND");
-        Serial.println("        Replace those three wires rather than re-seating them; a broken");
-        Serial.println("        core inside the sheath still fits and cannot be seen.");
-        Serial.println();
-      } else {
-        Serial.println();
-        Serial.println("        MEASURED: something IS holding the MISO line against the internal");
-        Serial.println("        pulls, so a powered module is connected to it. The wire and the");
-        Serial.println("        module's supply are therefore not the fault — look at the other");
-        Serial.println("        SPI pins, at the joints, and at the supply under load.");
-        Serial.println();
-      }
     }
 
     Serial.println("        No card will read until this is fixed. Check, in order:");
