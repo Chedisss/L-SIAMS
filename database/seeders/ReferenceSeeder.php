@@ -196,6 +196,8 @@ return static function (Database $db): void {
         ['attendance', 'attendance.minimum_dwell_minutes',  '20', 'int', 'Minimum classroom stay (minutes)', 'A tap-out before this is refused; after it, the student is Left Early.', 0, '0', '480'],
         ['attendance', 'attendance.auto_timeout_on_close',  '1',  'bool', 'Stamp a time-out at session close', 'When off, a missing tap-out is recorded as Incomplete instead.', 0, null, null],
         ['attendance', 'attendance.generate_absent_on_close', '1', 'bool', 'Generate Absent records at close', 'Marks every rostered student who never tapped in.', 0, null, null],
+        ['attendance', 'attendance.carry_over_enabled', '1', 'bool', 'Carry attendance to the next subject', 'A student who was Present or Late in the previous period starts the next one Present without tapping again. Absent, Left Early, Excused and Incomplete never carry — those students may still tap in.', 0, null, null],
+        ['attendance', 'attendance.carry_over_max_gap_minutes', '30', 'int', 'Carry-over gap limit (minutes)', 'The longest break between one period ending and the next beginning that still counts as a handover. Beyond this, the new register starts empty.', 0, '0', '240'],
         ['attendance', 'attendance.section_mismatch_alert_threshold', '3', 'int', 'Section mismatch alert threshold', 'Notify an administrator after this many wrong-section taps by one student in a day.', 0, '1', '50'],
         ['attendance', 'attendance.chronic_absence_threshold_percent', '80', 'float', 'Chronic absence threshold (%)', 'Students below this appear on the chronic absence report.', 0, '0', '100'],
 

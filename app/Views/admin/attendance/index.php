@@ -131,7 +131,16 @@ $__view->start('content');
                             <td class="text-sm"><?= e($record['subject_code']) ?></td>
                             <td class="text-sm"><?= e($record['teacher_name']) ?></td>
                             <td class="text-sm"><?= e($record['room_number']) ?></td>
-                            <td class="nowrap"><?= e(format_time($record['time_in'])) ?></td>
+                            <td class="nowrap">
+                                <?= e(format_time($record['time_in'])) ?>
+                                <?php if (!empty($record['carried_from_session_id'])): ?>
+                                    <?php /* No card was presented for this one. It is presence
+                                             inherited from the previous period, and a reader
+                                             auditing a row is entitled to see the difference. */ ?>
+                                    <i class="fa-solid fa-arrow-right-arrow-left text-muted"
+                                       title="Carried from <?= e((string) ($record['carried_from_subject'] ?: $record['carried_from_code'])) ?> — the student was already in the room and did not tap again"></i>
+                                <?php endif; ?>
+                            </td>
                             <td class="nowrap">
                                 <?php if ($record['time_out'] === null && $record['time_in'] === null): ?>
                                     <?php /* No arrival, so nothing is pending. The badge on a
@@ -270,7 +279,9 @@ $__view->start('scripts');
             + field('Time in', r.time_in)
             + field('Time out', r.time_out)
             + field('Duration', r.duration_minutes === null ? '—' : r.duration_minutes + ' min')
-            + field('Time-in terminal', r.time_in_device_name || r.time_in_device_id)
+            + field('Time-in terminal', r.carried_from_session_id
+                ? 'None — carried from ' + (r.carried_from_subject || r.carried_from_code)
+                : (r.time_in_device_name || r.time_in_device_id))
             + field('Time-out terminal', r.time_out_device_name || r.time_out_device_id)
             + field('Time-in IP', r.time_in_ip)
             + field('Time-out IP', r.time_out_ip)

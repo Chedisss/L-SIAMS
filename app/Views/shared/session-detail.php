@@ -143,7 +143,13 @@ foreach ($roster as $entry) {
                                         <span class="badge badge-warning" title="Without a card this student cannot tap in">No card</span>
                                     <?php endif; ?>
                                 </td>
-                                <td class="nowrap text-sm" data-cell="time_in"><?= e(format_time($entry['time_in'])) ?></td>
+                                <td class="nowrap text-sm" data-cell="time_in">
+                                    <?= e(format_time($entry['time_in'])) ?>
+                                    <?php if (!empty($entry['carried_from_session_id'])): ?>
+                                        <i class="fa-solid fa-arrow-right-arrow-left text-muted"
+                                           title="Carried from <?= e((string) ($entry['carried_from_subject'] ?: $entry['carried_from_code'])) ?> — this student was already in the room and did not tap again"></i>
+                                    <?php endif; ?>
+                                </td>
                                 <td class="nowrap text-sm" data-cell="time_out">
                                     <?= e(format_time($entry['time_out'])) ?>
                                     <?php if ((int) $entry['auto_generated_time_out'] === 1): ?>
@@ -194,6 +200,12 @@ foreach ($roster as $entry) {
                     'Auto-close'      => $session['expires_at'] ? format_datetime($session['expires_at']) : '—',
                     'Closed'          => $session['closed_at'] ? format_datetime($session['closed_at']) : '—',
                     'Closed by'       => (string) ($session['closed_by_type'] ?? '—'),
+                    // How much of this register was actually scanned in front
+                    // of the teacher, and how much arrived because the same
+                    // students were already in the room for the last period.
+                    'Carried in'      => (int) ($session['carried_in_count'] ?? 0) === 0
+                        ? 'None — every record was tapped'
+                        : $session['carried_in_count'] . ' from the previous period',
                     'Rejected taps'   => (string) $session['rejected_tap_count'],
                 ] as $label => $value): ?>
                     <div style="display:flex;justify-content:space-between;gap:.5rem;padding:.35rem 0;border-bottom:1px solid var(--border)">
@@ -294,7 +306,7 @@ $__view->start('scripts');
 
             row.dataset.state = entry.time_in === null ? 'none' : (entry.time_out === null ? 'in' : 'out');
 
-            set(row, 'time_in',  entry.time_in  ? time(entry.time_in)  : '—');
+            setTimeIn(row, entry);
             set(row, 'time_out', entry.time_out ? time(entry.time_out) : '—');
             set(row, 'duration', entry.duration_minutes === null ? '—' : entry.duration_minutes + ' min');
             set(row, 'arrival_status',   entry.arrival_status   || '—');
@@ -315,6 +327,30 @@ $__view->start('scripts');
         });
 
         filter();
+    }
+
+    // Time in carries a marker the other cells do not: a record that arrived by
+    // carry-over from the previous period rather than by a tap. set() writes
+    // textContent, which would silently strip that icon on the first refresh
+    // and leave a carried record looking exactly like a scanned one.
+    function setTimeIn(row, entry) {
+        const cell = row.querySelector('[data-cell="time_in"]');
+        if (!cell) return;
+
+        const label = entry.time_in ? time(entry.time_in) : '—';
+        const from  = entry.carried_from_subject || entry.carried_from_code || '';
+        const html  = LS.util.escape(label) + (entry.carried_from_session_id
+            ? ' <i class="fa-solid fa-arrow-right-arrow-left text-muted" title="Carried from '
+              + LS.util.escape(from)
+              + ' — this student was already in the room and did not tap again"></i>'
+            : '');
+
+        if (cell.innerHTML.trim() === html) return;
+
+        cell.innerHTML = html;
+        cell.classList.remove('cell-flash');
+        void cell.offsetWidth;
+        cell.classList.add('cell-flash');
     }
 
     function set(row, key, value) {

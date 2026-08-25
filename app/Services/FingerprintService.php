@@ -301,7 +301,11 @@ final class FingerprintService
             'teacher'        => sprintf('%s %s', $fingerprint['first_name'], $fingerprint['last_name']),
             'display_line_1' => 'SESSION OPEN',
             'display_line_2' => mb_substr((string) $fingerprint['last_name'], 0, 20),
-            'display_line_3' => $session['subject_code'] . ' ' . $session['section_code'],
+            // The teacher needs to know how many of their class the register
+            // already has before they start wondering why nobody is queueing.
+            'display_line_3' => (int) ($session['carried_in'] ?? 0) > 0
+                ? sprintf('%s  %d CARRIED', $session['subject_code'], (int) $session['carried_in'])
+                : $session['subject_code'] . ' ' . $session['section_code'],
             'led'            => 'green',
             'buzzer'         => 'short',
             'session'        => $session,

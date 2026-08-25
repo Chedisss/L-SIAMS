@@ -97,22 +97,49 @@ final class AttendanceSessionService
                     ['classroom' => (int) $schedule['classroom_id']]
                 );
 
+                $handedOverFrom = null;
+
                 if ($existing !== null) {
-                    throw new BusinessRuleException(
-                        'SESSION_ALREADY_OPEN',
-                        sprintf(
-                            'An attendance session is already open in this room (%s, opened by %s).',
-                            $existing['session_code'],
-                            $existing['teacher_name']
-                        ),
-                        [
-                            'display_line_1' => 'SESSION ACTIVE',
-                            'display_line_2' => (string) $existing['session_code'],
-                            'led'            => 'amber',
-                            'buzzer'         => 'long',
-                        ],
-                        409
-                    );
+                    // Whose room is it? If the open session's period is still
+                    // running, it is theirs and nobody else may take it. The
+                    // caller has already established that this teacher's own
+                    // lesson is openable (ScheduleService::openableForDevice(),
+                    // or the same rule from the teacher's end in
+                    // SessionOverrideService), so the two cannot both be true
+                    // — but this is the room's own lock, and it answers for
+                    // itself rather than trusting what the caller checked.
+                    $previousEnd = Clock::parse((string) $existing['scheduled_end']);
+
+                    if ($previousEnd > $now) {
+                        throw new BusinessRuleException(
+                            'SESSION_ALREADY_OPEN',
+                            sprintf(
+                                'An attendance session is already open in this room (%s, opened by %s).',
+                                $existing['session_code'],
+                                $existing['teacher_name']
+                            ),
+                            [
+                                'display_line_1' => 'SESSION ACTIVE',
+                                'display_line_2' => (string) $existing['session_code'],
+                                'led'            => 'amber',
+                                'buzzer'         => 'long',
+                            ],
+                            409
+                        );
+                    }
+
+                    // The bell has gone on that period. Its session is only
+                    // still open because the sweeper closes at expires_at and
+                    // that is minutes away — meanwhile the next teacher is
+                    // standing at the reader with a full class waiting.
+                    //
+                    // Hand the room over: close it now, exactly as the sweeper
+                    // would have, which stamps every outstanding tap-out at the
+                    // scheduled end rather than at this moment. Nobody is
+                    // credited with minutes in a period that had finished.
+                    self::close((int) $existing['session_id'], 'system', null);
+
+                    $handedOverFrom = (string) $existing['session_code'];
                 }
 
                 // A session already recorded for this schedule today, and not
@@ -175,16 +202,20 @@ final class AttendanceSessionService
                             'status'        => 'open',
                             'expires_at'    => $expiresAt->format('Y-m-d H:i:s'),
                             'opened_method' => $openedMethod,
+                            'handed_over_from' => $handedOverFrom,
                         ],
                         sprintf(
                             'Attendance session %s reopened by %s %s in room %s %s. '
-                            . 'It had been closed by %s.',
+                            . 'It had been closed by %s.%s',
                             (string) $earlier['session_code'],
                             $teacher['first_name'],
                             $teacher['last_name'],
                             $schedule['room_number'] ?? '?',
                             $proof,
-                            (string) ($earlier['closed_by_type'] ?? 'unknown')
+                            (string) ($earlier['closed_by_type'] ?? 'unknown'),
+                            $handedOverFrom === null
+                                ? ''
+                                : sprintf(' The room was handed over from %s, whose period had ended.', $handedOverFrom)
                         )
                     );
 
@@ -218,13 +249,15 @@ final class AttendanceSessionService
                     'updated_at'      => Clock::nowString(),
                 ]);
 
-                $counters = AttendanceService::updateSessionCounters($db, $sessionId);
-
                 /** @var array<string,mixed> $session */
                 $session = $db->selectOne(
                     'SELECT * FROM attendance_sessions WHERE session_id = :id',
                     ['id' => $sessionId]
                 ) ?? [];
+
+                // The register the students are already in, before anybody taps.
+                $carried  = self::carryForward($db, $session, $start);
+                $counters = AttendanceService::updateSessionCounters($db, $sessionId);
 
                 RealtimeService::broadcast(
                     AttendanceService::channelsFor($session),
@@ -239,6 +272,8 @@ final class AttendanceSessionService
                         'opened_at'    => $now->format(DATE_ATOM),
                         'scheduled_end' => $end->format(DATE_ATOM),
                         'expires_at'   => $expiresAt->format(DATE_ATOM),
+                        'carried_in'   => $carried['count'],
+                        'carried_from' => $carried['from_code'],
                         'counters'     => $counters,
                     ]
                 );
@@ -255,14 +290,27 @@ final class AttendanceSessionService
                         'schedule_id'   => (int) $schedule['schedule_id'],
                         'device_id'     => (string) $device['device_id'],
                         'opened_method' => $openedMethod,
+                        'handed_over_from' => $handedOverFrom,
+                        'carried_in'    => $carried['count'],
+                        'carried_from'  => $carried['from_code'],
                     ],
                     sprintf(
-                        'Attendance session %s opened by %s %s in room %s %s.',
+                        'Attendance session %s opened by %s %s in room %s %s.%s%s',
                         $sessionCode,
                         $teacher['first_name'],
                         $teacher['last_name'],
                         $schedule['room_number'] ?? '?',
-                        $proof
+                        $proof,
+                        $handedOverFrom === null
+                            ? ''
+                            : sprintf(' The room was handed over from %s, whose period had ended.', $handedOverFrom),
+                        $carried['count'] === 0
+                            ? ''
+                            : sprintf(
+                                ' %d student(s) carried forward from %s without tapping again.',
+                                $carried['count'],
+                                (string) $carried['from_code']
+                            )
                     )
                 );
 
@@ -279,6 +327,8 @@ final class AttendanceSessionService
                     'scheduled_end'   => $end->format('H:i'),
                     'expires_at'      => $expiresAt->format(DATE_ATOM),
                     'roster_count'    => $counters['total'],
+                    'carried_in'      => $carried['count'],
+                    'carried_from'    => $carried['from_code'],
                     'late_after'      => $start->modify('+' . (int) $schedule['late_threshold_minutes'] . ' minutes')->format('H:i'),
                     'time_in_closes'  => $start->modify('+' . (int) $schedule['time_in_window_close'] . ' minutes')->format('H:i'),
                     'time_out_opens'  => $end->modify('-' . (int) $schedule['time_out_window_open'] . ' minutes')->format('H:i'),
@@ -452,6 +502,128 @@ final class AttendanceSessionService
 
             return $summary;
         });
+    }
+
+    /**
+     * Carry the previous period's register into this one.
+     *
+     * A section sits in one room for most of the day. The bell goes, one
+     * teacher leaves, the next walks in, and the same forty students are in the
+     * same chairs. Making all of them tap again for every subject is forty taps
+     * of queueing, six or seven times a day, to establish a fact the system
+     * recorded five minutes ago.
+     *
+     * So presence carries. Anyone who was Present or Late when the last period
+     * ended starts this one Present, with no tap.
+     *
+     * What does NOT carry is anyone who was not in the room at the bell:
+     * Absent, Left Early, Excused and Incomplete all carry nothing. That is the
+     * more important half of the rule — missing first period must not condemn a
+     * student to being marked absent for the rest of the day, and leaving early
+     * must not either. They get exactly the same chance to tap in for the next
+     * subject as anybody else, because this leaves them with no record at all
+     * and the tap-in path treats them as it treats everyone.
+     *
+     * Provenance is not optional. A carried row sets carried_from_session_id
+     * and leaves time_in_device_id, time_in_ip and time_in_mac NULL, because no
+     * card was presented to any reader — writing a device id would be a lie
+     * that every report and audit downstream would faithfully repeat.
+     *
+     * @param  array<string,mixed> $session the session being opened
+     * @return array{count:int,from_code:?string}
+     */
+    private static function carryForward(Database $db, array $session, DateTimeImmutable $start): array
+    {
+        $none    = ['count' => 0, 'from_code' => null];
+        $carryAt = Clock::now();
+
+        if (!Config::get('attendance.carry_over.enabled', true)) {
+            return $none;
+        }
+
+        $maxGap = max(0, (int) Config::get('attendance.carry_over.max_gap_minutes', 30));
+
+        // The period this section was in immediately before. Same section, same
+        // day, already closed, and it must have ENDED — an overlapping session
+        // is a scheduling mistake, not a handover, and carrying from one would
+        // duplicate a register that is still being written.
+        //
+        // The gap limit is what keeps "the period before" meaning the period
+        // before. Two classes an hour apart are not a handover; the students
+        // went somewhere in between, and whatever they did there is not
+        // evidence that they are sitting here now.
+        $previous = $db->selectOne(
+            "SELECT * FROM attendance_sessions
+              WHERE section_id   = :section
+                AND session_date = :date
+                AND session_id  <> :self
+                AND status       = 'closed'
+                AND scheduled_end <= :start
+                AND scheduled_end >= :earliest
+              ORDER BY scheduled_end DESC
+              LIMIT 1",
+            [
+                'section'  => (int) $session['section_id'],
+                'date'     => (string) $session['session_date'],
+                'self'     => (int) $session['session_id'],
+                'start'    => $start->format('Y-m-d H:i:s'),
+                'earliest' => $start->modify('-' . $maxGap . ' minutes')->format('Y-m-d H:i:s'),
+            ]
+        );
+
+        if ($previous === null) {
+            return $none;
+        }
+
+        $carried = $db->execute(
+            "INSERT INTO attendance_records
+                 (session_id, student_id, section_id, grade_level_id, subject_id, teacher_id, classroom_id,
+                  rfid_uid, time_in, arrival_status, departure_status, final_status,
+                  carried_from_session_id, created_at, updated_at)
+             SELECT :session, prev.student_id, prev.section_id, prev.grade_level_id,
+                    :subject, :teacher, :classroom,
+                    prev.rfid_uid, :time_in, 'present', 'pending', 'Present',
+                    :previous, :now, :now
+               FROM attendance_records prev
+               JOIN students st ON st.student_id = prev.student_id
+              WHERE prev.session_id = :previous2
+                AND prev.final_status IN ('Present','Late')
+                AND st.deleted_at IS NULL
+                AND st.status = 'active'
+                AND NOT EXISTS (
+                    SELECT 1 FROM attendance_records ar
+                     WHERE ar.session_id = :session2 AND ar.student_id = prev.student_id
+                )",
+            [
+                'session'   => (int) $session['session_id'],
+                'session2'  => (int) $session['session_id'],
+                'previous'  => (int) $previous['session_id'],
+                'previous2' => (int) $previous['session_id'],
+                'subject'   => (int) $session['subject_id'],
+                'teacher'   => (int) $session['teacher_id'],
+                'classroom' => (int) $session['classroom_id'],
+                // The period began at the bell and the student was already
+                // sitting in it, so the bell is the arrival — stamping "now"
+                // would date it to whenever the teacher got their finger read,
+                // which on a late opening is a different fact entirely.
+                //
+                // Capped at the present moment for the opposite case: a teacher
+                // who opens during the tap-in grace window, a few minutes
+                // before the bell, must not produce a register of arrivals
+                // timed in the future.
+                'time_in'   => ($start > $carryAt ? $carryAt : $start)->format('Y-m-d H:i:s'),
+                'now'       => Clock::nowString(),
+            ]
+        );
+
+        if ($carried > 0) {
+            $db->update('attendance_sessions', [
+                'carried_in_count' => $carried,
+                'updated_at'       => Clock::nowString(),
+            ], ['session_id' => (int) $session['session_id']]);
+        }
+
+        return ['count' => $carried, 'from_code' => (string) $previous['session_code']];
     }
 
     /**
@@ -734,11 +906,15 @@ final class AttendanceSessionService
                     rc.card_uid,
                     ar.attendance_id, ar.time_in, ar.time_out, ar.duration_minutes,
                     ar.arrival_status, ar.departure_status, ar.final_status,
-                    ar.auto_generated_time_out
+                    ar.auto_generated_time_out,
+                    ar.carried_from_session_id, prev.session_code AS carried_from_code,
+                    prevsub.subject_code AS carried_from_subject
                FROM attendance_sessions s
                JOIN students st ON st.section_id = s.section_id AND st.deleted_at IS NULL AND st.status = 'active'
                LEFT JOIN rfid_cards rc ON rc.student_id = st.student_id AND rc.status = 'active'
                LEFT JOIN attendance_records ar ON ar.session_id = s.session_id AND ar.student_id = st.student_id
+               LEFT JOIN attendance_sessions prev ON prev.session_id = ar.carried_from_session_id
+               LEFT JOIN subjects prevsub ON prevsub.subject_id = prev.subject_id
               WHERE s.session_id = :id
               ORDER BY st.last_name, st.first_name",
             ['id' => $sessionId]
