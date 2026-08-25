@@ -600,6 +600,59 @@ final class ScheduleService
         );
     }
 
+    /**
+     * The schedules a session may be OPENED for right now.
+     *
+     * activeForDevice() answers a different question: which schedules this
+     * terminal is currently doing anything for, which has to include a class
+     * that has finished but whose tap-out window is still running. Using it to
+     * decide who may open a session conflated the two, and consecutive lessons
+     * in one room made the difference visible.
+     *
+     * A period runs from ten minutes before the bell to fifteen after, so the
+     * lesson that has just ended and the one now starting are both "active" for
+     * twenty-five minutes together. Whichever teacher scanned first took the
+     * room, and one open session per classroom is enforced — so the teacher
+     * whose lesson had ENDED could hold the room against the teacher whose
+     * lesson was actually running, who was then refused in their own classroom.
+     *
+     * The rule this applies:
+     *
+     *   - a lesson in progress now excludes everything else. It is that
+     *     teacher's room, and nobody else may open a session in it.
+     *   - with nothing in progress, a lesson yet to start may be opened, so
+     *     arriving early still works.
+     *   - a lesson that has ENDED may never be opened. Its remaining window
+     *     exists so students can tap OUT of a session that is already open,
+     *     which is not the same permission as starting a new one.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function openableForDevice(int $deviceRowId, ?\DateTimeImmutable $at = null): array
+    {
+        $at  = $at ?? Clock::now();
+        $now = $at->format('H:i:s');
+
+        $candidates = self::activeForDevice($deviceRowId, $at);
+
+        $inProgress = [];
+        $notYet     = [];
+
+        foreach ($candidates as $candidate) {
+            $start = (string) $candidate['start_time'];
+            $end   = (string) $candidate['end_time'];
+
+            if ($now >= $start && $now <= $end) {
+                $inProgress[] = $candidate;
+            } elseif ($now < $start) {
+                $notYet[] = $candidate;
+            }
+            // now > end: the lesson is over. Not openable, deliberately.
+        }
+
+        return $inProgress !== [] ? $inProgress : $notYet;
+    }
+
     /** @return list<array<string,mixed>> */
     public static function forTeacher(int $teacherId, ?string $day = null): array
     {

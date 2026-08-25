@@ -158,11 +158,24 @@ final class SessionOverrideService
     /**
      * The class this teacher may open right now, and the terminal in its room.
      *
-     * This is ScheduleService::activeForDevice() asked from the other end. The
-     * fingerprint path starts from a terminal and asks which of its schedules
-     * belongs to the scanned teacher; here the teacher is known and the
-     * terminal has to be found. The window is identical — tap-in open through
-     * tap-out close — so neither path can open a class that is not running.
+     * This is ScheduleService::openableForDevice() asked from the other end.
+     * The fingerprint path starts from a terminal and asks which of its
+     * schedules belongs to the scanned teacher; here the teacher is known and
+     * the terminal has to be found.
+     *
+     * The two must agree on WHICH lessons may be opened, or the password
+     * failover becomes a way around the rule the scan enforces. Both refusals
+     * are therefore applied here too: a period that has ENDED may not be
+     * opened even though its tap-out window is still running, and a period
+     * that has NOT YET STARTED may not be opened while another class is being
+     * taught in the room. Without the first, the previous teacher could take
+     * the room from the one whose lesson is running; without the second, the
+     * next teacher could — both by typing a password instead of scanning.
+     *
+     * The query still returns those rows, and the two reasons come back as
+     * columns rather than being filtered out in SQL, so a teacher who is
+     * refused is told which of the two it was instead of the flat "no class
+     * scheduled" that fits neither.
      *
      * The join to devices is LEFT rather than INNER so a room with no terminal
      * produces a sentence about the missing terminal instead of the same
@@ -178,7 +191,20 @@ final class SessionOverrideService
             "SELECT sch.*, s.subject_code, s.subject_name, sec.section_code, sec.section_name,
                     c.room_number, gl.grade_level_name,
                     dev.id AS device_row_id, dev.device_id, dev.mac_address,
-                    dev.status AS device_status, dev.claim_status
+                    dev.status AS device_status, dev.claim_status,
+                    -- Why a row may not be openable. Both are carried back
+                    -- rather than filtered out in SQL so the teacher standing
+                    -- at the terminal is told which of the two it is.
+                    (TIME(:now3) > sch.end_time) AS lesson_over,
+                    (SELECT MAX(running.end_time)
+                       FROM schedules running
+                      WHERE running.classroom_id = sch.classroom_id
+                        AND running.schedule_id <> sch.schedule_id
+                        AND running.day_of_week  = :day2
+                        AND running.status       = 'active'
+                        AND running.deleted_at IS NULL
+                        AND TIME(:now4) >= running.start_time
+                        AND TIME(:now5) <= running.end_time) AS room_busy_until
                FROM schedules sch
                JOIN subjects s      ON s.subject_id = sch.subject_id
                JOIN sections sec    ON sec.section_id = sch.section_id
@@ -205,8 +231,12 @@ final class SessionOverrideService
             [
                 'teacher' => $teacherId,
                 'day'     => $now->format('l'),
+                'day2'    => $now->format('l'),
                 'now'     => $now->format('H:i:s'),
                 'now2'    => $now->format('H:i:s'),
+                'now3'    => $now->format('H:i:s'),
+                'now4'    => $now->format('H:i:s'),
+                'now5'    => $now->format('H:i:s'),
             ]
         );
 
@@ -227,7 +257,52 @@ final class SessionOverrideService
             );
         }
 
-        $schedule = $rows[0];
+        // Of the schedules in their window, the ones that may actually be
+        // OPENED. The rest stay in $rows only to explain themselves below.
+        $over     = static fn (array $row): bool => (int) $row['lesson_over'] === 1;
+        $openable = array_values(array_filter(
+            $rows,
+            static fn (array $row): bool => !$over($row) && $row['room_busy_until'] === null
+        ));
+
+        if ($openable === []) {
+            // Both reasons can be true of the same row — a finished period whose
+            // room the next class has already started in. "Your class ended" is
+            // the one that tells the teacher something they can act on, so it
+            // wins.
+            $ended = array_values(array_filter($rows, $over));
+
+            if ($ended !== []) {
+                throw new BusinessRuleException(
+                    'CLASS_ALREADY_ENDED',
+                    sprintf(
+                        'Your %s class ended at %s. Its tap-out window is still open so students can tap out '
+                        . 'of a session that is already running, but a new session cannot be opened for a '
+                        . 'period that is over.',
+                        (string) $ended[0]['subject_code'],
+                        substr((string) $ended[0]['end_time'], 0, 5)
+                    ),
+                    [],
+                    403
+                );
+            }
+
+            $blocked = $rows[0];
+
+            throw new BusinessRuleException(
+                'CLASSROOM_IN_USE',
+                sprintf(
+                    'Room %s is still teaching the class scheduled until %s. Your session can be opened once '
+                    . 'that period ends — a room can only run one class at a time.',
+                    (string) $blocked['room_number'],
+                    substr((string) $blocked['room_busy_until'], 0, 5)
+                ),
+                [],
+                409
+            );
+        }
+
+        $schedule = $openable[0];
 
         if ($schedule['device_row_id'] === null) {
             throw new BusinessRuleException(
@@ -250,7 +325,8 @@ final class SessionOverrideService
 
         unset(
             $schedule['device_row_id'], $schedule['device_id'], $schedule['mac_address'],
-            $schedule['device_status'], $schedule['claim_status']
+            $schedule['device_status'], $schedule['claim_status'],
+            $schedule['lesson_over'], $schedule['room_busy_until']
         );
 
         return ['schedule' => $schedule, 'device' => $device];

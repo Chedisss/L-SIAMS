@@ -267,13 +267,14 @@ retroactively reattributed — reports have to show where the student actually s
 
 ```bash
 php tests/concurrency/run.php              # all groups
-php tests/concurrency/run.php --group=race # one group
+php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Twelve groups covering session opening, the concurrent-tap race, cross-device
+Thirteen groups covering session opening, the concurrent-tap race, cross-device
 taps, section mismatch, time-in/time-out sequencing, status resolution, session
-close, idempotency, offline replay, throughput and the realtime transport.
+close, idempotency, offline replay, throughput, the realtime transport and
+which lesson a terminal will actually open a session for.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a
