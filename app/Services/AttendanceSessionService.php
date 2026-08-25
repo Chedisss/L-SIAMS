@@ -407,10 +407,28 @@ final class AttendanceSessionService
                 $timeIn = Clock::parse((string) $record['time_in']);
 
                 if ($autoTimeout) {
-                    // Stamp the scheduled end, not "now": a session closed late
-                    // by the sweeper should not credit the student with extra
-                    // classroom minutes they did not attend.
-                    $timeOut  = $scheduledEnd > $timeIn ? $scheduledEnd : $now;
+                    // Whichever came first: the bell, or the moment the session
+                    // actually ended. Both bounds exist for the same reason —
+                    // nobody may be credited with classroom minutes they were
+                    // not there for — and each catches a case the other misses.
+                    //
+                    //   the sweeper closes late, at 11:10 for a period that
+                    //   ended at 11:00      -> the bell wins, 11:00
+                    //
+                    //   the teacher closes early, at 10:20 for a period that
+                    //   runs to 11:00       -> the close wins, 10:20
+                    //
+                    // Only the first bound was applied, so a teacher who ended
+                    // a class forty minutes early still had every student
+                    // recorded as leaving at the bell, with the full period
+                    // credited — while the session itself said it closed at
+                    // 10:20. The register disagreed with its own session.
+                    $timeOut = $now < $scheduledEnd ? $now : $scheduledEnd;
+
+                    // A close that lands before somebody's tap-in cannot walk
+                    // their arrival backwards. It is a zero-length visit, not a
+                    // negative one.
+                    $timeOut  = $timeOut > $timeIn ? $timeOut : $timeIn;
                     $duration = max(0, (int) floor(($timeOut->getTimestamp() - $timeIn->getTimestamp()) / 60));
 
                     $departureStatus = AttendanceStatusResolver::DEPARTURE_AUTO_CLOSED;

@@ -924,6 +924,64 @@ try {
         }
 
         $runner->assertEquals('closing twice is refused', 'SESSION_ALREADY_CLOSED', $closeAgain);
+
+        // An auto-stamped time-out is bounded at both ends, because a student
+        // may never be credited with classroom minutes they were not there for.
+        //
+        // Closing EARLY — the teacher ends the class before the bell — must
+        // stamp the moment the session actually ended. The fixture's period
+        // runs well past the frozen clock, so the close above was an early one.
+        $stampedAfterClose = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records ar
+               JOIN attendance_sessions s ON s.session_id = ar.session_id
+              WHERE ar.session_id = :s AND ar.auto_generated_time_out = 1
+                AND ar.time_out > s.closed_at',
+            ['s' => $session['session_id']]
+        );
+
+        $runner->assertEquals('an early close credits nobody past the moment it closed',
+            0, $stampedAfterClose);
+
+        $stampedAtClose = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records ar
+               JOIN attendance_sessions s ON s.session_id = ar.session_id
+              WHERE ar.session_id = :s AND ar.auto_generated_time_out = 1
+                AND ar.time_out = s.closed_at',
+            ['s' => $session['session_id']]
+        );
+
+        $runner->assertEquals('every auto time-out matches the session end exactly',
+            8, $stampedAtClose);
+
+        // Closing LATE — the sweeper gets to it after the bell — must stamp the
+        // bell instead. The opposite bound, and the one that was already right.
+        $fixture->build(1, 5, 1);
+        $device = $fixture->device(0);
+        $late   = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        AttendanceService::tap($device, $fixture->ids['cards'][$fixture->ids['sections'][0]][0],
+            null, AttendanceService::INTENT_TIME_IN);
+
+        $scheduledEnd = (string) $db->scalar(
+            'SELECT scheduled_end FROM attendance_sessions WHERE session_id = :s',
+            ['s' => $late['session_id']]
+        );
+
+        // Thirty minutes after the bell, which is where the sweeper finds it.
+        Clock::freeze(Clock::parse($scheduledEnd)->modify('+30 minutes'));
+        AttendanceSessionService::close((int) $late['session_id'], 'system', null);
+        Clock::freeze(Clock::now()->setTime(10, 0, 0));
+
+        $stampedPastBell = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records ar
+               JOIN attendance_sessions s ON s.session_id = ar.session_id
+              WHERE ar.session_id = :s AND ar.auto_generated_time_out = 1
+                AND ar.time_out > s.scheduled_end',
+            ['s' => $late['session_id']]
+        );
+
+        $runner->assertEquals('a late close still credits nobody past the bell',
+            0, $stampedPastBell);
     }
 
     /* =====================================================================
