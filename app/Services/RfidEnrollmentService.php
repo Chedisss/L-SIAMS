@@ -368,8 +368,14 @@ final class RfidEnrollmentService
      *
      * @return array{request:array<string,mixed>,rfid_id:int}
      */
-    public static function assignCaptured(int $requestId, int $studentId, int $userId, ?string $notes = null): array
-    {
+    public static function assignCaptured(
+        int $requestId,
+        int $studentId,
+        int $userId,
+        ?string $notes = null,
+        ?string $replacementReason = null,
+        ?string $replacementNote = null
+    ): array {
         $db      = Database::instance();
         $request = self::find($requestId);
 
@@ -388,7 +394,9 @@ final class RfidEnrollmentService
 
         $cardUid = (string) $request['card_uid'];
 
-        $rfidId = RfidService::assign($studentId, $cardUid, $userId, $notes);
+        $rfidId = RfidService::assign(
+            $studentId, $cardUid, $userId, $notes, $replacementReason, $replacementNote
+        );
 
         $db->update('rfid_enrollment_requests', [
             'status'      => 'assigned',

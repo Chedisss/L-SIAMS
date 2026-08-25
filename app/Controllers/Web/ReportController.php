@@ -127,6 +127,9 @@ final class ReportController extends Controller
                 'student_number' => $r['student_number'],
                 'name'           => sprintf('%s, %s', $r['last_name'], $r['first_name']),
                 'section_code'   => $r['section_code'],
+                // The card they hold now, so a form issuing one can tell
+                // whether it is issuing or replacing before the server does.
+                'card_uid'       => $r['card_uid'] ?? null,
             ], $result['rows']),
         ]);
     }

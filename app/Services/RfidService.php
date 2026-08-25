@@ -18,14 +18,92 @@ use PDOException;
  */
 final class RfidService
 {
-    public static function assign(int $studentId, string $cardUid, int $userId, ?string $notes = null): int
-    {
+    /**
+     * Why a card is being taken out of service, and how each reads on screen.
+     *
+     * A fixed list for the same reason every other reason in this system is
+     * one: free text produces "lost", "Lost", "lost it" and "student lost
+     * card" in a single term, and a school asked how many cards are
+     * unaccounted for cannot be answered from it.
+     *
+     * @var array<string,string>
+     */
+    public const REPLACEMENT_REASONS = [
+        'lost'         => 'Lost',
+        'damaged'      => 'Damaged or not working',
+        'stolen'       => 'Stolen',
+        'not_returned' => 'Not returned by the student',
+        'other'        => 'Other',
+    ];
+
+    /**
+     * What the retired card becomes.
+     *
+     * All three are refused at the reader — a tap requires status 'active' —
+     * so this is not about access. It is about the register being able to
+     * answer which cards are unaccounted for, which 'replaced' cannot.
+     *
+     * 'stolen' ends as blacklisted rather than lost because the two differ in
+     * what happens next: a lost card that turns up may reasonably be reissued,
+     * and a stolen one may not. assign() refuses to issue a blacklisted card,
+     * so the status is the enforcement.
+     *
+     * @var array<string,string>
+     */
+    private const REASON_TERMINAL_STATUS = [
+        'lost'         => 'lost',
+        'stolen'       => 'blacklisted',
+        'damaged'      => 'replaced',
+        'not_returned' => 'lost',
+        'other'        => 'replaced',
+    ];
+
+    /**
+     * Issue a card to a student, replacing whatever they hold now.
+     *
+     * $replacementReason is required exactly when a card is actually being
+     * taken out of service — never for a student's first card, always for a
+     * student who already holds one. Without it every retired card was
+     * recorded as 'replaced' whatever had happened to it, so a card lying in a
+     * corridor and a card in a bin read identically.
+     *
+     * Attendance is untouched by any of this: attendance_records reference the
+     * student, never the card, and the UID stored alongside them is forensic.
+     * The student's history simply continues onto the new card.
+     */
+    public static function assign(
+        int $studentId,
+        string $cardUid,
+        int $userId,
+        ?string $notes = null,
+        ?string $replacementReason = null,
+        ?string $replacementNote = null
+    ): int {
+        $replacementNote = $replacementNote === null ? null : trim($replacementNote);
+        $replacementNote = ($replacementNote === null || $replacementNote === '')
+            ? null
+            : mb_substr($replacementNote, 0, 255);
+
+        if ($replacementReason !== null && !isset(self::REPLACEMENT_REASONS[$replacementReason])) {
+            throw new ValidationException([
+                'replacement_reason' => ['Choose why the previous card is being taken out of service.'],
+            ]);
+        }
+
+        if ($replacementReason === 'other' && $replacementNote === null) {
+            throw new ValidationException([
+                'replacement_note' => ['Recording this as Other needs a short note saying what happened.'],
+            ]);
+        }
+
         $cardUid = self::normalise($cardUid);
         self::assertValidUid($cardUid);
 
         $db = Database::instance();
 
-        return (int) $db->transaction(static function (Database $db) use ($studentId, $cardUid, $userId, $notes): int {
+        return (int) $db->transaction(static function (Database $db) use (
+            $studentId, $cardUid, $userId, $notes, $replacementReason, $replacementNote
+        ): int {
             $student = $db->selectOne(
                 'SELECT student_id, student_number, first_name, last_name, section_id, status
                    FROM students WHERE student_id = :id AND deleted_at IS NULL',
@@ -84,11 +162,32 @@ final class RfidService
                 ['student' => $studentId]
             );
 
+            // Re-issuing the very card the student already holds replaces
+            // nothing — it is a no-op dressed as a replacement, and demanding a
+            // reason for it would be nonsense.
+            if ($current !== null && $existingCard !== null
+                && (int) $current['rfid_id'] === (int) $existingCard['rfid_id']) {
+                $current = null;
+            }
+
             if ($current !== null) {
+                // A card is only ever taken out of service for a reason, and
+                // the reason decides what it becomes. Refusing without one is
+                // the point: it is the difference between a register that can
+                // say which cards are unaccounted for and one that cannot.
+                if ($replacementReason === null) {
+                    throw new ValidationException(['replacement_reason' => [sprintf(
+                        'This student already holds card %s. Say why it is being taken out of service.',
+                        (string) $current['card_uid']
+                    )]]);
+                }
+
                 $db->update('rfid_cards', [
-                    'status'           => 'replaced',
-                    'replacement_date' => Clock::today(),
-                    'updated_at'       => Clock::nowString(),
+                    'status'             => self::REASON_TERMINAL_STATUS[$replacementReason],
+                    'replacement_date'   => Clock::today(),
+                    'replacement_reason' => $replacementReason,
+                    'replacement_note'   => $replacementNote,
+                    'updated_at'         => Clock::nowString(),
                 ], ['rfid_id' => (int) $current['rfid_id']]);
             }
 
@@ -139,16 +238,36 @@ final class RfidService
                 'rfid',
                 'rfid_card',
                 $rfidId,
-                $current === null ? null : ['previous_uid' => $current['card_uid']],
-                ['card_uid' => $cardUid, 'student_id' => $studentId],
-                sprintf(
-                    '%s card %s for %s %s (%s). Attendance history retained.',
-                    $current === null ? 'Issued' : 'Replaced',
-                    $cardUid,
-                    $student['first_name'],
-                    $student['last_name'],
-                    $student['student_number']
-                )
+                $current === null ? null : [
+                    'previous_uid'    => $current['card_uid'],
+                    'previous_status' => (string) $current['status'],
+                ],
+                [
+                    'card_uid'           => $cardUid,
+                    'student_id'         => $studentId,
+                    'replacement_reason' => $replacementReason,
+                    'replacement_note'   => $replacementNote,
+                ],
+                $current === null
+                    ? sprintf(
+                        'Issued card %s to %s %s (%s).',
+                        $cardUid,
+                        $student['first_name'],
+                        $student['last_name'],
+                        $student['student_number']
+                    )
+                    : sprintf(
+                        'Replaced card %s with %s for %s %s (%s) — %s%s. The old card is now %s. '
+                        . 'Attendance history retained.',
+                        (string) $current['card_uid'],
+                        $cardUid,
+                        $student['first_name'],
+                        $student['last_name'],
+                        $student['student_number'],
+                        strtolower(self::REPLACEMENT_REASONS[$replacementReason]),
+                        $replacementNote === null ? '' : ': ' . $replacementNote,
+                        self::REASON_TERMINAL_STATUS[$replacementReason]
+                    )
             );
 
             return $rfidId;
