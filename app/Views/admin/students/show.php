@@ -71,9 +71,20 @@ $__view->start('content');
                     Issued <?= e(format_date($student['rfid_issue_date'])) ?> ·
                     <span class="badge <?= e(status_badge($student['rfid_status'])) ?>"><?= e(ucfirst((string) $student['rfid_status'])) ?></span>
                 </div>
+                <?php /* This page is where somebody arrives when a particular
+                         student has lost a particular card, so the action lives
+                         here as well as on the RFID page — carrying the student
+                         across so nobody has to search for them again. */ ?>
+                <div class="mt-2">
+                    <a class="btn btn-secondary btn-sm"
+                       href="/admin/rfid?replace=<?= e($student['student_id']) ?>">
+                        <i class="fa-solid fa-id-card"></i> Replace this card
+                    </a>
+                </div>
                 <p class="text-xs text-muted mt-2">
                     Replacing a card keeps every attendance record: attendance references the student,
-                    not the card.
+                    not the card. The old card is taken out of service and refused if anybody
+                    presents it.
                 </p>
             <?php endif; ?>
         </div>

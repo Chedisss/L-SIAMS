@@ -261,6 +261,14 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**A replaced card says what happened to it.** Issuing a card to a student who
+already holds one retires the old row and chains the new one to it, and the
+student's attendance is untouched — records reference the student, never the
+card. What the retirement now also records is why: a lost card ends as `lost`,
+a stolen one as `blacklisted` and can never be issued to anybody again, a
+damaged one as `replaced`. All three are refused at the reader, but only the
+reason lets a school answer which of its cards are unaccounted for.
+
 **A rejected tap leaves everything behind that an accepted one does.** The
 rejection unwinds its own transaction, so anything written inside it goes with
 it — the scan log, the unknown-card tally, the security event, the
@@ -302,12 +310,13 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Sixteen groups covering session opening, the concurrent-tap race, cross-device
-taps, section mismatch, time-in/time-out sequencing, status resolution, session
-close, idempotency, offline replay, throughput, the realtime transport, which
-lesson a terminal will actually open a session for, the handover that carries a
-register into the next subject, the teacher-led early release, and what an
-unrecognised card leaves behind.
+Seventeen groups covering session opening, the concurrent-tap race,
+cross-device taps, section mismatch, time-in/time-out sequencing, status
+resolution, session close, idempotency, offline replay, throughput, the
+realtime transport, which lesson a terminal will actually open a session for,
+the handover that carries a register into the next subject, the teacher-led
+early release, what an unrecognised card leaves behind, and replacing a lost
+card without losing its history.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a

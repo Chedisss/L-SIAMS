@@ -32,6 +32,7 @@ use App\Core\Exceptions\BusinessRuleException;
 use App\Services\AttendanceService;
 use App\Services\AttendanceSessionService;
 use App\Services\AttendanceStatusResolver;
+use App\Services\RfidService;
 use App\Services\SettingsService;
 
 SettingsService::hydrate();
@@ -1644,10 +1645,111 @@ try {
     }
 
     /* =====================================================================
-     * 16. Sustained soak (opt-in, 30 minutes)
+     * 16. A lost card is replaced without losing anything
+     *
+     * The point of the chain is that attendance survives it: records reference
+     * the student, never the card. The point of the reason is that "replaced"
+     * covers a card in a bin and a card lying in a corridor, and a school
+     * asked which of its cards are unaccounted for cannot answer from it.
+     * ===================================================================== */
+    if ($want('replace')) {
+        $runner->group('16. A lost card is replaced without losing anything');
+
+        $fixture->build(1, 4, 1);
+
+        $device    = $fixture->device(0);
+        $sectionId = $fixture->ids['sections'][0];
+        $studentId = $fixture->ids['students'][$sectionId][0];
+        $oldUid    = $fixture->ids['cards'][$sectionId][0];
+        $userId    = (int) $db->scalar('SELECT user_id FROM users ORDER BY user_id LIMIT 1');
+
+        $session = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+        AttendanceService::tap($device, $oldUid, null, AttendanceService::INTENT_TIME_IN);
+
+        $before = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records WHERE student_id = :s', ['s' => $studentId]
+        );
+
+        $runner->assert('the student has attendance on the old card', $before > 0);
+
+        $refused = null;
+
+        try {
+            RfidService::assign($studentId, 'BADC0DE1', $userId);
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $refused = array_key_first($e->errors());
+        }
+
+        $runner->assertEquals('replacing without a reason is refused', 'replacement_reason', $refused);
+
+        $noNote = null;
+
+        try {
+            RfidService::assign($studentId, 'BADC0DE1', $userId, null, 'other', '   ');
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $noNote = array_key_first($e->errors());
+        }
+
+        $runner->assertEquals("'other' with no note is refused", 'replacement_note', $noNote);
+
+        RfidService::assign($studentId, 'BADC0DE1', $userId, null, 'lost', 'Left on the bus');
+
+        $old = $db->selectOne('SELECT * FROM rfid_cards WHERE card_uid = :u', ['u' => $oldUid]);
+        $new = $db->selectOne('SELECT * FROM rfid_cards WHERE card_uid = :u', ['u' => 'BADC0DE1']);
+
+        $runner->assertEquals('a lost card is recorded as lost, not merely replaced',
+            'lost', (string) $old['status']);
+        $runner->assertEquals('with the reason kept', 'lost', (string) $old['replacement_reason']);
+        $runner->assertEquals('and the note', 'Left on the bus', (string) $old['replacement_note']);
+        $runner->assertEquals('the new card chains to the old one',
+            (int) $old['rfid_id'], (int) $new['replaced_rfid_id']);
+        $runner->assertEquals('and is the one in service', 'active', (string) $new['status']);
+
+        $after = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records WHERE student_id = :s', ['s' => $studentId]
+        );
+
+        $runner->assertEquals('every attendance record survived the replacement', $before, $after);
+
+        // The old card is out there. Somebody may find it and present it.
+        $presented = null;
+
+        try {
+            AttendanceService::tap($device, $oldUid);
+        } catch (BusinessRuleException $e) {
+            $presented = $e->errorCode();
+        }
+
+        $runner->assertEquals('the lost card is refused at the reader', 'RFID_DISABLED', $presented);
+
+        // A stolen card differs from a lost one in what happens next.
+        RfidService::assign($studentId, 'BADC0DE2', $userId, null, 'stolen');
+
+        $stolen = $db->selectOne('SELECT * FROM rfid_cards WHERE card_uid = :u', ['u' => 'BADC0DE1']);
+
+        $runner->assertEquals('a stolen card is blacklisted, not lost',
+            'blacklisted', (string) $stolen['status']);
+
+        $reissue = null;
+
+        try {
+            RfidService::assign($studentId, 'BADC0DE1', $userId, null, 'damaged');
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $reissue = array_key_first($e->errors());
+        }
+
+        $runner->assertEquals('and can never be issued to anybody again', 'card_uid', $reissue);
+
+        AttendanceSessionService::close((int) $session['session_id'], 'teacher', null);
+
+        $db->execute("DELETE FROM rfid_cards WHERE card_uid IN ('BADC0DE1','BADC0DE2')");
+    }
+
+    /* =====================================================================
+     * 17. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('16. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('17. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);

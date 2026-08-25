@@ -176,6 +176,10 @@ $__view->start('content');
                                 <button class="btn btn-ghost btn-sm" data-history="<?= e($card['card_uid']) ?>" title="Tap history"><i class="fa-solid fa-clock-rotate-left"></i></button>
                                 <button class="btn btn-ghost btn-sm" data-status="<?= e($card['rfid_id']) ?>"
                                         data-uid="<?= e($card['card_uid']) ?>" data-current="<?= e($card['status']) ?>" title="Change status"><i class="fa-solid fa-toggle-on"></i></button>
+                                <?php if ($card['student_id'] && (string) $card['status'] === 'active'): ?>
+                                    <a class="btn btn-ghost btn-sm" href="/admin/rfid?replace=<?= e($card['student_id']) ?>"
+                                       title="Replace this card"><i class="fa-solid fa-id-card"></i></a>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -210,13 +214,39 @@ $__view->start('content');
                 </div>
                 <div class="form-group">
                     <label for="a-notes">Notes</label>
-                    <input type="text" id="a-notes" name="notes" maxlength="255" placeholder="e.g. replacement for a lost card">
+                    <input type="text" id="a-notes" name="notes" maxlength="255" placeholder="e.g. issued at enrolment">
+                </div>
+                <?php /* Shown only once the chosen student turns out to hold a
+                         card already: this stops being an issue and becomes a
+                         replacement, and the old card cannot be retired
+                         without saying what happened to it. */ ?>
+                <div class="form-group hidden" id="a-replace-block">
+                    <div class="alert alert-warning" style="margin-bottom:.7rem">
+                        <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+                        <div class="alert__body">
+                            This student already holds card <strong class="mono" id="a-current-uid"></strong>.
+                            Issuing this one takes that card out of service.
+                        </div>
+                    </div>
+                    <label for="a-replace-reason" class="required">What happened to the old card?</label>
+                    <select id="a-replace-reason" name="replacement_reason">
+                        <option value="">Choose a reason</option>
+                        <?php foreach (\App\Services\RfidService::REPLACEMENT_REASONS as $value => $label): ?>
+                            <option value="<?= e($value) ?>"><?= e($label) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <label for="a-replace-note" style="margin-top:.6rem">
+                        Note <span class="label__hint" id="a-replace-note-hint">optional</span>
+                    </label>
+                    <input type="text" id="a-replace-note" name="replacement_note" maxlength="255"
+                           placeholder="Anything the reason above does not say">
+                    <span class="field-help" id="a-replace-effect"></span>
                 </div>
                 <div class="alert alert-info" style="margin-bottom:0">
                     <span class="alert__icon"><i class="fa-solid fa-circle-info"></i></span>
                     <div class="alert__body">
-                        If the student already has a card, it is retired automatically and this becomes
-                        their active one. All previous attendance is retained.
+                        A replacement keeps every attendance record. Attendance references the student,
+                        never the card.
                     </div>
                 </div>
             </div>
@@ -273,7 +303,30 @@ $__view->start('content');
 
             <div class="form-group">
                 <label for="r-notes">Notes</label>
-                <input type="text" id="r-notes" maxlength="255" placeholder="e.g. replacement for a lost card">
+                <input type="text" id="r-notes" maxlength="255" placeholder="e.g. issued at enrolment">
+            </div>
+
+            <div class="form-group hidden" id="r-replace-block">
+                <div class="alert alert-warning" style="margin-bottom:.7rem">
+                    <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+                    <div class="alert__body">
+                        This student already holds card <strong class="mono" id="r-current-uid"></strong>.
+                        Reading a new one takes that card out of service.
+                    </div>
+                </div>
+                <label for="r-replace-reason" class="required">What happened to the old card?</label>
+                <select id="r-replace-reason">
+                    <option value="">Choose a reason</option>
+                    <?php foreach (\App\Services\RfidService::REPLACEMENT_REASONS as $value => $label): ?>
+                        <option value="<?= e($value) ?>"><?= e($label) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <label for="r-replace-note" style="margin-top:.6rem">
+                    Note <span class="label__hint" id="r-replace-note-hint">optional</span>
+                </label>
+                <input type="text" id="r-replace-note" maxlength="255"
+                       placeholder="Anything the reason above does not say">
+                <span class="field-help" id="r-replace-effect"></span>
             </div>
 
             <div class="form-group">
@@ -395,7 +448,12 @@ window.rfidTable = {
             (response.data.rows || []).forEach((student) => {
                 const option = document.createElement('option');
                 option.value = student.student_id;
-                option.textContent = student.name + '  ·  ' + student.student_number + '  ·  ' + student.section_code;
+                option.textContent = student.name + '  ·  ' + student.student_number + '  ·  ' + student.section_code
+                    + (student.card_uid ? '  ·  holds ' + student.card_uid : '');
+                // Carried on the option so choosing a student can decide,
+                // without another round trip, whether this is an issue or a
+                // replacement.
+                if (student.card_uid) option.dataset.cardUid = student.card_uid;
                 select.appendChild(option);
             });
 
@@ -405,9 +463,64 @@ window.rfidTable = {
         } catch (error) { /* leave the previous list */ }
     }
 
-    document.getElementById('student-search').addEventListener('input', LS.util.debounce(function () {
-        searchStudents(this.value.trim(), document.getElementById('a-student'));
+    document.getElementById('student-search').addEventListener('input', LS.util.debounce(async function () {
+        await searchStudents(this.value.trim(), document.getElementById('a-student'));
+        syncAssignReplacement();
     }, 300));
+
+    /* ---- issuing versus replacing ----------------------------------------- */
+
+    // A card is only ever taken out of service for a reason, and the reason
+    // decides what the old card becomes — so the form asks the moment the
+    // chosen student turns out to be holding one, rather than letting the
+    // server refuse after the fact.
+    const REPLACEMENT_EFFECT = {
+        lost:         'The old card will be marked Lost, and refused if anybody presents it.',
+        damaged:      'The old card will be marked Replaced.',
+        stolen:       'The old card will be blacklisted and can never be issued to anybody again.',
+        not_returned: 'The old card will be marked Lost, and refused if anybody presents it.',
+        other:        'The old card will be marked Replaced.',
+    };
+
+    function bindReplacement(prefix, select) {
+        const block  = document.getElementById(prefix + '-replace-block');
+        const reason = document.getElementById(prefix + '-replace-reason');
+        const note   = document.getElementById(prefix + '-replace-note');
+        const hint   = document.getElementById(prefix + '-replace-note-hint');
+        const effect = document.getElementById(prefix + '-replace-effect');
+        const uid    = document.getElementById(prefix + '-current-uid');
+
+        function sync() {
+            const chosen  = select.selectedOptions[0];
+            const holding = chosen ? chosen.dataset.cardUid : null;
+
+            block.classList.toggle('hidden', !holding);
+            reason.required = !!holding;
+
+            if (!holding) {
+                reason.value = '';
+                note.value   = '';
+                note.required = false;
+                return;
+            }
+
+            uid.textContent = holding;
+            effect.textContent = REPLACEMENT_EFFECT[reason.value] || '';
+
+            // 'Other' with no note records that something happened and nothing
+            // about what, so the field earns its asterisk only there.
+            const isOther = reason.value === 'other';
+            note.required     = isOther;
+            hint.textContent  = isOther ? 'required' : 'optional';
+        }
+
+        select.addEventListener('change', sync);
+        reason.addEventListener('change', sync);
+
+        return sync;
+    }
+
+    const syncAssignReplacement = bindReplacement('a', document.getElementById('a-student'));
 
     /* ---- the waiting list -------------------------------------------------- */
 
@@ -536,14 +649,21 @@ window.rfidTable = {
 
         option.value       = student.student_id;
         option.textContent = student.name + '  ·  ' + student.student_number
-            + (student.section_code ? '  ·  ' + student.section_code : '');
+            + (student.section_code ? '  ·  ' + student.section_code : '')
+            + (student.card_uid ? '  ·  holds ' + student.card_uid : '');
         option.selected    = true;
+
+        if (student.card_uid) option.dataset.cardUid = student.card_uid;
 
         select.innerHTML = '';
         select.appendChild(option);
 
         document.getElementById('r-student-search').value = '';
         armedStudentId = Number(student.student_id);
+
+        // The waiting list is students with no card, but this picker also takes
+        // anybody searched for by hand — including somebody replacing one.
+        syncReadReplacement();
     }
 
     function paintQueueNote(armedName, next) {
@@ -630,8 +750,26 @@ window.rfidTable = {
         });
     });
 
-    document.getElementById('r-student-search').addEventListener('input', LS.util.debounce(function () {
-        searchStudents(this.value.trim(), document.getElementById('r-student'));
+    const syncReadReplacement = bindReplacement('r', document.getElementById('r-student'));
+
+    /* ---- arriving from a student's own page ------------------------------- */
+
+    // "Replace this card" on a student names the student in the URL. Opening
+    // the reader dialog with them already armed is the whole point of the link:
+    // whoever followed it had already found the student once.
+    const REPLACE_FOR = <?= json_js($replaceFor) ?>;
+
+    if (REPLACE_FOR) {
+        armStudent(REPLACE_FOR);
+        LS.modal.open('read-modal');
+        document.getElementById('r-replace-reason').focus();
+    }
+
+    document.getElementById('r-student-search').addEventListener('input', LS.util.debounce(async function () {
+        await searchStudents(this.value.trim(), document.getElementById('r-student'));
+        // The option list was just rebuilt, so the block has to re-decide from
+        // whichever student is now selected.
+        syncReadReplacement();
     }, 300));
 
     function showReadStep(name) {
@@ -750,6 +888,24 @@ window.rfidTable = {
         if (!studentId)    { LS.toast.warning('Choose the student this card is for.'); return; }
         if (!readDeviceId) { LS.toast.warning('Choose which terminal should read the card.'); return; }
 
+        // Asked before the reader is driven rather than after the card has been
+        // presented: the server refuses a replacement with no reason, and
+        // discovering that at the end means a card read for nothing.
+        const replaceReason = document.getElementById('r-replace-reason');
+        const replaceNote   = document.getElementById('r-replace-note');
+
+        if (replaceReason.required && !replaceReason.value) {
+            LS.toast.warning('Say what happened to the card this student already holds.');
+            replaceReason.focus();
+            return;
+        }
+
+        if (replaceReason.value === 'other' && !replaceNote.value.trim()) {
+            LS.toast.warning('Recording this as Other needs a short note saying what happened.');
+            replaceNote.focus();
+            return;
+        }
+
         LS.util.setBusy(readButtons.start, true, 'Asking the terminal…');
 
         try {
@@ -789,6 +945,8 @@ window.rfidTable = {
             // way for the two to disagree.
             const response = await LS.http.post('/admin/rfid/read/' + readRequestId + '/assign', {
                 notes: document.getElementById('r-notes').value,
+                replacement_reason: document.getElementById('r-replace-reason').value,
+                replacement_note: document.getElementById('r-replace-note').value,
             });
 
             LS.toast.success(response.message);
@@ -796,6 +954,9 @@ window.rfidTable = {
 
             readRequestId = null;
             document.getElementById('r-notes').value = '';
+            document.getElementById('r-replace-reason').value = '';
+            document.getElementById('r-replace-note').value = '';
+            document.getElementById('r-replace-block').classList.add('hidden');
             showReadStep('device');
 
             if (queueMode) {

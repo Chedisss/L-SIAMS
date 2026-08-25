@@ -282,10 +282,23 @@ final class AttendanceService
                 'Card status: ' . $card['status']);
             self::incrementRejected($db, $sessionId);
 
+            // Every one of these is refused, but they are refused for
+            // different reasons and the student standing at the reader can act
+            // on only one answer: a card that was replaced means "you are
+            // holding the wrong one", and a card reported lost means "the
+            // office has your new one". "This card has been disabled" told
+            // them neither.
+            [$message, $line1] = match ((string) $card['status']) {
+                'replaced'    => ['This card was replaced. Use the newer one.', 'CARD REPLACED'],
+                'lost'        => ['This card was reported lost. See the office for its replacement.', 'REPORTED LOST'],
+                'blacklisted' => ['This card has been blocked. See the office.', 'CARD BLOCKED'],
+                default        => ['This card has been disabled.', 'CARD DISABLED'],
+            };
+
             throw new BusinessRuleException(
                 'RFID_DISABLED',
-                'This card has been disabled.',
-                self::display('CARD DISABLED', self::shortName($card), 'red', 'long'),
+                $message,
+                self::display($line1, self::shortName($card), 'red', 'long'),
                 403
             );
         }

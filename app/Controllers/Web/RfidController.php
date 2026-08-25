@@ -49,7 +49,43 @@ final class RfidController extends Controller
             'queue'      => $queue['rows'],
             'queueTotal' => $queue['total'],
             'queueSize'  => self::QUEUE_PAGE_SIZE,
+            // Arrived from a student's own page with "replace this card". The
+            // student is carried across so nobody has to search for somebody
+            // they had already found.
+            'replaceFor' => $this->replaceTarget($request),
         ]);
+    }
+
+    /**
+     * The student named by ?replace=, if they exist and hold a card.
+     *
+     * Silently null otherwise: a stale link is a reason to open the page
+     * normally, not to show an error about a query string the reader never
+     * typed.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function replaceTarget(Request $request): ?array
+    {
+        $studentId = $request->int('replace', 0);
+
+        if ($studentId <= 0) {
+            return null;
+        }
+
+        $student = StudentService::find($studentId);
+
+        if ($student === null || empty($student['card_uid'])) {
+            return null;
+        }
+
+        return [
+            'student_id'     => (int) $student['student_id'],
+            'student_number' => (string) $student['student_number'],
+            'name'           => sprintf('%s, %s', $student['last_name'], $student['first_name']),
+            'section_code'   => (string) ($student['section_code'] ?? ''),
+            'card_uid'       => (string) $student['card_uid'],
+        ];
     }
 
     /**
@@ -148,7 +184,12 @@ final class RfidController extends Controller
     public function assignRead(Request $request): Response
     {
         $data = $this->validate($request, [
-            'notes' => 'nullable|string|max:255|no_html',
+            'notes'              => 'nullable|string|max:255|no_html',
+            'replacement_reason' => 'nullable|in:lost,damaged,stolen,not_returned,other',
+            'replacement_note'   => 'nullable|string|max:255|no_html',
+        ], [
+            'replacement_reason' => 'Reason',
+            'replacement_note'   => 'Note',
         ]);
 
         $enrolment = RfidEnrollmentService::find($request->routeInt('id'));
@@ -165,7 +206,9 @@ final class RfidController extends Controller
             $request->routeInt('id'),
             (int) $enrolment['student_id'],
             $this->requireUserId(),
-            $data['notes'] ?? null
+            $data['notes'] ?? null,
+            $data['replacement_reason'] ?? null,
+            $data['replacement_note'] ?? null
         );
 
         return $this->json(
@@ -237,18 +280,27 @@ final class RfidController extends Controller
     public function assign(Request $request): Response
     {
         $data = $this->validate($request, [
-            'student_id' => 'required|int|exists:students,student_id',
-            'card_uid'   => 'required|uid',
-            'notes'      => 'nullable|string|max:255|no_html',
+            'student_id'         => 'required|int|exists:students,student_id',
+            'card_uid'           => 'required|uid',
+            'notes'              => 'nullable|string|max:255|no_html',
+            'replacement_reason' => 'nullable|in:lost,damaged,stolen,not_returned,other',
+            'replacement_note'   => 'nullable|string|max:255|no_html',
         ], [
-            'card_uid' => 'Card UID',
+            'card_uid'           => 'Card UID',
+            'replacement_reason' => 'Reason',
+            'replacement_note'   => 'Note',
         ]);
 
+        // The service decides whether a reason was actually needed — it is the
+        // only thing that knows, under the row lock, whether this student holds
+        // a card right now.
         $rfidId = RfidService::assign(
             (int) $data['student_id'],
             (string) $data['card_uid'],
             $this->requireUserId(),
-            $data['notes'] ?? null
+            $data['notes'] ?? null,
+            $data['replacement_reason'] ?? null,
+            $data['replacement_note'] ?? null
         );
 
         return $this->json(
