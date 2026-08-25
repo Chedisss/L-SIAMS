@@ -10,6 +10,7 @@ use App\Core\Exceptions\AuthorizationException;
 use App\Core\Request;
 use App\Core\Response;
 use App\Services\AttendanceQueryService;
+use App\Services\AttendanceService;
 use App\Services\AttendanceSessionService;
 use App\Services\DashboardService;
 use App\Services\FingerprintService;
@@ -282,6 +283,43 @@ final class TeacherPortalController extends Controller
             $summary['present_count'],
             $summary['late_count'],
             $summary['absent_count']
+        ));
+    }
+
+    /**
+     * Release a student from the room before the end of the period.
+     *
+     * The teacher is the witness here — they saw the student leave — so the
+     * record carries their account, and ownership of the session is checked
+     * before anything else. An attendance_id from another room's session is
+     * refused even with a valid one for this route.
+     */
+    public function releaseStudent(Request $request): Response
+    {
+        $sessionId = $request->routeInt('id');
+        $session   = AttendanceSessionService::find($sessionId);
+
+        if ($session === null) {
+            return $this->fail('NOT_FOUND', 'Session not found.', 404);
+        }
+
+        if ((int) $session['teacher_id'] !== $this->requireTeacherId()) {
+            throw new AuthorizationException('This attendance session belongs to another teacher.');
+        }
+
+        $result = AttendanceService::releaseEarly(
+            $sessionId,
+            (int) $request->input('attendance_id'),
+            (string) $request->input('reason', ''),
+            $request->input('note') === null ? null : (string) $request->input('note'),
+            $this->requireUserId()
+        );
+
+        return $this->json($result, sprintf(
+            '%s was released at %s — %s. Recorded as Left Early.',
+            $result['student'],
+            $result['time_out'],
+            strtolower((string) $result['reason_label'])
         ));
     }
 

@@ -1409,10 +1409,129 @@ try {
     }
 
     /* =====================================================================
-     * 14. Sustained soak (opt-in, 30 minutes)
+     * 14. A teacher may release a student from the room
+     *
+     * The reader deliberately refuses a tap-out before the minimum dwell, and
+     * that rule is right against a student tapping in and walking out. It is
+     * wrong for a child who has been unwell for ten minutes, and there was no
+     * other way to record that they had gone. The teacher records it instead,
+     * with a reason, and the record becomes a real departure at the real time.
+     * ===================================================================== */
+    if ($want('release')) {
+        $runner->group('14. A teacher may release a student from the room');
+
+        $fixture->build(1, 6, 2);
+
+        $device    = $fixture->device(0);
+        $sectionId = $fixture->ids['sections'][0];
+        $cards     = $fixture->ids['cards'][$sectionId];
+        $students  = $fixture->ids['students'][$sectionId];
+        $userId    = (int) $db->scalar('SELECT user_id FROM users ORDER BY user_id LIMIT 1');
+
+        $db->update('schedules', ['minimum_dwell_minutes' => 20],
+            ['schedule_id' => (int) $fixture->schedule(0)['schedule_id']]);
+
+        $session = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        foreach (array_slice($cards, 0, 3) as $card) {
+            AttendanceService::tap($device, $card, null, AttendanceService::INTENT_TIME_IN);
+        }
+
+        $attendanceOf = static function (int $studentId) use ($db, $session): int {
+            return (int) $db->scalar(
+                'SELECT attendance_id FROM attendance_records WHERE session_id = :s AND student_id = :st',
+                ['s' => (int) $session['session_id'], 'st' => $studentId]
+            );
+        };
+
+        // The reader refuses this: the dwell minimum has not elapsed. That is
+        // the gap the release exists to fill, so assert it rather than assume it.
+        $reader = null;
+
+        try {
+            AttendanceService::tap($device, $cards[0], null, AttendanceService::INTENT_TIME_OUT);
+        } catch (BusinessRuleException $e) {
+            $reader = $e->errorCode();
+        }
+
+        $runner->assertEquals('the reader refuses a tap-out before the minimum dwell',
+            'MINIMUM_DWELL_NOT_MET', $reader);
+
+        $released = AttendanceService::releaseEarly(
+            (int) $session['session_id'], $attendanceOf($students[0]), 'sickness', 'Sent to the clinic', $userId);
+
+        $runner->assertEquals('the teacher may release the same student anyway',
+            'Left Early', $released['final_status']);
+
+        $row = $db->selectOne('SELECT * FROM attendance_records WHERE attendance_id = :id',
+            ['id' => $attendanceOf($students[0])]);
+
+        $runner->assertEquals('the reason is stored', 'sickness', (string) $row['early_release_reason']);
+        $runner->assertEquals('so is the note', 'Sent to the clinic', (string) $row['early_release_note']);
+        $runner->assertEquals('and the account that authorised it', $userId, (int) $row['early_released_by']);
+
+        // auto_generated_time_out means "the system stamped a departure nobody
+        // witnessed". A person witnessed this one.
+        $runner->assertEquals('a release is not flagged as an automatic time-out',
+            0, (int) $row['auto_generated_time_out']);
+
+        $runner->assert('the departure is stamped, not left pending',
+            $row['time_out'] !== null && (string) $row['departure_status'] === 'left_early');
+
+        // Guards.
+        $codes = [];
+
+        foreach ([
+            'twice'       => [$students[0], 'sickness', null],
+            'bad reason'  => [$students[1], 'bored', null],
+            'other, bare' => [$students[1], 'other', '   '],
+        ] as $label => [$studentId, $reason, $note]) {
+            try {
+                AttendanceService::releaseEarly(
+                    (int) $session['session_id'], $attendanceOf($studentId), $reason, $note, $userId);
+                $codes[$label] = 'ALLOWED';
+            } catch (BusinessRuleException $e) {
+                $codes[$label] = $e->errorCode();
+            }
+        }
+
+        $runner->assertEquals('releasing an already-departed student is refused',
+            'ALREADY_TIMED_OUT', $codes['twice']);
+        $runner->assertEquals('a reason outside the list is refused',
+            'INVALID_RELEASE_REASON', $codes['bad reason']);
+        $runner->assertEquals("'other' with no note is refused",
+            'RELEASE_NOTE_REQUIRED', $codes['other, bare']);
+
+        // The real authorisation test: a teacher holding one open session must
+        // not reach a record in another room by passing its attendance_id.
+        $other = AttendanceSessionService::open(
+            $fixture->device(1), $fixture->teacher(), $fixture->schedule(1), 0);
+
+        $crossRoom = null;
+
+        try {
+            AttendanceService::releaseEarly(
+                (int) $other['session_id'], $attendanceOf($students[1]), 'sickness', null, $userId);
+        } catch (BusinessRuleException $e) {
+            $crossRoom = $e->errorCode();
+        }
+
+        $runner->assertEquals('a record from another room is out of reach',
+            'RECORD_NOT_FOUND', $crossRoom);
+
+        // A student never released is untouched by any of it.
+        $untouched = $db->selectOne('SELECT * FROM attendance_records WHERE attendance_id = :id',
+            ['id' => $attendanceOf($students[2])]);
+
+        $runner->assert('a student who was not released still has no departure',
+            $untouched['time_out'] === null && $untouched['early_release_reason'] === null);
+    }
+
+    /* =====================================================================
+     * 15. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('14. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('15. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);

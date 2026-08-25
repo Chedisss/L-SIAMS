@@ -926,13 +926,16 @@ final class AttendanceSessionService
                     ar.arrival_status, ar.departure_status, ar.final_status,
                     ar.auto_generated_time_out,
                     ar.carried_from_session_id, prev.session_code AS carried_from_code,
-                    prevsub.subject_code AS carried_from_subject
+                    prevsub.subject_code AS carried_from_subject,
+                    ar.early_release_reason, ar.early_release_note,
+                    ru.full_name AS early_released_by_name
                FROM attendance_sessions s
                JOIN students st ON st.section_id = s.section_id AND st.deleted_at IS NULL AND st.status = 'active'
                LEFT JOIN rfid_cards rc ON rc.student_id = st.student_id AND rc.status = 'active'
                LEFT JOIN attendance_records ar ON ar.session_id = s.session_id AND ar.student_id = st.student_id
                LEFT JOIN attendance_sessions prev ON prev.session_id = ar.carried_from_session_id
                LEFT JOIN subjects prevsub ON prevsub.subject_id = prev.subject_id
+               LEFT JOIN users ru ON ru.user_id = ar.early_released_by
               WHERE s.session_id = :id
               ORDER BY st.last_name, st.first_name",
             ['id' => $sessionId]
