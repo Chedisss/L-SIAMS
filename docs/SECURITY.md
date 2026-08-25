@@ -415,24 +415,50 @@ The order is the security contract and is documented in `routes/web.php` and
 Stated plainly, because a security document that claims completeness is not
 trustworthy.
 
-1. **Card sharing cannot be detected.** See the first threat above. The hardware
+1. **Traffic is not encrypted by default.** `start.bat` serves plain HTTP on
+   port 8080, and the shipped `.env` has `APP_ENV=local` and
+   `SESSION_COOKIE_SECURE=false`, so the HTTPS redirect in
+   `SecurityHeadersMiddleware` never fires. On the network as it stands, anyone
+   with the Wi-Fi password can read attendance traffic, capture a login
+   password as it is submitted, lift a session cookie, and read a terminal's
+   API key out of its request header.
+
+   What that does *not* let them do is forge attendance: every device request
+   is HMAC-signed with a single-use nonce inside a ±30-second window, so a
+   captured tap can be read but not altered and not replayed. Integrity holds
+   without TLS; secrecy does not.
+
+   This is a deliberate trade for a LAN-only deployment, not an oversight — but
+   it is a trade, and a school holding real student records should put the site
+   behind TLS. See [`DEPLOYMENT.md`](DEPLOYMENT.md), and set `APP_ENV=production`
+   and `SESSION_COOKIE_SECURE=true` when you do.
+
+2. **The firmware does not validate the server's certificate.** `https://` in
+   `LS_SERVER_URL` works, but the terminal calls `setInsecure()`. That is
+   encryption against a passive listener and no defence against an active
+   attacker who redirects the terminal to their own server. Pinning the
+   certificate fingerprint at provisioning time is the fix and is not
+   implemented, so TLS on the browser side is worth more than TLS on the
+   terminal side until it is.
+
+3. **Card sharing cannot be detected.** See the first threat above. The hardware
    would need student biometrics.
-2. **A compromised terminal can submit taps for its own classroom** until its key
+4. **A compromised terminal can submit taps for its own classroom** until its key
    is revoked. It cannot open sessions or affect other sections.
-3. **Session binding is to an IP prefix, not an address**, so mobile clients keep
+5. **Session binding is to an IP prefix, not an address**, so mobile clients keep
    working across minor network changes. An attacker on the same /24 with the
    same user agent could use a stolen cookie until it idles out.
-4. **There is no two-factor authentication.** The schema has columns reserved for
+6. **There is no two-factor authentication.** The schema has columns reserved for
    it (`two_factor_enabled`, `two_factor_secret`) but no implementation. For a
    LAN-only system with network allowlisting this was judged acceptable; a school
    exposing the system beyond its own network should implement it first.
-5. **`APP_KEY` is a single point of failure.** It encrypts HMAC secrets and
+7. **`APP_KEY` is a single point of failure.** It encrypts HMAC secrets and
    backups. Lose it and the backups are unrecoverable; leak it together with a
    database dump and the HMAC secrets are exposed.
-6. **The audit log can be truncated by anyone holding the MySQL root
+8. **The audit log can be truncated by anyone holding the MySQL root
    credential.** The application cannot defend against a credential it does not
    hold. Off-machine backups are the mitigation.
-7. **No intrusion detection.** The system logs and scores security events but
+9. **No intrusion detection.** The system logs and scores security events but
    does not act on them beyond rate limiting, account locking and API-key
    auto-revocation. Someone has to read the Security Center.
 

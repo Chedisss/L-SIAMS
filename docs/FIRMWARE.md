@@ -559,25 +559,65 @@ server's response. Adding a status on the server requires no firmware change.
 
 ## 8. Security notes
 
-**TLS with a pinned fingerprint.** The provisioning file carries the server
-certificate's fingerprint, and the terminal validates against it. A device that
-skipped validation would accept any host on the LAN claiming to be the server —
-which is exactly the attack a school network makes easy.
+Everything here describes the **shipping sketch**. An earlier version of this
+section described the deleted OLED terminal and claimed two protections this
+firmware does not have — including, precisely, the one whose absence it warned
+about. Corrected below.
 
-**Credentials live in NVS, not in the sketch.** The compiled binary is identical
-across every terminal and contains no secrets. Someone who dumps the flash gets
-that one device's credentials and nothing else; keys are independent, so one
-compromised terminal reveals nothing about any other.
+### What protects a request
 
-**Set `DEBUG_LOGGING` to 0 before deployment.** Serial output is invaluable
-during installation and an information leak afterwards. Change it in `config.h`
-and re-flash once the terminal is installed and the enclosure is closed.
+**Every device request is signed, and that is the real protection on a LAN.**
+HMAC-SHA256 over method, path, device id, timestamp, a single-use nonce, and a
+hash of the body. A request cannot be forged without the shared secret, cannot
+be altered without invalidating the signature, and cannot be replayed — the
+nonce is spent and the timestamp must be within ±30 seconds. That holds whether
+or not the transport is encrypted.
+
+**Signing is not secrecy.** A signed request over plain HTTP is tamper-proof and
+fully readable. Anyone on the same Wi-Fi can see card UIDs, student names in
+responses, and the API key in its header.
+
+### What this firmware does NOT do
+
+**It does not validate the server's certificate.** `https://` in
+`LS_SERVER_URL` works, but the client calls `setInsecure()` — it accepts any
+certificate from any host. That gives encryption against passive listening and
+**no protection against an active attacker** who redirects the terminal to
+their own server, which is exactly the attack a school network makes easy.
+Pinning the certificate's fingerprint at provisioning time is the fix, and it
+is not implemented.
+
+**Credentials are compiled into the sketch, not stored in NVS.** They are
+`#define`s at the top of the file, so the built binary *does* contain that
+terminal's API key and HMAC secret, and binaries are not interchangeable
+between terminals. Anyone who dumps the flash gets that device's credentials.
+
+Keys are still independent per device, so one compromised terminal reveals
+nothing about any other, and a compromised key can be revoked and rotated from
+the Devices page.
+
+### What still holds
 
 **Mount the terminal so the USB port is inaccessible.** Serial access is
-equivalent to physical possession of the credentials.
+equivalent to physical possession of the credentials, and more so now that they
+are in the binary.
 
-**Fingerprint lockout mirrors the server.** Five failures locks the sensor for
-five minutes locally, so a locked-out person cannot hammer the server endpoint.
+**The terminal holds no roster.** No student data is stored on the device — a
+stolen terminal yields its own credentials and nothing about any person. Held
+taps are the exception: up to 40 card UIDs live in RTC memory until they are
+sent, and they are lost on a power cut.
+
+**Templates stay on the sensor.** The server stores an encrypted copy for
+cross-terminal sync; the terminal keeps only slot numbers.
+
+### If you are deploying this for real
+
+Plain HTTP on a trusted LAN is a deliberate, documented trade — not an
+oversight — but it is a trade, and the honest version of it is: **on the
+network as it stands, anyone with the Wi-Fi password can read attendance
+traffic and capture a login.** See [`DEPLOYMENT.md`](DEPLOYMENT.md) for putting
+the site behind TLS, and treat certificate pinning in the firmware as
+outstanding work before terminals run unattended.
 
 ---
 
