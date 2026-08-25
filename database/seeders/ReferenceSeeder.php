@@ -213,6 +213,8 @@ return static function (Database $db): void {
         ['security',   'security.login_lockout_minutes',   '15', 'int', 'Lockout duration (minutes)', null, 1, '1', '1440'],
         ['security',   'security.api_key_rotation_grace_hours', '24', 'int', 'API key rotation grace (hours)', 'The old key keeps working this long after rotation, then auto-revokes.', 1, '0', '168'],
         ['security',   'security.password_min_length',     '12', 'int', 'Minimum password length', null, 1, '8', '64'],
+        ['security',   'security.unknown_card_alert_cooldown_minutes', '60', 'int', 'Unknown card alert cooldown (minutes)', 'The same unrecognised card raises at most one administrator alert in this window. Set to 0 to alert on every tap, which is rarely what anybody wants.', 0, '0', '1440'],
+        ['security',   'security.unknown_card_repeat_threshold', '5', 'int', 'Unknown card repeat threshold', 'After this many sightings of the same unrecognised card, the alert is raised as high priority and logged as a security event rather than an enrolment gap.', 0, '2', '100'],
 
         ['fingerprint', 'fingerprint.max_failures_before_lock', '5', 'int', 'Failed scans before terminal lock', null, 1, '1', '20'],
         ['fingerprint', 'fingerprint.device_lock_minutes',      '5', 'int', 'Terminal lock duration (minutes)', null, 1, '1', '60'],

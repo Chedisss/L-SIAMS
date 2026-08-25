@@ -45,6 +45,8 @@ final class SettingsService
         'security.login_max_attempts'       => 'security.login.max_attempts',
         'security.login_lockout_minutes'    => 'security.login.lockout_minutes',
         'security.api_key_rotation_grace_hours' => 'security.api_key.rotation_grace_hours',
+        'security.unknown_card_alert_cooldown_minutes' => 'security.unknown_card.alert_cooldown_minutes',
+        'security.unknown_card_repeat_threshold' => 'security.unknown_card.repeat_threshold',
         'security.password_min_length'      => 'security.password.min_length',
         'fingerprint.max_failures_before_lock' => 'attendance.fingerprint.max_failures_before_lock',
         'fingerprint.device_lock_minutes'   => 'attendance.fingerprint.device_lock_minutes',

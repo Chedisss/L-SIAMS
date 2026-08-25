@@ -71,6 +71,21 @@ return [
         ],
     ],
 
+    // --- Unrecognised cards ------------------------------------------------
+    // A card that belongs to nobody is either an enrolment that was never
+    // finished or somebody at the reader trying cards, and an administrator
+    // wants to know today either way. These two numbers are what stop the
+    // alert becoming the category everybody mutes.
+    'unknown_card' => [
+        // The same UID raises at most one alert in this window: a card tapped
+        // through a whole lesson is one problem, not forty.
+        'alert_cooldown_minutes' => 60,
+
+        // Past this many sightings the alert is a different statement — not a
+        // louder copy of the first one — and earns a security event with it.
+        'repeat_threshold' => 5,
+    ],
+
     // --- Request signing / replay protection -------------------------------
     'request' => [
         'timestamp_skew_seconds' => 30,

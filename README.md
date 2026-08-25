@@ -261,6 +261,20 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**A rejected tap leaves everything behind that an accepted one does.** The
+rejection unwinds its own transaction, so anything written inside it goes with
+it — the scan log, the unknown-card tally, the security event, the
+administrator alert and the live-feed broadcast are all buffered and written
+once the rollback is done. Losing them loses exactly the evidence they exist
+to preserve.
+
+**An unregistered card tells somebody, once.** It is either a card that was
+never enrolled — the student is being marked absent until it is — or somebody
+at the reader trying cards, and both want an administrator today. The same UID
+raises at most one alert per cooldown window, stops alerting entirely once it
+has been triaged, and is escalated to high priority with a security event only
+after it has been presented enough times to mean something different.
+
 **A teacher can send a student out of the room, and must say why.** The card
 reader refuses a tap-out before the minimum dwell, which is right against a
 student tapping in and walking straight out and wrong for a child who has been
@@ -288,11 +302,12 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Fifteen groups covering session opening, the concurrent-tap race, cross-device
+Sixteen groups covering session opening, the concurrent-tap race, cross-device
 taps, section mismatch, time-in/time-out sequencing, status resolution, session
 close, idempotency, offline replay, throughput, the realtime transport, which
 lesson a terminal will actually open a session for, the handover that carries a
-register into the next subject, and the teacher-led early release.
+register into the next subject, the teacher-led early release, and what an
+unrecognised card leaves behind.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a

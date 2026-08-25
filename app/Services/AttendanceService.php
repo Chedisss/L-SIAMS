@@ -55,6 +55,24 @@ final class AttendanceService
     private static array $deferredRejectedCounts = [];
 
     /**
+     * Anything else a rejection has to leave behind.
+     *
+     * The two buffers above cover the two writes that were noticed first. They
+     * are not the only ones: the unknown-card tally, the security log and the
+     * administrator alert are all written on paths that end in a throw, and
+     * every one of them was being rolled back with it. An unknown card left a
+     * single rfid_logs row and nothing else — no tally, no security event, and
+     * so nothing for anybody to be told about.
+     *
+     * A rejection may therefore hand any closure here and it runs once the
+     * transaction has unwound. Logs are flushed before these, so a closure that
+     * counts rfid_logs rows sees the one this tap just wrote.
+     *
+     * @var list<callable(Database):void>
+     */
+    private static array $deferredActions = [];
+
+    /**
      * Why a teacher released a student, and how each reads on screen.
      *
      * A fixed list rather than free text alone, so the reason is countable. Let
@@ -965,44 +983,81 @@ final class AttendanceService
 
         // Repeated mismatches for one student usually mean a misassigned
         // student record, not misconduct — so the notification says so.
-        $threshold = (int) Config::get('attendance.section_mismatch_alert_threshold', 3);
+        //
+        // Deferred for the same reason the log above is: this method throws,
+        // and an alert written inside the transaction was rolled back with it.
+        // The count is taken after the flush rather than here, so it includes
+        // the rejection that prompted it — the threshold now means what it
+        // says, where before it needed one mismatch more than it asked for.
+        $name          = self::fullName($card);
+        $studentNumber = (string) $card['student_number'];
 
-        $todayCount = (int) $db->scalar(
-            "SELECT COUNT(*) FROM rfid_logs
-              WHERE student_id = :student AND result = 'section_mismatch' AND DATE(created_at) = :today",
-            ['student' => $studentId, 'today' => Clock::today()]
-        );
+        self::deferUntilRolledBack(static function (Database $db) use (
+            $studentId, $studentNumber, $name, $deviceRowId
+        ): void {
+            $threshold = (int) Config::get('attendance.section_mismatch_alert_threshold', 3);
 
-        if ($todayCount >= $threshold) {
+            $todayCount = (int) $db->scalar(
+                "SELECT COUNT(*) FROM rfid_logs
+                  WHERE student_id = :student AND result = 'section_mismatch' AND DATE(created_at) = :today",
+                ['student' => $studentId, 'today' => Clock::today()]
+            );
+
+            if ($todayCount < $threshold) {
+                return;
+            }
+
             NotificationService::toAdministrators(
                 'attendance',
                 'Repeated section mismatch',
                 sprintf(
                     '%s (%s) has been rejected %d times today for tapping in the wrong section. This usually means the student record is assigned to the wrong section.',
-                    self::fullName($card),
-                    (string) $card['student_number'],
+                    $name,
+                    $studentNumber,
                     $todayCount
                 ),
                 'high',
-                '/admin/students?search=' . urlencode((string) $card['student_number'])
+                '/admin/students?search=' . urlencode($studentNumber)
             );
 
             SecurityLogService::log(
                 SecurityLogService::SECTION_MISMATCH_REPEATED,
                 'medium',
-                sprintf('Student %s triggered %d section mismatches today.', $card['student_number'], $todayCount),
+                sprintf('Student %s triggered %d section mismatches today.', $studentNumber, $todayCount),
                 ['student_id' => $studentId, 'count' => $todayCount],
                 $deviceRowId
             );
-        }
+        });
 
-        self::publishRejection($session, $cardUid, 'SECTION_MISMATCH', 'Student is not enrolled in this section.', [
-            'student_id'      => $studentId,
-            'student_name'    => self::fullName($card),
-            'student_number'  => (string) $card['student_number'],
-            'student_section' => (string) $card['student_section_code'],
-            'today_count'     => $todayCount,
-        ]);
+        // The live feed wants the same count the threshold used, so it is
+        // published from inside a deferred closure of its own rather than from
+        // here, where the number does not exist yet.
+        $sessionCode    = (string) $session['session_code'];
+        $channels       = self::channelsFor($session);
+        $studentSection = (string) $card['student_section_code'];
+
+        self::deferUntilRolledBack(static function (Database $db) use (
+            $channels, $sessionCode, $cardUid, $studentId, $name, $studentNumber, $studentSection
+        ): void {
+            $todayCount = (int) $db->scalar(
+                "SELECT COUNT(*) FROM rfid_logs
+                  WHERE student_id = :student AND result = 'section_mismatch' AND DATE(created_at) = :today",
+                ['student' => $studentId, 'today' => Clock::today()]
+            );
+
+            RealtimeService::broadcast($channels, 'attendance.rejected', [
+                'session_id'      => $sessionCode,
+                'card_uid'        => $cardUid,
+                'code'            => 'SECTION_MISMATCH',
+                'message'         => 'Student is not enrolled in this section.',
+                'at'              => Clock::atom(),
+                'student_id'      => $studentId,
+                'student_name'    => $name,
+                'student_number'  => $studentNumber,
+                'student_section' => $studentSection,
+                'today_count'     => $todayCount,
+            ]);
+        });
 
         throw new BusinessRuleException(
             'SECTION_MISMATCH',
@@ -1142,15 +1197,30 @@ final class AttendanceService
     }
 
     /** @param array<string,mixed> $session @param array<string,mixed>|null $extra */
+    /**
+     * Announce a rejection on the live feed.
+     *
+     * Deferred, like everything else a rejection leaves behind. A realtime
+     * broadcast is a row in realtime_events, so publishing one inside the
+     * transaction the rejection is about to roll back deleted it again — every
+     * refused tap was invisible on the session screen it was refused at, which
+     * is the one place somebody is watching for it.
+     */
     private static function publishRejection(array $session, string $cardUid, string $code, string $message, ?array $extra): void
     {
-        RealtimeService::broadcast(self::channelsFor($session), 'attendance.rejected', [
+        $payload = [
             'session_id' => (string) $session['session_code'],
             'card_uid'   => $cardUid,
             'code'       => $code,
             'message'    => $message,
             'at'         => Clock::atom(),
-        ] + ($extra ?? []));
+        ] + ($extra ?? []);
+
+        $channels = self::channelsFor($session);
+
+        self::deferUntilRolledBack(static function (Database $db) use ($channels, $payload): void {
+            RealtimeService::broadcast($channels, 'attendance.rejected', $payload);
+        });
     }
 
     /**
@@ -1273,11 +1343,13 @@ final class AttendanceService
     {
         $logs      = self::$deferredLogs;
         $rejected  = self::$deferredRejectedCounts;
+        $actions   = self::$deferredActions;
 
         // Cleared first: a failure below must not leave rows buffered for the
         // next tap to write a second time.
         self::$deferredLogs            = [];
         self::$deferredRejectedCounts  = [];
+        self::$deferredActions         = [];
 
         foreach ($logs as $row) {
             try {
@@ -1297,6 +1369,15 @@ final class AttendanceService
                 Logger::error('Rejected-tap counter update failed', ['error' => $e->getMessage(), 'session' => $sessionId]);
             }
         }
+
+        // Last, so a closure that counts rfid_logs sees this tap's own row.
+        foreach ($actions as $action) {
+            try {
+                $action($db);
+            } catch (Throwable $e) {
+                Logger::error('Deferred rejection write failed', ['error' => $e->getMessage()]);
+            }
+        }
     }
 
     /** Drop anything buffered by a tap that ended up succeeding. */
@@ -1304,30 +1385,147 @@ final class AttendanceService
     {
         self::$deferredLogs           = [];
         self::$deferredRejectedCounts = [];
+        self::$deferredActions        = [];
     }
 
+    /** @param callable(Database):void $action */
+    private static function deferUntilRolledBack(callable $action): void
+    {
+        self::$deferredActions[] = $action;
+    }
+
+    /**
+     * An unregistered card was presented.
+     *
+     * All of this is deferred, because the caller throws immediately after and
+     * everything written inside the transaction would go with it. It used to be
+     * written inline: the tally never counted, the security event never
+     * appeared, and the only trace an unknown card left anywhere was a single
+     * rfid_logs row.
+     */
     private static function recordUnknownCard(Database $db, string $cardUid, int $deviceRowId, ?int $sessionId): void
     {
         self::logScan($db, $cardUid, null, $deviceRowId, $sessionId, 'unknown_card', 'unknown', null, null,
             'Card UID is not registered.');
 
-        $db->execute(
-            'INSERT INTO unknown_rfid_logs (card_uid, device_row_id, session_id, seen_count, first_seen_at, last_seen_at)
-                  VALUES (:uid, :device, :session, 1, :now, :now)
-             ON DUPLICATE KEY UPDATE
-                  seen_count = seen_count + 1,
-                  last_seen_at = VALUES(last_seen_at),
-                  device_row_id = VALUES(device_row_id),
-                  session_id = VALUES(session_id)',
-            ['uid' => $cardUid, 'device' => $deviceRowId, 'session' => $sessionId, 'now' => Clock::nowString()]
+        self::deferUntilRolledBack(static function (Database $db) use ($cardUid, $deviceRowId, $sessionId): void {
+            $db->execute(
+                'INSERT INTO unknown_rfid_logs (card_uid, device_row_id, session_id, seen_count, first_seen_at, last_seen_at)
+                      VALUES (:uid, :device, :session, 1, :now, :now)
+                 ON DUPLICATE KEY UPDATE
+                      seen_count = seen_count + 1,
+                      last_seen_at = VALUES(last_seen_at),
+                      device_row_id = VALUES(device_row_id),
+                      session_id = VALUES(session_id)',
+                ['uid' => $cardUid, 'device' => $deviceRowId, 'session' => $sessionId, 'now' => Clock::nowString()]
+            );
+
+            SecurityLogService::log(
+                SecurityLogService::UNKNOWN_RFID,
+                'low',
+                sprintf('Unknown RFID card %s presented.', $cardUid),
+                ['card_uid' => $cardUid],
+                $deviceRowId
+            );
+
+            self::alertUnknownCard($db, $cardUid, $deviceRowId);
+        });
+    }
+
+    /**
+     * Tell an administrator, without telling them forty times.
+     *
+     * An unregistered card at a classroom terminal is one of two things, and
+     * both want somebody to know today. Either a student's card was never
+     * enrolled — and they are standing outside a lesson being marked absent
+     * from it — or somebody is at the reader trying cards. Waiting for the
+     * unknown-card list to be opened is not a plan.
+     *
+     * What makes this usable rather than noise is what it does NOT send. One
+     * card tapped repeatedly through a lesson is one problem, so the same UID
+     * raises at most one alert per cooldown window; and once an administrator
+     * has triaged the card at all — assigned it, ignored it, blacklisted it —
+     * it stops alerting entirely, because they have already answered.
+     *
+     * Repetition past the threshold is a different signal rather than a louder
+     * copy of the same one: one sighting reads as an enrolment that was never
+     * finished, ten reads as somebody standing at a reader, and only the second
+     * is worth a security event.
+     */
+    private static function alertUnknownCard(Database $db, string $cardUid, int $deviceRowId): void
+    {
+        $row = $db->selectOne(
+            'SELECT unknown_id, seen_count, resolution, last_notified_at, notified_count
+               FROM unknown_rfid_logs WHERE card_uid = :uid',
+            ['uid' => $cardUid]
         );
 
-        SecurityLogService::log(
-            SecurityLogService::UNKNOWN_RFID,
-            'low',
-            sprintf('Unknown RFID card %s presented.', $cardUid),
-            ['card_uid' => $cardUid],
-            $deviceRowId
+        if ($row === null || (string) $row['resolution'] !== 'pending') {
+            return;
+        }
+
+        $cooldown = max(0, (int) Config::get('security.unknown_card.alert_cooldown_minutes', 60));
+        $now      = Clock::now();
+
+        if ($row['last_notified_at'] !== null && $cooldown > 0) {
+            $nextAllowed = Clock::parse((string) $row['last_notified_at'])->modify('+' . $cooldown . ' minutes');
+
+            if ($now < $nextAllowed) {
+                return;
+            }
+        }
+
+        $seen      = (int) $row['seen_count'];
+        $threshold = max(2, (int) Config::get('security.unknown_card.repeat_threshold', 5));
+        $persistent = $seen >= $threshold;
+
+        $device = $db->selectOne(
+            'SELECT d.device_id, d.device_name, c.room_number
+               FROM devices d LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
+              WHERE d.id = :id',
+            ['id' => $deviceRowId]
+        ) ?? [];
+
+        $where = isset($device['room_number']) && $device['room_number'] !== null
+            ? 'Room ' . $device['room_number']
+            : (string) ($device['device_name'] ?? $device['device_id'] ?? 'a terminal');
+
+        NotificationService::toAdministrators(
+            'security',
+            $persistent ? 'Unrecognised card presented repeatedly' : 'Unrecognised card presented',
+            $persistent
+                ? sprintf(
+                    'Card %s has now been presented %d times at %s and is still not registered to anyone. '
+                    . 'Either enrol it to a student or blacklist it.',
+                    $cardUid,
+                    $seen,
+                    $where
+                )
+                : sprintf(
+                    'Card %s was presented at %s and is not registered to any student. If this is a new '
+                    . 'card, enrol it — the student is being marked absent until somebody does.',
+                    $cardUid,
+                    $where
+                ),
+            $persistent ? 'high' : 'normal',
+            '/admin/rfid/unknown'
+        );
+
+        if ($persistent) {
+            SecurityLogService::log(
+                SecurityLogService::UNKNOWN_RFID,
+                'medium',
+                sprintf('Unregistered card %s presented %d times.', $cardUid, $seen),
+                ['card_uid' => $cardUid, 'seen_count' => $seen],
+                $deviceRowId
+            );
+        }
+
+        $db->execute(
+            'UPDATE unknown_rfid_logs
+                SET last_notified_at = :now, notified_count = notified_count + 1
+              WHERE unknown_id = :id',
+            ['now' => $now->format('Y-m-d H:i:s'), 'id' => (int) $row['unknown_id']]
         );
     }
 

@@ -1528,10 +1528,126 @@ try {
     }
 
     /* =====================================================================
-     * 15. Sustained soak (opt-in, 30 minutes)
+     * 15. An unknown card leaves a trace, and tells somebody
+     *
+     * Everything a rejection writes lives inside a transaction that the
+     * rejection itself rolls back. Only the rfid_logs row and the rejected-tap
+     * counter were being carried past it; the unknown-card tally, the security
+     * event and any alert were written inline and lost. So an unrecognised
+     * card left one log row, the "seen 6 times" counter never counted, and
+     * nobody was ever told.
+     * ===================================================================== */
+    if ($want('unknown')) {
+        $runner->group('15. An unknown card leaves a trace, and tells somebody');
+
+        $fixture->build(1, 3, 1);
+
+        $device = $fixture->device(0);
+        $uid    = 'FEEDFACE01'; // hex only: normaliseUid() strips anything else
+
+        $db->execute('DELETE FROM unknown_rfid_logs WHERE card_uid = :u', ['u' => $uid]);
+        $db->execute('DELETE FROM rfid_logs WHERE card_uid = :u', ['u' => $uid]);
+        $db->execute("DELETE FROM notifications WHERE category = 'security' AND message LIKE :m",
+            ['m' => '%' . $uid . '%']);
+
+        AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        $tap = static function () use ($device, $uid): ?string {
+            try {
+                AttendanceService::tap($device, $uid);
+            } catch (BusinessRuleException $e) {
+                return $e->errorCode();
+            }
+
+            return null;
+        };
+
+        $alerts = static fn (): int => (int) $db->scalar(
+            "SELECT COUNT(*) FROM notifications WHERE category = 'security' AND message LIKE :m",
+            ['m' => '%' . $uid . '%']
+        );
+
+        $seen = static fn (): int => (int) $db->scalar(
+            'SELECT COALESCE(seen_count, 0) FROM unknown_rfid_logs WHERE card_uid = :u', ['u' => $uid]
+        );
+
+        $runner->assertEquals('an unregistered card is refused', 'RFID_UNKNOWN', $tap());
+
+        // The whole point: this survived a rollback.
+        $runner->assertEquals('the sighting is tallied despite the rejection', 1, $seen());
+        $runner->assertEquals('an administrator is told', 1, $alerts());
+
+        $logged = (int) $db->scalar(
+            "SELECT COUNT(*) FROM rfid_logs WHERE card_uid = :u AND result = 'unknown_card'",
+            ['u' => $uid]
+        );
+
+        $runner->assertEquals('and the scan itself is still logged', 1, $logged);
+
+        // A rejection broadcast is a realtime_events row, so it was being
+        // rolled back too: every refused tap was invisible on the very screen
+        // somebody watches for refused taps.
+        $broadcast = (int) $db->scalar(
+            "SELECT COUNT(*) FROM realtime_events
+              WHERE event_type = 'attendance.rejected' AND payload LIKE :m",
+            ['m' => '%' . $uid . '%']
+        );
+
+        $runner->assert('the rejection reaches the live feed', $broadcast >= 1,
+            'no attendance.rejected event was published');
+
+        // A card tapped through a lesson is one problem, not forty.
+        $tap();
+        $tap();
+        $tap();
+
+        $runner->assertEquals('every sighting counts', 4, $seen());
+        $runner->assertEquals('but the cooldown holds the alert to one', 1, $alerts());
+
+        // Past the cooldown and past the repeat threshold, the alert is a
+        // different statement rather than a repeat of the first.
+        Clock::freeze(Clock::now()->modify('+2 hours'));
+        $tap();
+        $tap();
+
+        $runner->assertEquals('past the cooldown it speaks again', 2, $alerts());
+
+        $escalated = (int) $db->scalar(
+            "SELECT COUNT(*) FROM notifications
+              WHERE category = 'security' AND message LIKE :m AND priority = 'high'",
+            ['m' => '%' . $uid . '%']
+        );
+
+        $runner->assertEquals('and a persistent card is raised as high priority', 1, $escalated);
+
+        // Once an administrator has answered, the system stops repeating itself.
+        $db->execute("UPDATE unknown_rfid_logs SET resolution = 'blacklisted' WHERE card_uid = :u",
+            ['u' => $uid]);
+
+        // No clock move: triage is checked before the cooldown, so it stops the
+        // alert on its own. (Nor could the clock move far — the session has to
+        // still be open, because steps 7 and 8 reject a tap for a closed or
+        // expired session before step 9 ever looks the card up.)
+        $tap();
+
+        $runner->assertEquals('a triaged card raises nothing further', 2, $alerts());
+        $runner->assertEquals('though it is still counted', 7, $seen());
+
+        Clock::freeze(Clock::now()->setTime(10, 0, 0));
+
+        $db->execute('DELETE FROM unknown_rfid_logs WHERE card_uid = :u', ['u' => $uid]);
+        $db->execute('DELETE FROM rfid_logs WHERE card_uid = :u', ['u' => $uid]);
+        $db->execute("DELETE FROM notifications WHERE category = 'security' AND message LIKE :m",
+            ['m' => '%' . $uid . '%']);
+        $db->execute("DELETE FROM realtime_events WHERE event_type = 'attendance.rejected' AND payload LIKE :m",
+            ['m' => '%' . $uid . '%']);
+    }
+
+    /* =====================================================================
+     * 16. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('15. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('16. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);
