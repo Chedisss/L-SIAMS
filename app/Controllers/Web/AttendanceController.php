@@ -10,6 +10,7 @@ use App\Core\Request;
 use App\Core\Response;
 use App\Services\AcademicStructureService;
 use App\Services\AttendanceQueryService;
+use App\Services\AttendanceService;
 use App\Services\AttendanceSessionService;
 use App\Services\AttendanceStatusResolver;
 use App\Services\ReportService;
@@ -166,6 +167,32 @@ final class AttendanceController extends Controller
             $summary['late_count'],
             $summary['absent_count'],
             $summary['incomplete_count']
+        ));
+    }
+
+    /**
+     * Release a student from an open session's room.
+     *
+     * The same control the teacher has on their own roster. An administrator
+     * gets it for the case the feature exists to cover from the office side —
+     * a parent collecting a child while the teacher is mid-lesson and nowhere
+     * near a screen. The record carries whichever account did it either way.
+     */
+    public function releaseStudent(Request $request): Response
+    {
+        $result = AttendanceService::releaseEarly(
+            $request->routeInt('id'),
+            (int) $request->input('attendance_id'),
+            (string) $request->input('reason', ''),
+            $request->input('note') === null ? null : (string) $request->input('note'),
+            $this->requireUserId()
+        );
+
+        return $this->json($result, sprintf(
+            '%s was released at %s — %s. Recorded as Left Early.',
+            $result['student'],
+            $result['time_out'],
+            strtolower((string) $result['reason_label'])
         ));
     }
 

@@ -12,6 +12,7 @@
  */
 
 use App\Core\Auth;
+use App\Services\AttendanceService;
 use App\Services\AttendanceStatusResolver;
 
 $__view->extend('layouts.app');
@@ -125,6 +126,7 @@ foreach ($roster as $entry) {
                         <tr>
                             <th>Student</th><th>Card</th><th>Time in</th><th>Time out</th>
                             <th>Duration</th><th>Arrival</th><th>Departure</th><th>Final status</th>
+                            <?php if ($isOpen): ?><th style="width:1%"></th><?php endif; ?>
                         </tr>
                         </thead>
                         <tbody>
@@ -160,7 +162,16 @@ foreach ($roster as $entry) {
                                     <?= e(human_duration($entry['duration_minutes'] === null ? null : (int) $entry['duration_minutes'])) ?>
                                 </td>
                                 <td class="text-xs text-muted" data-cell="arrival_status"><?= e($entry['arrival_status'] ?? '—') ?></td>
-                                <td class="text-xs text-muted" data-cell="departure_status"><?= e($entry['departure_status'] ?? '—') ?></td>
+                                <td class="text-xs text-muted" data-cell="departure_status">
+                                    <?= e($entry['departure_status'] ?? '—') ?>
+                                    <?php if (!empty($entry['early_release_reason'])): ?>
+                                        <?php /* Left Early is also what a genuine early tap-out
+                                                 produces. This says a named adult sent them out,
+                                                 and why — a different fact with the same status. */ ?>
+                                        <i class="fa-solid fa-hand text-warning"
+                                           title="Released by <?= e((string) ($entry['early_released_by_name'] ?? 'a member of staff')) ?> — <?= e(strtolower(AttendanceService::RELEASE_REASONS[$entry['early_release_reason']] ?? (string) $entry['early_release_reason'])) ?><?= $entry['early_release_note'] ? ': ' . e((string) $entry['early_release_note']) : '' ?>"></i>
+                                    <?php endif; ?>
+                                </td>
                                 <td data-cell="final_status">
                                     <?php if ($entry['final_status']): ?>
                                         <span class="badge <?= e(AttendanceStatusResolver::badgeClass((string) $entry['final_status'])) ?>">
@@ -170,6 +181,21 @@ foreach ($roster as $entry) {
                                         <span class="badge badge-neutral">Pending</span>
                                     <?php endif; ?>
                                 </td>
+                                <?php if ($isOpen): ?>
+                                    <td data-cell="release">
+                                        <?php /* Only for somebody actually in the room: no tap-in
+                                                 means there is nothing to release them from, and a
+                                                 tap-out means they have already gone. */ ?>
+                                        <?php if ($entry['time_in'] !== null && $entry['time_out'] === null): ?>
+                                            <button type="button" class="btn btn-sm btn-secondary"
+                                                    data-release="<?= e($entry['attendance_id']) ?>"
+                                                    data-name="<?= e($entry['student_name']) ?>"
+                                                    title="Send this student out of the room before the end of the period">
+                                                <i class="fa-solid fa-person-walking-arrow-right"></i> Release
+                                            </button>
+                                        <?php endif; ?>
+                                    </td>
+                                <?php endif; ?>
                             </tr>
                         <?php endforeach; ?>
                         </tbody>
@@ -249,6 +275,48 @@ foreach ($roster as $entry) {
     </div>
 </div>
 
+<?php if ($isOpen): ?>
+<div class="modal-backdrop" id="release-modal">
+    <div class="modal modal--sm" role="dialog" aria-modal="true">
+        <div class="modal__header">
+            <h3 class="modal__title">Release <span data-field="student_name">the student</span></h3>
+            <button class="modal__close" type="button" data-modal-close>&times;</button>
+        </div>
+        <form id="release-form">
+            <div class="modal__body">
+                <p class="text-sm text-muted" style="margin-bottom:.8rem">
+                    Records a real departure at the time you confirm it, marked <strong>Left Early</strong>.
+                    Nothing carries into the next subject, so the student may tap in again if they come back.
+                </p>
+
+                <div class="form-group">
+                    <label for="release-reason" class="required">Why are they leaving?</label>
+                    <select id="release-reason" name="reason" required>
+                        <option value="">Choose a reason</option>
+                        <?php foreach (AttendanceService::RELEASE_REASONS as $value => $label): ?>
+                            <option value="<?= e($value) ?>"><?= e($label) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="release-note">Note <span class="label__hint" id="release-note-hint">optional</span></label>
+                    <textarea id="release-note" name="note" rows="2" maxlength="255"
+                              placeholder="Anything the reason above does not say"></textarea>
+                    <span class="field-help">Kept with the record and shown to whoever reads the register.</span>
+                </div>
+            </div>
+            <div class="modal__footer">
+                <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+                <button type="submit" class="btn btn-warning" id="release-submit">
+                    <i class="fa-solid fa-person-walking-arrow-right"></i> Release student
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+<?php endif; ?>
+
 <?php
 $__view->stop();
 $__view->start('scripts');
@@ -258,6 +326,7 @@ $__view->start('scripts');
     const LS   = window.LSIAMS;
     const CODE = <?= json_js((string) $session['session_code']) ?>;
     const ID   = <?= (int) $session['session_id'] ?>;
+    const RELEASE_LABELS = <?= json_js(AttendanceService::RELEASE_REASONS) ?>;
     const BASE = <?= json_js($sessionsPath) ?>;
 
     /* ---- roster filtering ------------------------------------------------ */
@@ -310,7 +379,8 @@ $__view->start('scripts');
             set(row, 'time_out', entry.time_out ? time(entry.time_out) : '—');
             set(row, 'duration', entry.duration_minutes === null ? '—' : entry.duration_minutes + ' min');
             set(row, 'arrival_status',   entry.arrival_status   || '—');
-            set(row, 'departure_status', entry.departure_status || '—');
+            setDeparture(row, entry);
+            setRelease(row, entry);
 
             const cell = row.querySelector('[data-cell="final_status"]');
             if (cell) {
@@ -327,6 +397,57 @@ $__view->start('scripts');
         });
 
         filter();
+    }
+
+    // A student who has just left — by their own tap or by being released —
+    // must lose the Release button without waiting for a reload, or the next
+    // click posts against a record that already has a time-out.
+    function setRelease(row, entry) {
+        const cell = row.querySelector('[data-cell="release"]');
+        if (!cell) return;
+
+        const inTheRoom = entry.time_in !== null && entry.time_out === null;
+
+        if (!inTheRoom) {
+            if (cell.firstChild) cell.textContent = '';
+            return;
+        }
+
+        if (cell.querySelector('[data-release]')) return;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-sm btn-secondary';
+        button.dataset.release = entry.attendance_id;
+        button.dataset.name = entry.student_name;
+        button.title = 'Send this student out of the room before the end of the period';
+        button.innerHTML = '<i class="fa-solid fa-person-walking-arrow-right"></i> Release';
+        cell.appendChild(button);
+    }
+
+    // Departure carries a marker for the same reason time-in does: Left Early
+    // is what a genuine early tap-out produces too, and a release is a
+    // different event that happens to end in the same status.
+    function setDeparture(row, entry) {
+        const cell = row.querySelector('[data-cell="departure_status"]');
+        if (!cell) return;
+
+        const label = LS.util.escape(entry.departure_status || '—');
+        const note  = entry.early_release_note ? ': ' + entry.early_release_note : '';
+        const html  = label + (entry.early_release_reason
+            ? ' <i class="fa-solid fa-hand text-warning" title="'
+              + LS.util.escape('Released by ' + (entry.early_released_by_name || 'a member of staff')
+                + ' — ' + (RELEASE_LABELS[entry.early_release_reason] || entry.early_release_reason).toLowerCase()
+                + note)
+              + '"></i>'
+            : '');
+
+        if (cell.innerHTML.trim() === html) return;
+
+        cell.innerHTML = html;
+        cell.classList.remove('cell-flash');
+        void cell.offsetWidth;
+        cell.classList.add('cell-flash');
     }
 
     // Time in carries a marker the other cells do not: a record that arrived by
@@ -422,13 +543,75 @@ $__view->start('scripts');
         setTimeout(() => window.location.reload(), 1200);
     });
 
+    /* ---- releasing a student before the bell ------------------------------ */
+
+    // One dialog reused by every row, holding the attendance_id of whichever
+    // Release was pressed. A per-row form would put forty identical forms in
+    // the page for a control used perhaps twice a week.
+    const releaseModal = document.getElementById('release-modal');
+    const releaseForm  = document.getElementById('release-form');
+    const releaseNote  = document.getElementById('release-note');
+    const releaseWhy   = document.getElementById('release-reason');
+    const noteHint     = document.getElementById('release-note-hint');
+    let   releasing    = null;
+
+    // Delegated, because rows lose and regain their button as students come
+    // and go and a handler bound at load would be bound to the wrong buttons.
+    document.getElementById('roster-table').addEventListener('click', function (event) {
+        const button = event.target.closest('[data-release]');
+        if (!button) return;
+
+        releasing = button.dataset.release;
+        releaseForm.reset();
+        syncNoteRequirement();
+        LS.modal.fill(releaseModal, { student_name: button.dataset.name });
+        LS.modal.open('release-modal');
+    });
+
+    // 'Other' with no note records that something happened and nothing about
+    // what, so the field earns its asterisk only for that one choice.
+    function syncNoteRequirement() {
+        const isOther = releaseWhy.value === 'other';
+        releaseNote.required = isOther;
+        noteHint.textContent = isOther ? 'required' : 'optional';
+    }
+
+    releaseWhy.addEventListener('change', syncNoteRequirement);
+
+    releaseForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+
+        if (!releasing) return;
+
+        const submit = document.getElementById('release-submit');
+        LS.util.setBusy(submit, true, 'Releasing…');
+
+        try {
+            const response = await LS.http.post(BASE + '/' + ID + '/release', {
+                attendance_id: releasing,
+                reason: releaseWhy.value,
+                note: releaseNote.value,
+            });
+
+            LS.toast.success(response.message);
+            LS.modal.close('release-modal');
+            releasing = null;
+            refresh();
+        } catch (error) {
+            LS.toast.fromError(error);
+        } finally {
+            LS.util.setBusy(submit, false);
+        }
+    });
+
     /* ---- force close ------------------------------------------------------ */
     document.getElementById('close-session').addEventListener('click', async function () {
         const confirmed = await LS.modal.confirm({
             title:   'Close ' + CODE + '?',
-            message: 'Students still in the room are given an automatic time-out at the scheduled end '
-                     + 'time and flagged as such; everyone with no record is marked absent. Attendance '
-                     + 'records cannot be edited or deleted afterwards.',
+            message: 'Students still in the room are given an automatic time-out at whichever comes '
+                     + 'first, this moment or the scheduled end, and flagged as such; everyone with no '
+                     + 'record is marked absent. Attendance records cannot be edited or deleted '
+                     + 'afterwards.',
             confirmLabel: 'Close session',
             danger: true,
         });

@@ -199,6 +199,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/attendance/sessions', AttendanceController::class . '@sessions');
     $router->get('/attendance/sessions/{id:\d+}', AttendanceController::class . '@sessionDetail');
     $router->post('/attendance/sessions/{id:\d+}/close', AttendanceController::class . '@closeSession');
+    $router->post('/attendance/sessions/{id:\d+}/release', AttendanceController::class . '@releaseStudent');
     $router->get('/attendance/{id:\d+}', AttendanceController::class . '@show');
     $router->post('/attendance/{id:\d+}/correct', AttendanceController::class . '@correct');
 
@@ -267,6 +268,10 @@ $router->group('/teacher', $teacherChain, static function ($router): void {
     $router->get('/sessions', TeacherPortalController::class . '@sessions');
     $router->get('/sessions/{id:\d+}', TeacherPortalController::class . '@sessionDetail');
     $router->post('/sessions/{id:\d+}/close', TeacherPortalController::class . '@closeSession');
+    // Sending a student out of the room before the bell. Ownership of the
+    // session is checked in the action, and the record is scoped to it, so an
+    // attendance_id from another room is simply not found.
+    $router->post('/sessions/{id:\d+}/release', TeacherPortalController::class . '@releaseStudent');
     $router->get('/profile', TeacherPortalController::class . '@profile');
     $router->put('/profile', TeacherPortalController::class . '@updateProfile');
     $router->get('/reports', TeacherPortalController::class . '@reports');

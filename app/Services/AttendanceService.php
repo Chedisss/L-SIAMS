@@ -55,6 +55,26 @@ final class AttendanceService
     private static array $deferredRejectedCounts = [];
 
     /**
+     * Why a teacher released a student, and how each reads on screen.
+     *
+     * A fixed list rather than free text alone, so the reason is countable. Let
+     * a hundred teachers type it and one term arrives as "sick", "Sick",
+     * "feeling unwell", "unwell" and "SICK", and the register can no longer
+     * answer how many students went home ill this month — which is the first
+     * question anybody asks of this.
+     *
+     * @var array<string,string>
+     */
+    public const RELEASE_REASONS = [
+        'sickness'    => 'Feeling unwell',
+        'headache'    => 'Headache',
+        'injury'      => 'Injury',
+        'emergency'   => 'Emergency',
+        'called_away' => 'Called out of class',
+        'other'       => 'Other',
+    ];
+
+    /**
      * Process one card tap.
      *
      * @param  array<string,mixed> $device authenticated device row
@@ -640,6 +660,237 @@ final class AttendanceService
             'buzzer'           => $leftEarly ? 'triple_short' : 'double_short',
             'counters'         => $counters,
         ];
+    }
+
+    // ------------------------------------------------- teacher-led release --
+
+    /**
+     * Release a student from the room before the end of the period.
+     *
+     * A student is unwell, or a parent is at the gate. They leave, and the card
+     * reader is no help: tapping out before the tap-out window opens is refused
+     * until the minimum dwell has elapsed. That rule is exactly right against a
+     * student trying to tap in and walk out, and exactly wrong for a child who
+     * has been ill for ten minutes. The period then ended with them recorded as
+     * present throughout, or auto-stamped at the bell for a room they had left
+     * an hour earlier.
+     *
+     * So the teacher records it instead. The dwell minimum is deliberately not
+     * applied — a named adult is asserting they watched the student go, which
+     * is stronger evidence than the heuristic the minimum exists to supply, and
+     * that assertion is stored with their account against it.
+     *
+     * The departure is left_early, so the record reads Left Early, and Left
+     * Early carries nothing into the next period. A student who goes home sick
+     * is not silently marked present for the rest of the day; a student who
+     * comes back after twenty minutes taps in for the next subject like anyone
+     * else. Both fall out of the rule rather than needing a special case.
+     *
+     * $sessionId is the session the caller has already been authorised for, and
+     * the record must belong to it. Without that the attendance_id alone would
+     * be the whole authorisation: a teacher with a legitimate session of their
+     * own could release any student in the school by changing one number.
+     *
+     * @param  'sickness'|'headache'|'injury'|'emergency'|'called_away'|'other' $reason
+     * @return array<string,mixed>
+     */
+    public static function releaseEarly(
+        int $sessionId,
+        int $attendanceId,
+        string $reason,
+        ?string $note,
+        int $byUserId
+    ): array {
+        if (!array_key_exists($reason, self::RELEASE_REASONS)) {
+            throw new BusinessRuleException(
+                'INVALID_RELEASE_REASON',
+                'Choose why this student is leaving before the end of the period.',
+                [],
+                422
+            );
+        }
+
+        $note = $note === null ? null : trim($note);
+        $note = ($note === null || $note === '') ? null : mb_substr($note, 0, 255);
+
+        // 'Other' with no note records that something happened and nothing
+        // about what, which is the one combination the list cannot survive.
+        if ($reason === 'other' && $note === null) {
+            throw new BusinessRuleException(
+                'RELEASE_NOTE_REQUIRED',
+                'Recording this as Other needs a short note saying what happened.',
+                [],
+                422
+            );
+        }
+
+        $db  = Database::instance();
+        $now = Clock::now();
+
+        return $db->transaction(static function (Database $db) use (
+            $sessionId, $attendanceId, $reason, $note, $byUserId, $now
+        ): array {
+            // Session first, then record — the same lock order every other path
+            // in this class takes, so a release can never deadlock against a
+            // tap arriving for the same student at the same moment.
+            $session = $db->selectOne(
+                'SELECT * FROM attendance_sessions WHERE session_id = :id LIMIT 1 FOR UPDATE',
+                ['id' => $sessionId]
+            );
+
+            if ($session === null) {
+                throw new BusinessRuleException(
+                    'SESSION_NOT_FOUND',
+                    'That attendance session does not exist.',
+                    [],
+                    404
+                );
+            }
+
+            if ((string) $session['status'] !== 'open') {
+                throw new BusinessRuleException(
+                    'SESSION_NOT_OPEN',
+                    'This session is closed. A closed register is corrected by an administrator, '
+                    . 'with the change and its reason recorded separately.',
+                    [],
+                    409
+                );
+            }
+
+            // Scoped to the session the caller was authorised for, so an
+            // attendance_id belonging to another room simply is not found.
+            $record = $db->selectOne(
+                'SELECT * FROM attendance_records
+                  WHERE attendance_id = :id AND session_id = :session LIMIT 1 FOR UPDATE',
+                ['id' => $attendanceId, 'session' => $sessionId]
+            );
+
+            if ($record === null) {
+                throw new BusinessRuleException(
+                    'RECORD_NOT_FOUND',
+                    'That student is not on this session\'s register.',
+                    [],
+                    404
+                );
+            }
+
+            if ($record['time_in'] === null) {
+                throw new BusinessRuleException(
+                    'STUDENT_NOT_IN_ROOM',
+                    'This student has not tapped in, so there is nothing to release them from.',
+                    [],
+                    409
+                );
+            }
+
+            if ($record['time_out'] !== null) {
+                throw new BusinessRuleException(
+                    'ALREADY_TIMED_OUT',
+                    sprintf(
+                        'This student already left at %s.',
+                        Clock::parse((string) $record['time_out'])->format('g:i A')
+                    ),
+                    [],
+                    409
+                );
+            }
+
+            $timeIn = Clock::parse((string) $record['time_in']);
+
+            // A release cannot walk an arrival backwards, however the clocks
+            // disagree. Zero minutes is a short visit; a negative one is a bug
+            // that every duration report downstream would carry.
+            $timeOut  = $now > $timeIn ? $now : $timeIn;
+            $duration = max(0, (int) floor(($timeOut->getTimestamp() - $timeIn->getTimestamp()) / 60));
+
+            $departureStatus = AttendanceStatusResolver::DEPARTURE_LEFT_EARLY;
+            $finalStatus     = AttendanceStatusResolver::resolve(
+                (string) $record['arrival_status'],
+                $departureStatus
+            );
+
+            $db->update('attendance_records', [
+                'time_out'             => $timeOut->format('Y-m-d H:i:s'),
+                'time_out_ip'          => RequestContext::ip(),
+                'duration_minutes'     => $duration,
+                'departure_status'     => $departureStatus,
+                'final_status'         => $finalStatus,
+                // Not auto_generated_time_out. That flag means the system
+                // stamped a departure nobody witnessed; a person recorded this
+                // one, and the robot icon over their decision would be a lie.
+                'early_release_reason' => $reason,
+                'early_release_note'   => $note,
+                'early_released_by'    => $byUserId,
+                'updated_at'           => Clock::nowString(),
+            ], ['attendance_id' => $attendanceId]);
+
+            $counters = self::updateSessionCounters($db, (int) $session['session_id']);
+
+            $student = $db->selectOne(
+                'SELECT student_id, student_number, first_name, last_name FROM students WHERE student_id = :id',
+                ['id' => (int) $record['student_id']]
+            ) ?? [];
+
+            $name  = trim(($student['first_name'] ?? '') . ' ' . ($student['last_name'] ?? ''));
+            $label = self::RELEASE_REASONS[$reason];
+
+            RealtimeService::broadcast(
+                self::channelsFor($session),
+                'attendance.time_out',
+                [
+                    'session_id'       => (string) $session['session_code'],
+                    'attendance_id'    => $attendanceId,
+                    'student'          => ['id' => (int) $record['student_id'], 'name' => $name,
+                                           'number' => (string) ($student['student_number'] ?? '')],
+                    'time_out'         => $timeOut->format('H:i:s'),
+                    'duration_minutes' => $duration,
+                    'departure_status' => $departureStatus,
+                    'final_status'     => $finalStatus,
+                    'released'         => true,
+                    'release_reason'   => $label,
+                    'counters'         => $counters,
+                ]
+            );
+
+            AuditService::log(
+                AuditService::ATTENDANCE_RECORDED,
+                'attendance',
+                'attendance_record',
+                $attendanceId,
+                ['departure_status' => (string) $record['departure_status'], 'time_out' => null],
+                [
+                    'departure_status'     => $departureStatus,
+                    'time_out'             => $timeOut->format('Y-m-d H:i:s'),
+                    'early_release_reason' => $reason,
+                    'early_release_note'   => $note,
+                ],
+                sprintf(
+                    '%s was released from %s at %s after %d minutes — %s%s',
+                    $name === '' ? 'A student' : $name,
+                    (string) $session['session_code'],
+                    $timeOut->format('H:i'),
+                    $duration,
+                    strtolower($label),
+                    $note === null ? '.' : ': ' . $note
+                ),
+                'success',
+                $byUserId
+            );
+
+            return [
+                'attendance_id'    => $attendanceId,
+                'student_id'       => (int) $record['student_id'],
+                'student'          => $name,
+                'time_out'         => $timeOut->format('g:i A'),
+                'duration_minutes' => $duration,
+                'departure_status' => $departureStatus,
+                'final_status'     => $finalStatus,
+                'reason'           => $reason,
+                'reason_label'     => $label,
+                'note'             => $note,
+                'counters'         => $counters,
+            ];
+        });
     }
 
     /**

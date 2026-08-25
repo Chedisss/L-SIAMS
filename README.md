@@ -261,6 +261,14 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**A teacher can send a student out of the room, and must say why.** The card
+reader refuses a tap-out before the minimum dwell, which is right against a
+student tapping in and walking straight out and wrong for a child who has been
+unwell for ten minutes. The teacher records the departure instead, from a fixed
+list of reasons so the register can be counted, and their account is stored
+against it. It is a real departure at the real time, marked Left Early — never
+flagged as an automatic time-out, because a person witnessed this one.
+
 **Presence carries to the next subject; absence never does.** A section stays in
 one room across periods, so a student who was Present or Late when the bell went
 starts the next subject Present, without tapping again. Anyone who was Absent,
@@ -280,11 +288,11 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Fourteen groups covering session opening, the concurrent-tap race, cross-device
+Fifteen groups covering session opening, the concurrent-tap race, cross-device
 taps, section mismatch, time-in/time-out sequencing, status resolution, session
 close, idempotency, offline replay, throughput, the realtime transport, which
-lesson a terminal will actually open a session for, and the handover that
-carries a register into the next subject.
+lesson a terminal will actually open a session for, the handover that carries a
+register into the next subject, and the teacher-led early release.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a
