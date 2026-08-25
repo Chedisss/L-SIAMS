@@ -219,7 +219,12 @@ final class FingerprintService
         // The schedule check is the real authorisation step: a verified
         // fingerprint only opens a session the teacher is actually assigned to,
         // in the classroom this terminal is bound to, right now.
-        $candidates = ScheduleService::activeForDevice($deviceRowId);
+        //
+        // openableForDevice(), not activeForDevice(): a lesson that has ended
+        // is still "active" while its tap-out window runs, and treating that as
+        // permission to OPEN let the previous teacher take the room from the
+        // one whose lesson was actually in progress.
+        $candidates = ScheduleService::openableForDevice($deviceRowId);
         $schedule   = null;
 
         foreach ($candidates as $candidate) {

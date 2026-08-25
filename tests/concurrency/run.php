@@ -1105,10 +1105,102 @@ try {
     }
 
     /* =====================================================================
-     * 12. Sustained soak (opt-in, 30 minutes)
+     * 12. Only a lesson that is actually openable may be opened
+     *
+     * A period is "active" from its tap-in window opening to its tap-out
+     * window closing, which for back-to-back lessons in one room means two of
+     * them are active together for the twenty-odd minutes where one is ending
+     * and the next is starting. One open session per classroom is enforced, so
+     * treating "active" as permission to OPEN let whichever teacher scanned
+     * first take the room — including the one whose lesson had already ended,
+     * locking out the teacher whose lesson was actually running.
+     * ===================================================================== */
+    if ($want('openable')) {
+        $runner->group('12. Only the teacher whose lesson is running may open it');
+
+        $fixture->build(2, 5, 2);
+
+        $device      = $fixture->device(0);
+        $classroomId = (int) $device['classroom_id'];
+        $deviceRowId = (int) $device['id'];
+        $mine        = (int) $fixture->schedule(0)['schedule_id'];
+        $previous    = (int) $fixture->schedule(1)['schedule_id'];
+
+        // The fixture's windows are deliberately wide so the other groups never
+        // trip over a clock boundary. This group is about the boundaries, so it
+        // uses the school's real defaults: in from ten minutes before the bell,
+        // out until fifteen minutes after.
+        $move = static function (int $scheduleId, string $startOffset, string $endOffset) use ($db, $classroomId): void {
+            $db->execute(
+                'UPDATE schedules
+                    SET classroom_id = :c, day_of_week = :d, start_time = :s, end_time = :e,
+                        time_in_window_open  = 10, time_in_window_close  = 30,
+                        time_out_window_open = 10, time_out_window_close = 15
+                  WHERE schedule_id = :id',
+                [
+                    'c'  => $classroomId,
+                    'd'  => Clock::now()->format('l'),
+                    's'  => Clock::now()->modify($startOffset)->format('H:i:s'),
+                    'e'  => Clock::now()->modify($endOffset)->format('H:i:s'),
+                    'id' => $scheduleId,
+                ]
+            );
+        };
+
+        $openableIds = static function (int $deviceRowId): array {
+            return array_map(
+                static fn (array $row): int => (int) $row['schedule_id'],
+                \App\Services\ScheduleService::openableForDevice($deviceRowId)
+            );
+        };
+
+        // The previous period ended ten minutes ago; mine is in progress. Both
+        // are inside their windows, so activeForDevice() sees two.
+        $move($previous, '-70 minutes', '-10 minutes');
+        $move($mine,     '-10 minutes', '+50 minutes');
+
+        $runner->assertEquals('both lessons are still "active" for the terminal', 2,
+            count(\App\Services\ScheduleService::activeForDevice($deviceRowId)));
+
+        $runner->assertEquals('only the lesson in progress may be opened', [$mine],
+            $openableIds($deviceRowId));
+
+        // Arriving early, with the room free, must still work.
+        $move($previous, '-80 minutes', '-20 minutes');
+        $move($mine,     '+10 minutes', '+70 minutes');
+
+        $runner->assertEquals('a teacher arriving inside their tap-in window may open', [$mine],
+            $openableIds($deviceRowId));
+
+        // Arriving early while the room is still being taught in must not.
+        $move($previous, '-10 minutes', '+50 minutes');
+
+        $runner->assertEquals('the next teacher cannot take a room from a lesson in progress',
+            [$previous], $openableIds($deviceRowId));
+
+        // Before the tap-in window opens at all, nothing is offered.
+        $move($previous, '-80 minutes', '-20 minutes');
+        $move($mine,     '+45 minutes', '+105 minutes');
+
+        $runner->assertEquals('nothing is openable before the tap-in window opens', [],
+            $openableIds($deviceRowId));
+
+        // And a finished lesson is never openable, however wide its tap-out
+        // window still is.
+        $move($mine, '-70 minutes', '-10 minutes');
+
+        $runner->assert('a finished lesson is still active for tap-out',
+            \App\Services\ScheduleService::activeForDevice($deviceRowId) !== []);
+
+        $runner->assertEquals('but a finished lesson can never be opened', [],
+            $openableIds($deviceRowId));
+    }
+
+    /* =====================================================================
+     * 13. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('12. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('13. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);
