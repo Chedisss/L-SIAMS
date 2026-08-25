@@ -828,6 +828,18 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
     100% { background: transparent; }
 }
 .hidden { display: none !important; }
+
+/*
+ * The `hidden` ATTRIBUTE has to win too.
+ *
+ * A browser hides [hidden] from its own default stylesheet, and any author
+ * rule beats a default one — so `<div class="flex" hidden>` is a visible flex
+ * container, not a hidden one. That is not a hypothetical: the report export
+ * buttons were written exactly that way and were on screen from page load,
+ * wired to a handler that returned silently until a preview had been run. The
+ * buttons looked live, did nothing, and said nothing about why.
+ */
+[hidden] { display: none !important; }
 .is-muted { opacity: .55; }
 
 /* -------------------------------------------------------- notifications --- */

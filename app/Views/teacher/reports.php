@@ -92,7 +92,7 @@ $fieldsByType = [
                 <h2 class="card__title" id="preview-title">Preview</h2>
                 <div class="text-xs text-muted" id="preview-subtitle">Choose a report type and press Preview.</div>
             </div>
-            <div class="flex gap-1" id="export-buttons" hidden>
+            <div class="flex gap-1" id="export-buttons">
                 <button class="btn btn-secondary btn-sm" data-export="pdf"><i class="fa-solid fa-file-pdf"></i> PDF</button>
                 <button class="btn btn-secondary btn-sm" data-export="xlsx"><i class="fa-solid fa-file-excel"></i> Excel</button>
                 <button class="btn btn-secondary btn-sm" data-export="csv"><i class="fa-solid fa-file-csv"></i> CSV</button>
@@ -141,8 +141,6 @@ $__view->start('scripts');
     type.addEventListener('change', syncFields);
     syncFields();
 
-    let lastFilters = null;
-
     form.addEventListener('submit', async function (event) {
         event.preventDefault();
 
@@ -153,15 +151,14 @@ $__view->start('scripts');
         body.innerHTML = '<div style="padding:1rem"><div class="skeleton skeleton--row"></div>'
             + '<div class="skeleton skeleton--row"></div><div class="skeleton skeleton--row"></div></div>';
 
-        lastFilters = LS.util.formData(form);
+        const filters = LS.util.formData(form);
 
         try {
-            const response = await LS.http.post('/teacher/reports/preview', lastFilters);
+            const response = await LS.http.post('/teacher/reports/preview', filters);
             render(response.data);
         } catch (error) {
             body.innerHTML = '<div class="alert alert-danger" style="margin:1rem">'
                 + LS.util.escape(error.message || 'Could not build this report.') + '</div>';
-            document.getElementById('export-buttons').hidden = true;
         } finally {
             LS.util.setBusy(button, false);
         }
@@ -170,7 +167,6 @@ $__view->start('scripts');
     function render(data) {
         document.getElementById('preview-title').textContent    = data.title;
         document.getElementById('preview-subtitle').textContent = data.subtitle;
-        document.getElementById('export-buttons').hidden = false;
 
         const stats   = document.getElementById('preview-stats');
         const entries = Object.entries(data.statistics || {});
@@ -216,18 +212,24 @@ $__view->start('scripts');
 
     document.getElementById('export-buttons').addEventListener('click', function (event) {
         const button = event.target.closest('[data-export]');
-        if (!button || !lastFilters) return;
+        if (!button) return;
+
+        // Read the form now rather than reusing whatever the last preview was
+        // built from. Exporting never needed a preview — the server builds the
+        // report from these same filters either way — and requiring one meant
+        // the buttons did nothing at all until somebody happened to press
+        // Preview first. Reading live also means that changing a filter after
+        // a preview exports what is on screen, not what used to be.
+        const fields = Object.assign(LS.util.formData(form), {
+            format: button.dataset.export,
+            _csrf:  LS.config.csrfToken,
+        });
 
         // A real form POST so the browser handles the download itself.
         const post = document.createElement('form');
         post.method = 'post';
         post.action = '/teacher/reports/generate';
         post.style.display = 'none';
-
-        const fields = Object.assign({}, lastFilters, {
-            format: button.dataset.export,
-            _csrf:  LS.config.csrfToken,
-        });
 
         Object.entries(fields).forEach(([key, value]) => {
             if (value === '' || value === null || value === undefined) return;

@@ -37,7 +37,18 @@ final class BackupService
         }
 
         $name     = sprintf('lsiams-%s-%s', $triggerType, Clock::now()->format('Ymd-His'));
-        $filename = $name . '.sql.gz.enc';
+        // Not '.enc'. Windows hands that extension to whichever program
+        // claimed it — commonly Wireshark — so a school's backup arrived
+        // looking like a packet capture, with an icon that invited somebody to
+        // open it in the wrong program entirely. '.lsiams' is claimed by
+        // nothing, so the file shows as what it is: a file only this system
+        // knows how to read.
+        //
+        // The archive itself is unchanged: gzipped SQL, AES-256-GCM under
+        // APP_KEY. Only the name it is written under is different, and
+        // backup:decrypt still accepts both so every existing '.sql.gz.enc'
+        // archive keeps working.
+        $filename = $name . '.sql.gz.lsiams';
         $path     = $directory . '/' . $filename;
 
         $backupId = (int) Database::instance()->insert('backups', [

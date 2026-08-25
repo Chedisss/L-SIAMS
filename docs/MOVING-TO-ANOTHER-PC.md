@@ -73,7 +73,7 @@ sections, schedules, cards and fingerprints to come across.
 
 7. **Restore the database.**
    ```
-   php bin\console backup:decrypt storage\backups\<file>.sql.gz.enc
+   php bin\console backup:decrypt storage\backups\<file>.sql.gz.lsiams
    php bin\console db:import <the .sql it produced> --fresh
    php bin\console migrate
    ```

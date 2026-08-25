@@ -148,7 +148,7 @@ function commandHelp(): void
     out('    session:why [device]    Explain why a terminal will not open a session now');
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
     out('    db:import <file.sql>    Import a .sql file or phpMyAdmin export (--fresh drops first)');
-    out('    backup:decrypt <file>   Turn a .sql.gz.enc backup back into readable SQL');
+    out('    backup:decrypt <file>   Turn a backup archive back into readable SQL');
     out('    time:shift ["+2 hours"]  Move the clock to test a schedule (--clear to undo)');
     out('');
 }
@@ -1400,7 +1400,7 @@ function commandCreateAdmin(): void
  * shipped a known login would be a backdoor in every installation that used it.
  */
 /**
- * Turn a .sql.gz.enc backup archive back into readable SQL.
+ * Turn a .sql.gz.lsiams (or older .sql.gz.enc) backup archive into readable SQL.
  *
  * The admin Backups page can only restore archives it has a database row for,
  * and that row lives in the database — so it is missing precisely when the
@@ -1416,7 +1416,7 @@ function commandBackupDecrypt(array $arguments): void
     $source = $paths[0] ?? '';
 
     if ($source === '') {
-        fail("Usage: php bin/console backup:decrypt <file.sql.gz.enc> [output.sql]\n"
+        fail("Usage: php bin/console backup:decrypt <file.sql.gz.lsiams> [output.sql]\n"
            . '  Writes the SQL next to the archive when no output path is given.');
     }
 
@@ -1430,7 +1430,9 @@ function commandBackupDecrypt(array $arguments): void
         $source = $candidate;
     }
 
-    $target = $paths[1] ?? preg_replace('/\.sql\.gz\.enc$/', '.sql', $source);
+    // Both suffixes: archives written before the extension changed are
+    // still '.sql.gz.enc' and must keep decrypting exactly as they did.
+    $target = $paths[1] ?? preg_replace('/\.sql\.gz\.(enc|lsiams)$/', '.sql', $source);
 
     if (!is_string($target) || $target === '' || $target === $source) {
         $target = $source . '.sql';
