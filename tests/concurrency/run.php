@@ -1197,10 +1197,164 @@ try {
     }
 
     /* =====================================================================
-     * 13. Sustained soak (opt-in, 30 minutes)
+     * 13. Attendance carries to the next subject
+     *
+     * The section stays in the room across periods, so presence does too:
+     * whoever was Present or Late when the bell went starts the next subject
+     * Present without tapping. Whoever was NOT in the room — absent, left
+     * early — carries nothing and gets a clean chance to tap in, which is the
+     * half of the rule that stops one missed period following a student
+     * through the whole day.
+     * ===================================================================== */
+    if ($want('carry')) {
+        $runner->group('13. Attendance carries to the next subject');
+
+        // Two devices so the fixture builds two schedules; both are then moved
+        // into the first device's room, because a handover is two periods in
+        // ONE room with one terminal.
+        $fixture->build(1, 6, 2);
+
+        $device      = $fixture->device(0);
+        $classroomId = (int) $device['classroom_id'];
+        $sectionId   = $fixture->ids['sections'][0];
+        $cards       = $fixture->ids['cards'][$sectionId];
+
+        // Back to back for the same section: 09:00–09:55 then 10:00–10:55,
+        // against the suite's frozen 10:00 clock.
+        $period = static function (Database $db, array $schedule, string $start, string $end,
+                                   int $sectionId, int $classroomId): void {
+            $db->update('schedules', [
+                'section_id'            => $sectionId,
+                'classroom_id'          => $classroomId,
+                'start_time'            => $start,
+                'end_time'              => $end,
+                'time_in_window_open'   => 10,
+                'time_in_window_close'  => 30,
+                'time_out_window_open'  => 10,
+                'time_out_window_close' => 15,
+                'minimum_dwell_minutes' => 1,
+            ], ['schedule_id' => (int) $schedule['schedule_id']]);
+        };
+
+        $period($db, $fixture->schedule(0), '09:00:00', '09:55:00', $sectionId, $classroomId);
+        $period($db, $fixture->schedule(1), '10:00:00', '10:55:00', $sectionId, $classroomId);
+
+        // --- first period ---------------------------------------------------
+        Clock::freeze(Clock::now()->setTime(8, 55, 0));
+        $one = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        Clock::freeze(Clock::now()->setTime(9, 2, 0));
+        foreach (array_slice($cards, 0, 4) as $card) {
+            AttendanceService::tap($device, $card, null, AttendanceService::INTENT_TIME_IN);
+        }
+
+        // One of the four leaves before the bell; two more never turn up.
+        Clock::freeze(Clock::now()->setTime(9, 30, 0));
+        AttendanceService::tap($device, $cards[3], null, AttendanceService::INTENT_TIME_OUT);
+
+        // --- second period, opened while the first still holds the room -----
+        Clock::freeze(Clock::now()->setTime(9, 58, 0));
+        $two = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(1), 0);
+
+        $firstStatus = (string) $db->scalar(
+            'SELECT status FROM attendance_sessions WHERE session_id = :id',
+            ['id' => (int) $one['session_id']]
+        );
+
+        $runner->assertEquals('the previous period was handed over, not refused', 'closed', $firstStatus);
+
+        $stampedLate = (int) $db->scalar(
+            "SELECT COUNT(*) FROM attendance_records
+              WHERE session_id = :id AND time_out > :end",
+            ['id' => (int) $one['session_id'], 'end' => Clock::now()->setTime(9, 55, 0)->format('Y-m-d H:i:s')]
+        );
+
+        $runner->assertEquals('nobody was credited past the bell of the period that ended', 0, $stampedLate);
+
+        $runner->assertEquals('the three students still in the room carried forward', 3, $two['carried_in']);
+
+        $carriedRows = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records
+              WHERE session_id = :id AND carried_from_session_id = :from',
+            ['id' => (int) $two['session_id'], 'from' => (int) $one['session_id']]
+        );
+
+        $runner->assertEquals('each carried row names the period it came from', 3, $carriedRows);
+
+        $fabricated = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records
+              WHERE session_id = :id AND carried_from_session_id IS NOT NULL
+                AND (time_in_device_id IS NOT NULL OR time_in_ip IS NOT NULL OR time_in_mac IS NOT NULL)',
+            ['id' => (int) $two['session_id']]
+        );
+
+        $runner->assertEquals('no carried row claims a tap at a terminal', 0, $fabricated);
+
+        $countedIn = (int) $db->scalar(
+            'SELECT carried_in_count FROM attendance_sessions WHERE session_id = :id',
+            ['id' => (int) $two['session_id']]
+        );
+
+        $runner->assertEquals('the session records how much of its register was carried', 3, $countedIn);
+
+        // The student who left early must have no record at all in the new
+        // period — that is what lets them tap in for it.
+        $leftEarlyStudent = $fixture->ids['students'][$sectionId][3];
+
+        $rowsForLeaver = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records WHERE session_id = :id AND student_id = :student',
+            ['id' => (int) $two['session_id'], 'student' => $leftEarlyStudent]
+        );
+
+        $runner->assertEquals('the student who left early carried nothing', 0, $rowsForLeaver);
+
+        Clock::freeze(Clock::now()->setTime(10, 3, 0));
+        $rejoined = AttendanceService::tap($device, $cards[3], null, AttendanceService::INTENT_TIME_IN);
+
+        $runner->assertEquals('and may tap in for the new subject', 'Present', $rejoined['status']);
+
+        // Nor may anyone be carried twice: reopening must not duplicate a row.
+        $duplicates = (int) $db->scalar(
+            'SELECT COUNT(*) FROM (
+                SELECT student_id FROM attendance_records WHERE session_id = :id
+                 GROUP BY student_id HAVING COUNT(*) > 1) dupes',
+            ['id' => (int) $two['session_id']]
+        );
+
+        $runner->assertEquals('no student appears twice in the new register', 0, $duplicates);
+
+        // A gap too long to be a handover carries nothing: the students went
+        // somewhere in between, and what they did there is not evidence.
+        $fixture->build(1, 6, 2);
+
+        $device      = $fixture->device(0);
+        $classroomId = (int) $device['classroom_id'];
+        $sectionId   = $fixture->ids['sections'][0];
+        $cards       = $fixture->ids['cards'][$sectionId];
+
+        $period($db, $fixture->schedule(0), '07:00:00', '07:55:00', $sectionId, $classroomId);
+        $period($db, $fixture->schedule(1), '10:00:00', '10:55:00', $sectionId, $classroomId);
+
+        Clock::freeze(Clock::now()->setTime(7, 0, 0));
+        AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        Clock::freeze(Clock::now()->setTime(7, 5, 0));
+        AttendanceService::tap($device, $cards[0], null, AttendanceService::INTENT_TIME_IN);
+
+        Clock::freeze(Clock::now()->setTime(9, 58, 0));
+        $later = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(1), 0);
+
+        $runner->assertEquals('a three-hour gap is not a handover and carries nothing',
+            0, $later['carried_in']);
+
+        Clock::freeze(Clock::now()->setTime(10, 0, 0));
+    }
+
+    /* =====================================================================
+     * 14. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('13. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('14. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);

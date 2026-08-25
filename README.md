@@ -261,6 +261,15 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**Presence carries to the next subject; absence never does.** A section stays in
+one room across periods, so a student who was Present or Late when the bell went
+starts the next subject Present, without tapping again. Anyone who was Absent,
+Left Early, Excused or Incomplete carries nothing and taps in normally — missing
+first period must not follow a student through the whole day. A carried record
+sets `carried_from_session_id` and leaves the time-in terminal, IP and MAC NULL,
+because no card was presented to any reader and a report must be able to tell
+the difference.
+
 ---
 
 ## Testing
@@ -271,10 +280,11 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Thirteen groups covering session opening, the concurrent-tap race, cross-device
+Fourteen groups covering session opening, the concurrent-tap race, cross-device
 taps, section mismatch, time-in/time-out sequencing, status resolution, session
-close, idempotency, offline replay, throughput, the realtime transport and
-which lesson a terminal will actually open a session for.
+close, idempotency, offline replay, throughput, the realtime transport, which
+lesson a terminal will actually open a session for, and the handover that
+carries a register into the next subject.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a

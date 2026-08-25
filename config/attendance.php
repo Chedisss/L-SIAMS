@@ -20,6 +20,18 @@ return [
     'auto_close_sessions'   => true,   // background worker closes expired sessions
     'generate_absent_on_close' => true,
 
+    // A section stays in one room across periods, so the register does too. A
+    // student who was Present or Late when the last period ended starts the
+    // next one Present without tapping again; anyone who was Absent, Left
+    // Early, Excused or Incomplete carries nothing and may still tap in.
+    'carry_over' => [
+        'enabled' => true,
+
+        // The longest break that still counts as a handover. Beyond it the
+        // students went somewhere in between, so the new register starts empty.
+        'max_gap_minutes' => 30,
+    ],
+
     'section_mismatch_alert_threshold' => 3, // taps/day/student before admin notification
 
     'fingerprint' => [

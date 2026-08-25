@@ -32,6 +32,8 @@ final class SettingsService
         'attendance.minimum_dwell_minutes'  => 'attendance.windows.minimum_dwell_minutes',
         'attendance.auto_timeout_on_close'  => 'attendance.auto_timeout_on_close',
         'attendance.generate_absent_on_close' => 'attendance.generate_absent_on_close',
+        'attendance.carry_over_enabled'     => 'attendance.carry_over.enabled',
+        'attendance.carry_over_max_gap_minutes' => 'attendance.carry_over.max_gap_minutes',
         'attendance.section_mismatch_alert_threshold' => 'attendance.section_mismatch_alert_threshold',
         'device.heartbeat_interval_sec'     => 'attendance.device.heartbeat_interval_sec',
         'device.offline_after_sec'          => 'attendance.device.offline_after_sec',
