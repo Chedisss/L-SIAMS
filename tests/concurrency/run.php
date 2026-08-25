@@ -1746,10 +1746,110 @@ try {
     }
 
     /* =====================================================================
-     * 17. Sustained soak (opt-in, 30 minutes)
+     * 17. A report filter that is offered is a filter that is applied
+     *
+     * The reports form advertises a set of filters per report type. Four of
+     * them were being discarded by the builder — choosing one subject still
+     * returned every subject, and "chronic absence in Grade 7" returned the
+     * whole school and looked like the whole school was in trouble. Nothing
+     * failed; the number was simply wrong, which is the worst way for a report
+     * to be wrong.
+     *
+     * This asserts the property rather than the numbers: narrowing by a filter
+     * the form offers must change the result. A builder that silently drops one
+     * again fails here.
+     * ===================================================================== */
+    if ($want('report-filters')) {
+        $runner->group('17. A report filter that is offered is a filter that is applied');
+
+        $fixture->build(2, 8, 2);
+
+        $sectionId = $fixture->ids['sections'][0];
+        $device    = $fixture->device(0);
+        $session   = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        foreach (array_slice($fixture->ids['cards'][$sectionId], 0, 5) as $card) {
+            AttendanceService::tap($device, $card, null, AttendanceService::INTENT_TIME_IN);
+        }
+
+        AttendanceSessionService::close((int) $session['session_id'], 'teacher', null);
+
+        $schedule = $fixture->schedule(0);
+        $today    = Clock::today();
+
+        $base = [
+            'date'      => $today,
+            'date_from' => Clock::now()->modify('-7 days')->format('Y-m-d'),
+            'date_to'   => $today,
+            // A threshold nothing can pass, so chronic_absence has rows to
+            // narrow. At the default it is empty and proves nothing.
+            'threshold' => 100,
+        ];
+
+        $count = static fn (string $type, array $extra = []): int => count(
+            \App\Services\ReportService::build($type, $base + $extra)['rows']
+        );
+
+        // Every pair below is (report type, the filter its form offers, a value
+        // that must exclude everything). Narrowing to the section that has no
+        // attendance, or to a grade level nothing was recorded under, has to
+        // empty the report — filtering to the section that holds all of it
+        // proves nothing, because the unfiltered answer is already that.
+        $emptySection = $fixture->ids['sections'][1];
+        $otherGrade   = $fixture->ids['grade_level_id'] + 1;
+
+        $narrowing = [
+            ['subject',         'grade_level_id', $otherGrade],
+            ['section_summary', 'section_id',     $emptySection],
+            ['chronic_absence', 'section_id',     $emptySection],
+            ['chronic_absence', 'grade_level_id', $otherGrade],
+        ];
+
+        foreach ($narrowing as [$type, $filter, $value]) {
+            $wide   = $count($type);
+            $narrow = $count($type, [$filter => $value]);
+
+            $runner->assert(
+                sprintf('%s honours %s', $type, $filter),
+                $wide !== $narrow,
+                sprintf('%d rows either way — the filter was discarded', $wide)
+            );
+        }
+
+        // Naming a subject changes the question: the league table across every
+        // subject becomes that one subject, day by day.
+        $byDate = \App\Services\ReportService::build('subject', $base + [
+            'subject_id' => (int) $schedule['subject_id'],
+        ]);
+
+        $runner->assert('naming a subject reports it day by day',
+            str_contains($byDate['title'], 'Attendance by Date'),
+            'title was ' . $byDate['title']);
+
+        $runner->assertEquals('with a row per class meeting, dated',
+            'Date', $byDate['headers'][0]);
+
+        $runner->assert('and every row belongs to that subject',
+            $byDate['rows'] !== [], 'the report came back empty');
+
+        // The exports have to survive the new shape too — a report nobody can
+        // export is half a report.
+        foreach (['csv', 'xlsx', 'pdf'] as $format) {
+            $rendered = \App\Services\ReportService::export($byDate, $format);
+
+            $runner->assert(
+                sprintf('it exports as %s', $format),
+                strlen($rendered['content']) > 0 && $rendered['filename'] !== '',
+                'empty export'
+            );
+        }
+    }
+
+    /* =====================================================================
+     * 18. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('17. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('18. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);

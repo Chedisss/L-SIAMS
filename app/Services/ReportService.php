@@ -250,7 +250,20 @@ final class ReportService
     /** @param array<string,mixed> $filters @return array<string,mixed> */
     private static function subjectReport(array $filters, string $from, string $to): array
     {
-        $rows = AnalyticsService::attendanceBySubject($from, $to);
+        $subjectId    = (int) ($filters['subject_id'] ?? 0) ?: null;
+        $gradeLevelId = (int) ($filters['grade_level_id'] ?? 0) ?: null;
+        $sectionId    = (int) ($filters['section_id'] ?? 0) ?: null;
+
+        // Naming one subject changes the question being asked. Across all
+        // subjects the useful answer is a league table — one row each, worst
+        // first. For a single subject that table is one row and says almost
+        // nothing, so the report becomes what somebody choosing a subject
+        // actually wanted: that subject, day by day.
+        if ($subjectId !== null) {
+            return self::subjectByDateReport($filters, $from, $to, $subjectId, $gradeLevelId, $sectionId);
+        }
+
+        $rows = AnalyticsService::attendanceBySubject($from, $to, null, $gradeLevelId);
 
         return [
             'title'    => 'Subject Attendance Report',
@@ -266,6 +279,71 @@ final class ReportService
             ], $rows),
             'statistics' => ['Subjects' => count($rows)],
             'meta'       => self::describeFilters($filters, $from, $to),
+        ];
+    }
+
+    /**
+     * One subject, day by day — the report that is per date AND per subject.
+     *
+     * Every other attendance report answers one or the other: the daily report
+     * is one date across all subjects, the subject report is one range summed
+     * per subject. Neither answers "how did Mathematics 10 do, day by day, this
+     * month", which is the question a teacher or head of department asks first.
+     *
+     * @param  array<string,mixed> $filters
+     * @return array<string,mixed>
+     */
+    private static function subjectByDateReport(
+        array $filters,
+        string $from,
+        string $to,
+        int $subjectId,
+        ?int $gradeLevelId,
+        ?int $sectionId
+    ): array {
+        $subject = Database::instance()->selectOne(
+            'SELECT subject_code, subject_name FROM subjects WHERE subject_id = :id',
+            ['id' => $subjectId]
+        );
+
+        if ($subject === null) {
+            throw new ValidationException(['subject_id' => ['Subject not found.']]);
+        }
+
+        $rows = AnalyticsService::subjectByDate($from, $to, $subjectId, $gradeLevelId, $sectionId);
+
+        $records = array_sum(array_map(static fn (array $r): int => (int) $r['total'], $rows));
+        $present = array_sum(array_map(
+            static fn (array $r): int => (int) $r['present'] + (int) $r['late'] + (int) $r['left_early'],
+            $rows
+        ));
+
+        return [
+            'title'    => sprintf('%s — Attendance by Date', $subject['subject_code']),
+            'subtitle' => sprintf(
+                '%s  ·  %s – %s',
+                $subject['subject_name'],
+                self::humanDate($from),
+                self::humanDate($to)
+            ),
+            'headers' => ['Date', 'Section', 'Teacher', 'Roster', 'Present', 'Late', 'Left Early', 'Absent', 'Attendance %'],
+            'rows'    => array_map(static fn (array $r): array => [
+                self::humanDate((string) $r['attendance_date']),
+                $r['section_code'],
+                $r['teacher_name'],
+                $r['total'],
+                $r['present'],
+                $r['late'],
+                $r['left_early'],
+                $r['absent'],
+                ($r['percentage'] ?? 0) . '%',
+            ], $rows),
+            'statistics' => [
+                'Class meetings' => count($rows),
+                'Records'        => $records,
+                'Attendance'     => ($records === 0 ? 0 : round($present / $records * 100, 1)) . '%',
+            ],
+            'meta' => self::describeFilters($filters, $from, $to),
         ];
     }
 
@@ -345,7 +423,10 @@ final class ReportService
         $rows = AnalyticsService::attendanceBySection(
             $from,
             $to,
-            empty($filters['grade_level_id']) ? null : (int) $filters['grade_level_id']
+            empty($filters['grade_level_id']) ? null : (int) $filters['grade_level_id'],
+            // The form offers a Section filter for this report and it was
+            // going nowhere: picking one section still returned every section.
+            empty($filters['section_id']) ? null : (int) $filters['section_id']
         );
 
         return [
@@ -516,7 +597,16 @@ final class ReportService
             ? (float) $filters['threshold']
             : (float) Config::get('attendance.chronic_absence_threshold_percent', 80.0);
 
-        $rows = AnalyticsService::chronicAbsence($from, $to, $threshold);
+        // Grade level and section were both advertised on the form and both
+        // discarded here, so "chronic absence in Grade 7" returned the whole
+        // school and looked like the whole school was in trouble.
+        $rows = AnalyticsService::chronicAbsence(
+            $from,
+            $to,
+            $threshold,
+            empty($filters['grade_level_id']) ? null : (int) $filters['grade_level_id'],
+            empty($filters['section_id']) ? null : (int) $filters['section_id']
+        );
 
         return [
             'title'    => 'Chronic Absence by Section',
