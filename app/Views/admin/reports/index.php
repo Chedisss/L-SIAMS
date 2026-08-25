@@ -20,13 +20,15 @@ $fieldsByType = [
     'monthly'             => ['range', 'section_id', 'grade_level_id', 'subject_id', 'teacher_id'],
     'student'             => ['range', 'student_id'],
     'teacher'             => ['range', 'teacher_id'],
-    'subject'             => ['range', 'subject_id', 'grade_level_id'],
+    // Naming a subject turns this into that subject day by day, so the date
+    // range and the section both narrow it further.
+    'subject'             => ['range', 'subject_id', 'grade_level_id', 'section_id'],
     'section_daily'       => ['date', 'section_id'],
-    'section_summary'     => ['range', 'section_id'],
+    'section_summary'     => ['range', 'grade_level_id', 'section_id'],
     'section_comparison'  => ['range', 'grade_level_id'],
     'adviser'             => ['range', 'teacher_id'],
     'section_roster_rfid' => ['section_id'],
-    'chronic_absence'     => ['range', 'grade_level_id', 'threshold'],
+    'chronic_absence'     => ['range', 'grade_level_id', 'section_id', 'threshold'],
     'device_uptime'       => ['days', 'classroom_id'],
     'audit'               => ['range'],
     'security'            => ['range'],
@@ -35,7 +37,7 @@ $fieldsByType = [
 
 <?php $__view->include('partials.page-header', [
     'title'       => 'Reports',
-    'subtitle'    => 'Preview a report on screen, then export it as PDF, Excel or CSV. Exports carry every row; the preview is capped so the browser stays responsive.',
+    'subtitle'    => 'Preview a report on screen, or export it straight to PDF, Excel or CSV. Exports carry every row; the preview is capped so the browser stays responsive.',
     'breadcrumbs' => [['Dashboard', $base], ['Reports', null]],
 ]); ?>
 

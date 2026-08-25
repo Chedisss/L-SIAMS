@@ -36,14 +36,23 @@ final class AnalyticsService
     }
 
     /** @return list<array<string,mixed>> */
-    public static function attendanceBySection(string $from, string $to, ?int $gradeLevelId = null): array
-    {
+    public static function attendanceBySection(
+        string $from,
+        string $to,
+        ?int $gradeLevelId = null,
+        ?int $sectionId = null
+    ): array {
         $where    = ['s.session_date BETWEEN :from AND :to'];
         $bindings = ['from' => $from, 'to' => $to];
 
         if ($gradeLevelId !== null) {
             $where[]           = 'ar.grade_level_id = :grade';
             $bindings['grade'] = $gradeLevelId;
+        }
+
+        if ($sectionId !== null) {
+            $where[]             = 'ar.section_id = :section';
+            $bindings['section'] = $sectionId;
         }
 
         return Database::instance()->select(
@@ -66,8 +75,25 @@ final class AnalyticsService
     }
 
     /** @return list<array<string,mixed>> */
-    public static function attendanceBySubject(string $from, string $to): array
-    {
+    public static function attendanceBySubject(
+        string $from,
+        string $to,
+        ?int $subjectId = null,
+        ?int $gradeLevelId = null
+    ): array {
+        $where    = ['s.session_date BETWEEN :from AND :to'];
+        $bindings = ['from' => $from, 'to' => $to];
+
+        if ($subjectId !== null) {
+            $where[]             = 'ar.subject_id = :subject';
+            $bindings['subject'] = $subjectId;
+        }
+
+        if ($gradeLevelId !== null) {
+            $where[]           = 'ar.grade_level_id = :grade';
+            $bindings['grade'] = $gradeLevelId;
+        }
+
         return Database::instance()->select(
             "SELECT sub.subject_code AS label, sub.subject_name, d.department_name,
                     COUNT(*) AS total,
@@ -78,10 +104,62 @@ final class AnalyticsService
                JOIN subjects sub    ON sub.subject_id = ar.subject_id
                JOIN departments d   ON d.department_id = sub.department_id
                JOIN attendance_sessions s ON s.session_id = ar.session_id
-              WHERE s.session_date BETWEEN :from AND :to
+              WHERE " . implode(' AND ', $where) . "
               GROUP BY sub.subject_id, sub.subject_code, sub.subject_name, d.department_name
               ORDER BY percentage ASC",
-            ['from' => $from, 'to' => $to]
+            $bindings
+        );
+    }
+
+    /**
+     * One subject, day by day.
+     *
+     * The summary above answers "how is Mathematics 10 doing this month" with a
+     * single number. This answers the question anybody asks next — which days
+     * were bad — and it is the only shape in which a report is genuinely per
+     * date AND per subject rather than one or the other.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function subjectByDate(
+        string $from,
+        string $to,
+        int $subjectId,
+        ?int $gradeLevelId = null,
+        ?int $sectionId = null
+    ): array {
+        $where    = ['s.session_date BETWEEN :from AND :to', 'ar.subject_id = :subject'];
+        $bindings = ['from' => $from, 'to' => $to, 'subject' => $subjectId];
+
+        if ($gradeLevelId !== null) {
+            $where[]           = 'ar.grade_level_id = :grade';
+            $bindings['grade'] = $gradeLevelId;
+        }
+
+        if ($sectionId !== null) {
+            $where[]             = 'ar.section_id = :section';
+            $bindings['section'] = $sectionId;
+        }
+
+        return Database::instance()->select(
+            "SELECT s.session_date AS attendance_date,
+                    sec.section_code,
+                    CONCAT(t.last_name, ', ', t.first_name) AS teacher_name,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN ar.final_status = 'Present' THEN 1 ELSE 0 END) AS present,
+                    SUM(CASE WHEN ar.final_status = 'Late' THEN 1 ELSE 0 END) AS late,
+                    SUM(CASE WHEN ar.final_status = 'Absent' THEN 1 ELSE 0 END) AS absent,
+                    SUM(CASE WHEN ar.final_status = 'Left Early' THEN 1 ELSE 0 END) AS left_early,
+                    ROUND(SUM(CASE WHEN ar.final_status IN ('Present','Late','Left Early','Incomplete') THEN 1 ELSE 0 END)
+                          / NULLIF(COUNT(*),0) * 100, 1) AS percentage
+               FROM attendance_records ar
+               JOIN attendance_sessions s ON s.session_id = ar.session_id
+               JOIN sections sec  ON sec.section_id = ar.section_id
+               JOIN teachers t    ON t.teacher_id = ar.teacher_id
+              WHERE " . implode(' AND ', $where) . "
+              GROUP BY s.session_date, sec.section_id, sec.section_code, t.last_name, t.first_name
+              ORDER BY s.session_date DESC, sec.section_code",
+            $bindings
         );
     }
 
@@ -324,9 +402,27 @@ final class AnalyticsService
      *
      * @return list<array<string,mixed>>
      */
-    public static function chronicAbsence(string $from, string $to, ?float $threshold = null): array
-    {
+    public static function chronicAbsence(
+        string $from,
+        string $to,
+        ?float $threshold = null,
+        ?int $gradeLevelId = null,
+        ?int $sectionId = null
+    ): array {
         $threshold = $threshold ?? (float) Config::get('attendance.chronic_absence_threshold_percent', 80.0);
+
+        $where    = ['s.session_date BETWEEN :from AND :to'];
+        $bindings = ['from' => $from, 'to' => $to, 'threshold' => $threshold];
+
+        if ($gradeLevelId !== null) {
+            $where[]           = 'ar.grade_level_id = :grade';
+            $bindings['grade'] = $gradeLevelId;
+        }
+
+        if ($sectionId !== null) {
+            $where[]             = 'ar.section_id = :section';
+            $bindings['section'] = $sectionId;
+        }
 
         return Database::instance()->select(
             "SELECT st.student_id, st.student_number,
@@ -343,12 +439,12 @@ final class AnalyticsService
                JOIN grade_levels gl ON gl.grade_level_id = ar.grade_level_id
                LEFT JOIN teachers adv ON adv.teacher_id = sec.adviser_id
                JOIN attendance_sessions s ON s.session_id = ar.session_id
-              WHERE s.session_date BETWEEN :from AND :to
+              WHERE " . implode(' AND ', $where) . "
               GROUP BY st.student_id, st.student_number, st.last_name, st.first_name,
                        sec.section_code, sec.section_name, gl.grade_level_code, adv.last_name, adv.first_name
              HAVING percentage < :threshold
               ORDER BY percentage ASC, sec.section_code",
-            ['from' => $from, 'to' => $to, 'threshold' => $threshold]
+            $bindings
         );
     }
 

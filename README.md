@@ -310,13 +310,14 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Seventeen groups covering session opening, the concurrent-tap race,
+Eighteen groups covering session opening, the concurrent-tap race,
 cross-device taps, section mismatch, time-in/time-out sequencing, status
 resolution, session close, idempotency, offline replay, throughput, the
 realtime transport, which lesson a terminal will actually open a session for,
 the handover that carries a register into the next subject, the teacher-led
-early release, what an unrecognised card leaves behind, and replacing a lost
-card without losing its history.
+early release, what an unrecognised card leaves behind, replacing a lost card
+without losing its history, and whether a report actually applies the filters
+its form offers.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a
