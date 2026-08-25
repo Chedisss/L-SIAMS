@@ -8,6 +8,7 @@
 /database/backups/*.sql
 /database/backups/*.gz
 /database/backups/*.enc
+/database/backups/*.lsiams
 /public/uploads/students/*
 /public/uploads/teachers/*
 !.gitkeep

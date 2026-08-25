@@ -264,12 +264,16 @@ console.bat db:import "C:\path\to\file.sql" --fresh
 `--fresh` drops every existing table first. There is no undo — take a backup
 with `console.bat backup` if the current data still matters.
 
-### Restoring a `.sql.gz.enc` backup
+### Restoring a `.sql.gz.lsiams` backup
 
 `console.bat backup` writes a compressed, encrypted archive to
-`database\backups`. Windows shows it with whatever program has claimed the
-`.enc` extension — often Wireshark. That is only an icon; the file is not a
-capture and nothing is wrong with it. Do not open it in that program.
+`database\backups`. Windows shows it as an unknown file type, which is
+correct — it is a file only this system knows how to read.
+
+Archives taken before this was fixed end in `.sql.gz.enc`, and Windows hands
+that extension to whatever program has claimed it, commonly Wireshark. That
+was only ever an icon: the file is not a capture and nothing is wrong with it.
+Do not open it in that program. Everything below works on both names.
 
 Normally you restore one from **Admin → Backup → Restore**. That needs the
 `backups` row describing the archive, which lives in the database — so it is
@@ -277,7 +281,7 @@ gone in exactly the situation where a backup matters. From a Command Prompt
 you can go straight at the file:
 
 ```
-console.bat backup:decrypt lsiams-manual-20260814-120753.sql.gz.enc
+console.bat backup:decrypt lsiams-manual-20260814-120753.sql.gz.lsiams
 console.bat db:import database\backups\lsiams-manual-20260814-120753.sql
 ```
 

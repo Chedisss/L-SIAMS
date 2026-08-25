@@ -182,7 +182,7 @@ $fieldsByType = [
                     <h2 class="card__title" id="preview-title">Preview</h2>
                     <div class="text-xs text-muted" id="preview-subtitle">Choose a report type and press Preview.</div>
                 </div>
-                <div class="flex gap-1" id="export-buttons" hidden>
+                <div class="flex gap-1" id="export-buttons">
                     <label class="checkbox" style="margin-right:.5rem">
                         <input type="checkbox" id="r-save" checked>
                         <span class="text-xs">Keep in history</span>
@@ -343,8 +343,6 @@ $__view->start('scripts');
     });
 
     /* ---- preview --------------------------------------------------------- */
-    let lastFilters = null;
-
     form.addEventListener('submit', async function (event) {
         event.preventDefault();
 
@@ -356,15 +354,14 @@ $__view->start('scripts');
             + '<div class="skeleton skeleton--row"></div><div class="skeleton skeleton--row"></div>'
             + '<div class="skeleton skeleton--row"></div></div>';
 
-        lastFilters = LS.util.formData(form);
+        const filters = LS.util.formData(form);
 
         try {
-            const response = await LS.http.post(BASE + '/reports/preview', lastFilters);
+            const response = await LS.http.post(BASE + '/reports/preview', filters);
             render(response.data);
         } catch (error) {
             body.innerHTML = '<div class="alert alert-danger" style="margin:1rem">'
                 + LS.util.escape(error.message || 'Could not build this report.') + '</div>';
-            document.getElementById('export-buttons').hidden = true;
         } finally {
             LS.util.setBusy(button, false);
         }
@@ -373,7 +370,6 @@ $__view->start('scripts');
     function render(data) {
         document.getElementById('preview-title').textContent    = data.title;
         document.getElementById('preview-subtitle').textContent = data.subtitle;
-        document.getElementById('export-buttons').hidden = false;
 
         /* statistics strip */
         const stats = document.getElementById('preview-stats');
@@ -422,7 +418,19 @@ $__view->start('scripts');
     /* ---- export ---------------------------------------------------------- */
     document.getElementById('export-buttons').addEventListener('click', function (event) {
         const button = event.target.closest('[data-export]');
-        if (!button || !lastFilters) return;
+        if (!button) return;
+
+        // Read the form now rather than reusing whatever the last preview was
+        // built from. Exporting never needed a preview — the server builds the
+        // report from these same filters either way — and requiring one meant
+        // the buttons did nothing at all until somebody happened to press
+        // Preview first. Reading live also means that changing a filter after
+        // a preview exports what is on screen, not what used to be.
+        const fields = Object.assign(LS.util.formData(form), {
+            format: button.dataset.export,
+            save:   document.getElementById('r-save').checked ? '1' : '0',
+            _csrf:  LS.config.csrfToken,
+        });
 
         // A normal form POST rather than fetch, so the browser's own download
         // handling takes over and large exports stream straight to disk.
@@ -430,12 +438,6 @@ $__view->start('scripts');
         post.method = 'post';
         post.action = BASE + '/reports/generate';
         post.style.display = 'none';
-
-        const fields = Object.assign({}, lastFilters, {
-            format: button.dataset.export,
-            save:   document.getElementById('r-save').checked ? '1' : '0',
-            _csrf:  LS.config.csrfToken,
-        });
 
         Object.entries(fields).forEach(([key, value]) => {
             if (value === '' || value === null || value === undefined) return;

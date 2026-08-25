@@ -23,7 +23,13 @@
             <p class="text-muted"><?= e($message) ?></p>
 
             <div class="flex gap-1 justify-between mt-3" style="justify-content:center">
-                <button type="button" class="btn btn-secondary" data-action="history-back">
+                <?php /* This page deliberately loads no application script — it
+                         has to render when the application itself is what broke,
+                         so it links only the two stylesheets. That is why the
+                         button did nothing: data-action="history-back" is bound
+                         in app.js, which is never here to bind it. The handler
+                         is therefore inline, and small enough to read. */ ?>
+                <button type="button" class="btn btn-secondary" id="go-back" hidden>
                     <i class="fa-solid fa-arrow-left"></i> Go back
                 </button>
                 <a class="btn btn-primary" href="/">
@@ -33,5 +39,37 @@
         </div>
     </div>
 </div>
+
+<script nonce="<?= e(csp_nonce()) ?>">
+(function () {
+    var back = document.getElementById('go-back');
+
+    // Offered only when there is somewhere to go. Arriving here from a typed
+    // URL, a bookmark or a new tab leaves history.length at 1, and a "Go back"
+    // that cannot go back is worse than no button — Dashboard is then the only
+    // honest way out, and it is already there.
+    if (window.history.length <= 1) {
+        return;
+    }
+
+    back.hidden = false;
+
+    back.addEventListener('click', function () {
+        var here = window.location.href;
+
+        window.history.back();
+
+        // Going back does not always go anywhere: the previous entry can be
+        // this same error page, after a refresh or a second failure in a row.
+        // If we are still here a moment later, take the dashboard rather than
+        // leaving a button that once again did nothing.
+        window.setTimeout(function () {
+            if (window.location.href === here) {
+                window.location.href = '/';
+            }
+        }, 400);
+    });
+})();
+</script>
 </body>
 </html>
