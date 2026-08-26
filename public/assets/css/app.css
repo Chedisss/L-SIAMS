@@ -19,16 +19,73 @@
     --info:           #0EA5E9;
     --info-light:     #E0F2FE;
 
+    /* Text and borders that sit ON a --*-light surface.
+     *
+     * These exist because the backgrounds already flipped with the theme and
+     * the foregrounds did not: every badge, alert, stat icon and pill wrote a
+     * literal hex that was chosen for the pale light-mode background and then
+     * kept it over the dark one. Measured, in dark mode:
+     *
+     *   badge-success   #15803D on #14532D   1.82:1
+     *   badge-info      #0369A1 on #075985   1.27:1
+     *   alert-success   #14532D on #14532D   1.00:1   — the same colour
+     *   alert-danger    #7F1D1D on #7F1D1D   1.00:1   — the same colour
+     *
+     * AA wants 4.5:1. The alerts were not merely hard to read; the text and
+     * the background were the identical value, so the words were not there at
+     * all. As tokens, a foreground flips with the surface it sits on and the
+     * pairing can never drift apart again.
+     *
+     * The light-mode values are also a little darker than the literals they
+     * replace, which were scraping AA at 4.51:1. These sit near 6.5:1. */
+    --primary-fg:     #1D4ED8;
+    --success-fg:     #166534;
+    --warning-fg:     #92400E;
+    --danger-fg:      #991B1B;
+    --info-fg:        #075985;
+
+    --success-border: #86EFAC;
+    --warning-border: #FCD34D;
+    --danger-border:  #FCA5A5;
+    --info-border:    #7DD3FC;
+
+    /* Accent-coloured TEXT on an ordinary surface — .text-danger and friends.
+     * Distinct from --danger, which is a fill that carries white text: the
+     * same red that reads well as a button background is only 3.76:1 as words
+     * on white. Every value here clears AA on both themes' surfaces. */
+    /* Also the link colour. --primary is a fill that carries white text; as
+     * words on a surface it is 2.83:1 in dark mode, so every link in the
+     * teacher portal was barely there. */
+    --primary-text:   #1D4ED8;
+    --primary-hover:  #1E40AF;
+    --success-text:   #15803D;
+    --warning-text:   #B45309;
+    --danger-text:    #DC2626;
+    --info-text:      #0369A1;
+
+    /* A fill dark enough to carry white text at AA. --danger is not: white on
+     * it measures 3.76:1, which is what the notification count badge was. */
+    --danger-strong:  #DC2626;
+
     --bg:             #F8FAFC;
     --surface:        #FFFFFF;
     --surface-alt:    #F1F5F9;
     --sidebar:        #1E293B;
     --sidebar-hover:  #334155;
     --sidebar-text:   #CBD5E1;
+    /* Section headings and the role line under the logo. They were #64748B in
+     * both themes, which is 3.07:1 on the light-mode sidebar and 4.24:1 on the
+     * dark one — failing in both, since the sidebar is dark either way. */
+    --sidebar-muted:  #94A3B8;
 
     --text:           #0F172A;
-    --text-muted:     #64748B;
-    --text-subtle:    #94A3B8;
+    /* Both were a step too pale to read comfortably, and the audit agreed:
+     * muted measured 4.34:1 on --surface-alt (table headers sit there) and
+     * subtle 2.56:1 on white, against AA's 4.5:1. Darkened just enough to
+     * clear it on the palest surface each is used on, while keeping the
+     * three tiers visibly distinct from each other. */
+    --text-muted:     #5A6A7D;
+    --text-subtle:    #616F86;
     --border:         #E2E8F0;
     --border-strong:  #CBD5E1;
 
@@ -60,7 +117,9 @@
     --sidebar-hover: #1E293B;
     --text:          #F1F5F9;
     --text-muted:    #94A3B8;
-    --text-subtle:   #64748B;
+    /* 3.07:1 before — the palest readable text on the page was the one that
+     * could not be read. */
+    --text-subtle:   #8595AB;
     --border:        #334155;
     --border-strong: #475569;
     --primary-light: #1E3A8A;
@@ -68,6 +127,32 @@
     --warning-light: #78350F;
     --danger-light:  #7F1D1D;
     --info-light:    #075985;
+
+    /* Light-on-dark, since the surfaces above are now the dark ones. Every
+     * pairing here measures between 4.5:1 and 6.5:1 against its own surface. */
+    --primary-fg:     #93C5FD;
+    --success-fg:     #86EFAC;
+    --warning-fg:     #FCD34D;
+    --danger-fg:      #FCA5A5;
+    --info-fg:        #7DD3FC;
+
+    /* A border on a dark alert reads as a rim of the accent, not a pale wash,
+     * so these are the mid tones rather than the pastels. */
+    --success-border: #22C55E;
+    --warning-border: #F59E0B;
+    --danger-border:  #EF4444;
+    --info-border:    #0EA5E9;
+
+    /* Only danger actually failed on the dark surface (3.89:1); the other
+     * three already cleared it. They are all lifted together anyway, because a
+     * palette where one accent is lighter than its siblings for a reason
+     * nobody can see is a palette somebody will "fix" back. */
+    --primary-text:   #60A5FA;
+    --primary-hover:  #93C5FD;
+    --success-text:   #4ADE80;
+    --warning-text:   #FBBF24;
+    --danger-text:    #F87171;
+    --info-text:      #38BDF8;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -91,8 +176,8 @@ h3 { font-size: 18px; }
 h4 { font-size: 16px; }
 p  { margin: 0 0 1rem; }
 
-a { color: var(--primary); text-decoration: none; transition: color var(--transition); }
-a:hover { color: var(--primary-dark); text-decoration: underline; }
+a { color: var(--primary-text); text-decoration: none; transition: color var(--transition); }
+a:hover { color: var(--primary-hover); text-decoration: underline; }
 
 code, kbd, .mono { font-family: var(--mono); font-size: .875em; }
 
@@ -145,7 +230,7 @@ code, kbd, .mono { font-family: var(--mono); font-size: .875em; }
     color: #fff; font-weight: 700; font-size: 14px;
 }
 .sidebar__title { color: #fff; font-weight: 700; font-size: 15px; line-height: 1.1; }
-.sidebar__subtitle { color: #64748B; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
+.sidebar__subtitle { color: var(--sidebar-muted); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
 
 .sidebar__nav { flex: 1; overflow-y: auto; padding: .6rem 0 1.5rem; }
 .sidebar__nav::-webkit-scrollbar { width: 5px; }
@@ -153,7 +238,7 @@ code, kbd, .mono { font-family: var(--mono); font-size: .875em; }
 
 .sidebar__section {
     padding: .9rem 1.15rem .35rem;
-    color: #64748B; font-size: 10px; font-weight: 600;
+    color: var(--sidebar-muted); font-size: 10px; font-weight: 600;
     letter-spacing: .09em; text-transform: uppercase;
 }
 
@@ -242,7 +327,7 @@ code, kbd, .mono { font-family: var(--mono); font-size: .875em; }
 .icon-button__badge {
     position: absolute; top: 3px; right: 3px;
     min-width: 15px; height: 15px; padding: 0 3px;
-    background: var(--danger); color: #fff;
+    background: var(--danger-strong); color: #fff;
     font-size: 9.5px; font-weight: 700; line-height: 15px;
     border-radius: 999px; text-align: center;
 }
@@ -251,13 +336,13 @@ code, kbd, .mono { font-family: var(--mono); font-size: .875em; }
     display: inline-flex; align-items: center; gap: .35rem;
     padding: .22rem .6rem; border-radius: 999px;
     font-size: 11px; font-weight: 600;
-    background: var(--success-light); color: #15803D;
+    background: var(--success-light); color: var(--success-fg);
 }
 .connection-pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .connection-pill[data-state="connecting"]   { background: var(--surface-alt);  color: var(--text-muted); }
-.connection-pill[data-state="reconnecting"] { background: var(--warning-light); color: #B45309; }
+.connection-pill[data-state="reconnecting"] { background: var(--warning-light); color: var(--warning-fg); }
 .connection-pill[data-state="polling"]      { background: var(--surface-alt);  color: var(--text-muted); }
-.connection-pill[data-state="offline"]      { background: var(--danger-light);  color: #B91C1C; }
+.connection-pill[data-state="offline"]      { background: var(--danger-light);  color: var(--danger-fg); }
 
 .clock { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
@@ -373,10 +458,10 @@ code, kbd, .mono { font-family: var(--mono); font-size: .875em; }
     display: grid; place-items: center; font-size: 16px;
     background: var(--primary-light); color: var(--primary);
 }
-.stat__icon--success { background: var(--success-light); color: #15803D; }
-.stat__icon--warning { background: var(--warning-light); color: #B45309; }
-.stat__icon--danger  { background: var(--danger-light);  color: #B91C1C; }
-.stat__icon--info    { background: var(--info-light);    color: #0369A1; }
+.stat__icon--success { background: var(--success-light); color: var(--success-fg); }
+.stat__icon--warning { background: var(--warning-light); color: var(--warning-fg); }
+.stat__icon--danger  { background: var(--danger-light);  color: var(--danger-fg); }
+.stat__icon--info    { background: var(--info-light);    color: var(--info-fg); }
 .stat__label { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .045em; font-weight: 600; }
 .stat__value { font-size: 25px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
 .stat__meta { font-size: 12px; color: var(--text-muted); margin-top: .1rem; }
@@ -422,18 +507,18 @@ table.data .nowrap { white-space: nowrap; }
     font-size: 11px; font-weight: 600; white-space: nowrap;
     background: var(--surface-alt); color: var(--text-muted);
 }
-.badge-success { background: var(--success-light); color: #15803D; }
-.badge-warning { background: var(--warning-light); color: #B45309; }
-.badge-danger  { background: var(--danger-light);  color: #B91C1C; }
-.badge-info    { background: var(--info-light);    color: #0369A1; }
+.badge-success { background: var(--success-light); color: var(--success-fg); }
+.badge-warning { background: var(--warning-light); color: var(--warning-fg); }
+.badge-danger  { background: var(--danger-light);  color: var(--danger-fg); }
+.badge-info    { background: var(--info-light);    color: var(--info-fg); }
 .badge-neutral { background: var(--surface-alt);   color: var(--text-muted); }
-.badge-primary { background: var(--primary-light); color: var(--primary-dark); }
+.badge-primary { background: var(--primary-light); color: var(--primary-fg); }
 
 .badge-dot::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 .badge--cross-department {
-    background: var(--warning-light); color: #B45309;
-    border: 1px dashed #F59E0B;
+    background: var(--warning-light); color: var(--warning-fg);
+    border: 1px dashed var(--warning-border);
 }
 
 /* ---------------------------------------------------------------- forms --- */
@@ -532,10 +617,10 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 .alert__icon { flex: none; margin-top: .1rem; }
 .alert__body { flex: 1; }
 .alert__title { font-weight: 600; margin-bottom: .12rem; }
-.alert-success { background: var(--success-light); border-color: #86EFAC; color: #14532D; }
-.alert-warning { background: var(--warning-light); border-color: #FCD34D; color: #78350F; }
-.alert-danger  { background: var(--danger-light);  border-color: #FCA5A5; color: #7F1D1D; }
-.alert-info    { background: var(--info-light);    border-color: #7DD3FC; color: #0C4A6E; }
+.alert-success { background: var(--success-light); border-color: var(--success-border); color: var(--success-fg); }
+.alert-warning { background: var(--warning-light); border-color: var(--warning-border); color: var(--warning-fg); }
+.alert-danger  { background: var(--danger-light);  border-color: var(--danger-border); color: var(--danger-fg); }
+.alert-info    { background: var(--info-light);    border-color: var(--info-border); color: var(--info-fg); }
 
 /* --------------------------------------------------------------- toasts --- */
 
@@ -774,7 +859,7 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 .credential-box__copy:hover { background: rgba(255, 255, 255, .22); }
 
 .credential-warning {
-    background: var(--warning-light); border: 1px solid #FCD34D;
+    background: var(--warning-light); border: 1px solid var(--warning-border);
     color: #78350F; border-radius: var(--radius);
     padding: .75rem .9rem; font-size: 12.5px; margin-bottom: 1rem;
 }
@@ -796,10 +881,10 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 
 .text-muted   { color: var(--text-muted); }
 .text-subtle  { color: var(--text-subtle); }
-.text-danger  { color: var(--danger); }
-.text-success { color: var(--success); }
-.text-warning { color: var(--warning); }
-.text-info    { color: var(--info); }
+.text-danger  { color: var(--danger-text); }
+.text-success { color: var(--success-text); }
+.text-warning { color: var(--warning-text); }
+.text-info    { color: var(--info-text); }
 .text-sm      { font-size: 12px; }
 .text-xs      { font-size: 11px; }
 .text-right   { text-align: right; }
@@ -860,8 +945,8 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
     display: inline-flex; align-items: center; justify-content: center;
     background: var(--surface-alt); color: var(--text-muted); font-size: 13px;
 }
-.notif__icon--high     { background: var(--warning-light); color: #B45309; }
-.notif__icon--critical { background: var(--danger-light);  color: #B91C1C; }
+.notif__icon--high     { background: var(--warning-light); color: var(--warning-fg); }
+.notif__icon--critical { background: var(--danger-light);  color: var(--danger-fg); }
 .notif__body    { flex: 1; min-width: 0; }
 .notif__title   { font-weight: 600; font-size: 13.5px; }
 .notif__message { font-size: 12.5px; color: var(--text-muted); margin-top: .1rem; }
@@ -876,7 +961,7 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
     font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
     color: var(--text-muted); padding: .35rem .1rem; border-bottom: 2px solid var(--border);
 }
-.timetable__head.is-today { color: var(--primary); border-bottom-color: var(--primary); }
+.timetable__head.is-today { color: var(--primary-text); border-bottom-color: var(--primary); }
 .timetable__free {
     font-size: 12px; color: var(--text-muted); padding: .6rem; text-align: center;
     border: 1px dashed var(--border); border-radius: var(--radius-sm);
@@ -1022,8 +1107,8 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
     background: var(--surface-alt); color: var(--text-muted);
 }
 .enrol-scan__icon.is-waiting { background: var(--primary-light); color: var(--primary); }
-.enrol-scan__icon.is-success { background: var(--success-light); color: #15803D; }
-.enrol-scan__icon.is-error   { background: var(--danger-light);  color: #B91C1C; }
+.enrol-scan__icon.is-success { background: var(--success-light); color: var(--success-fg); }
+.enrol-scan__icon.is-error   { background: var(--danger-light);  color: var(--danger-fg); }
 
 /* The pulse is the signal that the system is still waiting on a human, rather
    than stuck. It stops the moment the outcome is known. */
