@@ -2047,7 +2047,7 @@ try {
     }
 
     /* =====================================================================
-     * 20. A database behind the code says so
+     * 20. A misconfigured installation says which
      *
      * The likeliest thing to be wrong after an update, and the application
      * used to say nothing about it: the schema is a few migrations short of
@@ -2060,7 +2060,7 @@ try {
      * suspect it.
      * ===================================================================== */
     if ($want('migrations')) {
-        $runner->group('20. A database behind the code says so');
+        $runner->group('20. A misconfigured installation says which, not "something went wrong"');
 
         $pending = $db->pendingMigrations();
 
@@ -2102,6 +2102,28 @@ try {
 
         $runner->assertEquals('and it is clean again once restored',
             [], $db->pendingMigrations());
+
+        // The other configuration failure that used to hide behind a generic
+        // 500: no APP_KEY, so nothing can encrypt a terminal's secret, and the
+        // page that needed one looked like it had a bug of its own.
+        $runner->assertEquals('a configured installation reports no missing secrets',
+            [], \App\Core\App::missingSecrets());
+
+        // Env caches .env into its own array, so blanking it there is what an
+        // installation with no APP_KEY actually looks like.
+        $realKey = (string) \App\Core\Env::get('APP_KEY', '');
+        \App\Core\Env::set('APP_KEY', '');
+
+        try {
+            $runner->assert('an absent APP_KEY is noticed and named',
+                in_array('APP_KEY', \App\Core\App::missingSecrets(), true),
+                'a blank APP_KEY was not reported');
+        } finally {
+            \App\Core\Env::set('APP_KEY', $realKey);
+        }
+
+        $runner->assertEquals('and clean again once it is back',
+            [], \App\Core\App::missingSecrets());
     }
 
     /* =====================================================================

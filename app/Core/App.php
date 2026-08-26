@@ -224,6 +224,35 @@ final class App
             return $this->errorPage(503, 'The database needs updating', $explanation);
         }
 
+        // The other configuration failure that hides behind a generic 500.
+        //
+        // Crypto throws a perfectly good sentence — "APP_KEY is not
+        // configured. Run: php bin/console key:generate" — and the generic
+        // handler used to throw it away. Without these keys nothing can
+        // encrypt a terminal's secret, mint a realtime ticket or hash an API
+        // key, so the failure surfaces on whatever page happens to need one
+        // first and looks like a fault in that page.
+        $missingKeys = self::missingSecrets();
+
+        if ($missingKeys !== []) {
+            $explanation = sprintf(
+                'This installation has no %s in its .env file, and %s needed before the system can '
+                . 'encrypt terminal secrets or issue keys. Run "console.bat key:generate" in the '
+                . 'project folder — or "php bin/console key:generate" — then reload. '
+                . 'If this installation already holds encrypted data written under a DIFFERENT key, '
+                . 'restore that .env instead: generating new keys cannot recover it. '
+                . 'See docs/MOVING-TO-ANOTHER-PC.md.',
+                implode(', ', $missingKeys),
+                count($missingKeys) === 1 ? 'it is' : 'they are'
+            );
+
+            if ($request->wantsJson()) {
+                return Response::fail('ENCRYPTION_KEYS_MISSING', $explanation, 503);
+            }
+
+            return $this->errorPage(503, 'The encryption keys are not set', $explanation);
+        }
+
         $debug   = (bool) Config::get('app.debug', false);
         $message = $debug
             ? $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()
@@ -336,6 +365,29 @@ final class App
         }
 
         return $this->errorPage($e->status(), self::titleForStatus($e->status()), $e->getMessage());
+    }
+
+    /**
+     * The cryptographic secrets .env is missing.
+     *
+     * The same three doctor checks, asked from inside the application: without
+     * them nothing can encrypt a terminal's HMAC secret, hash an API key or
+     * mint a realtime ticket, and every failure that causes surfaces as a
+     * server fault on an unrelated page.
+     *
+     * @return list<string>
+     */
+    public static function missingSecrets(): array
+    {
+        $missing = [];
+
+        foreach (['APP_KEY', 'API_KEY_PEPPER', 'REALTIME_TICKET_SECRET'] as $name) {
+            if (trim((string) Env::get($name, '')) === '') {
+                $missing[] = $name;
+            }
+        }
+
+        return $missing;
     }
 
     /**
