@@ -415,31 +415,40 @@ The order is the security contract and is documented in `routes/web.php` and
 Stated plainly, because a security document that claims completeness is not
 trustworthy.
 
-1. **Traffic is not encrypted by default.** `start.bat` serves plain HTTP on
-   port 8080, and the shipped `.env` has `APP_ENV=local` and
-   `SESSION_COOKIE_SECURE=false`, so the HTTPS redirect in
-   `SecurityHeadersMiddleware` never fires. On the network as it stands, anyone
-   with the Wi-Fi password can read attendance traffic, capture a login
-   password as it is submitted, lift a session cookie, and read a terminal's
-   API key out of its request header.
+1. **Traffic is not encrypted until HTTPS is switched on, and it is not on by
+   default.** Out of the box `start.bat` serves plain HTTP on port 8080, the
+   shipped `.env` has `APP_ENV=local` and `SESSION_COOKIE_SECURE=false`, and
+   the HTTPS redirect in `SecurityHeadersMiddleware` never fires. On that
+   network, anyone with the Wi-Fi password can read attendance traffic, capture
+   a login password as it is submitted, lift a session cookie, and read a
+   terminal's API key out of its request header.
 
    What that does *not* let them do is forge attendance: every device request
    is HMAC-signed with a single-use nonce inside a ±30-second window, so a
    captured tap can be read but not altered and not replayed. Integrity holds
    without TLS; secrecy does not.
 
-   This is a deliberate trade for a LAN-only deployment, not an oversight — but
-   it is a trade, and a school holding real student records should put the site
-   behind TLS. See [`DEPLOYMENT.md`](DEPLOYMENT.md), and set `APP_ENV=production`
-   and `SESSION_COOKIE_SECURE=true` when you do.
+   **This is now fixable in one sitting and should be fixed before the system
+   holds real student records.** `console.bat tls:generate` issues the
+   certificate, `console.bat tls:apache` writes the web server configuration,
+   and `console.bat doctor` verifies the result end to end. The full procedure,
+   including the terminals, is in [`HTTPS.md`](HTTPS.md). The default remains
+   plaintext only because a first-run bench setup has no certificate and no
+   server address yet; leaving it that way in a deployment is a choice, and the
+   doctor reports it as a warning on every run.
 
-2. **The firmware does not validate the server's certificate.** `https://` in
-   `LS_SERVER_URL` works, but the terminal calls `setInsecure()`. That is
-   encryption against a passive listener and no defence against an active
-   attacker who redirects the terminal to their own server. Pinning the
-   certificate fingerprint at provisioning time is the fix and is not
-   implemented, so TLS on the browser side is worth more than TLS on the
-   terminal side until it is.
+2. **The default certificate authority is the school's own.** L-SIAMS is a LAN
+   system with no public DNS name, so no public CA can issue it a certificate:
+   Let's Encrypt cannot prove control of `192.168.1.10`. `tls:generate`
+   therefore creates a private root and signs with it, which means the root has
+   to be installed on each browser and compiled into each terminal by hand.
+
+   The security consequence is that trust rests on that root's private key. It
+   is stored encrypted under `APP_KEY` (`storage/tls/ca.key.enc`) so that
+   copying the folder off the server is not enough to impersonate the school,
+   but anyone holding both files can issue a certificate for any name in the
+   school that every browser and terminal will accept. Back the two up
+   together, and guard them together.
 
 3. **Card sharing cannot be detected.** See the first threat above. The hardware
    would need student biometrics.

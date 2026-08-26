@@ -96,6 +96,16 @@ The sketch refuses to start with placeholders still in place and names the one
 that is unset, rather than failing later in a way that looks like a network
 fault.
 
+> **Running the server over HTTPS?** Copy `storage\tls\ls_root_ca.h` from the
+> server into this folder, beside `L_SIAMS_Bench.ino`, and set `LS_SERVER_URL`
+> to the `https://` address. The sketch finds the file by itself — there is
+> nothing to configure and nothing to paste. It is gitignored, so `update.bat`
+> leaves it alone.
+>
+> Without that file an `https://` URL is refused rather than downgraded, and
+> the serial monitor says so at boot. Full procedure:
+> [`docs/HTTPS.md`](../docs/HTTPS.md).
+
 > **`update.bat` replaces this file.** It is tracked, so an update overwrites
 > your seven values with the placeholders. `update.bat` now saves a copy first,
 > as `L_SIAMS_Bench.ino.your-copy`, and tells you — but you still have to paste
