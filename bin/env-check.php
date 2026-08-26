@@ -24,6 +24,9 @@ declare(strict_types=1);
  *                                     exits 1 if any are missing
  *   php bin/env-check.php optional    prints any missing optional extensions
  *                                     exits 1 if any are missing
+ *   php bin/env-check.php tls         prints APP_URL and exits 1 when it is
+ *                                     https, which the built-in server cannot
+ *                                     serve
  *   php bin/env-check.php database    exits 0 if the database answers
  *
  * Kept free of the framework except where the check itself needs it: a
@@ -89,6 +92,36 @@ switch ($command) {
 
         if ($blank !== []) {
             echo implode(' ', $blank), PHP_EOL;
+            exit(1);
+        }
+
+        exit(0);
+
+    case 'tls':
+        // Is this installation configured for HTTPS?
+        //
+        // It matters to the launcher because PHP's built-in server — the one
+        // start.bat runs — has no TLS support at all and never will. An
+        // installation whose APP_URL says https:// is being served by Apache,
+        // and start.bat would quietly put a second, plaintext copy of the site
+        // on port 8080 beside it: same database, same sessions, no encryption,
+        // and no sign from either that the other exists.
+        //
+        // Exits 1 when APP_URL is https, so the launcher can stop and explain.
+        $envFile = dirname(__DIR__) . '/.env';
+
+        if (!is_file($envFile)) {
+            exit(0);
+        }
+
+        $contents = (string) file_get_contents($envFile);
+
+        if (preg_match('/^APP_URL=\s*"?(\S+?)"?\s*$/mi', $contents, $found) !== 1) {
+            exit(0);
+        }
+
+        if (stripos(trim($found[1]), 'https://') === 0) {
+            echo trim($found[1]), PHP_EOL;
             exit(1);
         }
 
