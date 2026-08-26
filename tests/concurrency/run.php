@@ -1946,10 +1946,111 @@ try {
     }
 
     /* =====================================================================
-     * 19. Sustained soak (opt-in, 30 minutes)
+     * 19. Issuing credentials is all-or-nothing
+     *
+     * "Rotate key" and "Download provisioning file" both rotated the key as
+     * their very first act, then did three more things that could fail. If any
+     * of them did, the key had already been rotated and committed: the old key
+     * was in its grace window, a new one existed, and because a key is stored
+     * hashed the administrator could never be shown what had just been
+     * created. The terminal was then on a countdown to the grace window
+     * expiring, after which it was dead.
+     *
+     * The trigger in practice was the plainest one — a device row that no
+     * longer exists, from a stale page — which failed on a foreign key and
+     * surfaced as "An unexpected error occurred" on both buttons.
+     * ===================================================================== */
+    if ($want('reprovision')) {
+        $runner->group('19. Issuing credentials is all-or-nothing');
+
+        $fixture->build(1, 2, 1);
+
+        $deviceRowId = $fixture->ids['devices'][0];
+        $userId      = (int) $db->scalar('SELECT user_id FROM users ORDER BY user_id LIMIT 1');
+
+        $activeKey = static fn (int $id): ?string => $db->scalar(
+            "SELECT key_id FROM api_keys WHERE device_row_id = :d AND status = 'active'
+              ORDER BY api_key_id DESC LIMIT 1",
+            ['d' => $id]
+        );
+
+        $refuse = static function (int $id) use ($userId): ?string {
+            try {
+                \App\Services\DeviceService::reprovision($id, $userId);
+            } catch (BusinessRuleException $e) {
+                return $e->errorCode();
+            } catch (Throwable $e) {
+                return 'UNEXPECTED: ' . get_class($e);
+            }
+
+            return null;
+        };
+
+        // The reported failure: a row that is not there any more.
+        $runner->assertEquals('a device that does not exist is refused cleanly',
+            'DEVICE_NOT_FOUND', $refuse(2147483646));
+
+        // The fixture inserts its devices directly, so mint the key a real
+        // registration would have given them — the grace-window assertion at
+        // the end is about what happens to an EXISTING key.
+        \App\Services\ApiKeyService::generateForDevice($deviceRowId, $userId);
+
+        $before = $activeKey($deviceRowId);
+        $runner->assert('the fixture device holds a key to begin with', $before !== null);
+
+        // A retired terminal must not be handed working credentials.
+        $db->update('devices', ['status' => 'decommissioned'], ['id' => $deviceRowId]);
+
+        $runner->assertEquals('a decommissioned terminal is refused',
+            'DEVICE_DECOMMISSIONED', $refuse($deviceRowId));
+
+        $runner->assertEquals('and its key is untouched by the refusal', $before, $activeKey($deviceRowId));
+
+        $runner->assertEquals('with nothing left half-rotated behind it', 0, (int) $db->scalar(
+            "SELECT COUNT(*) FROM api_keys WHERE device_row_id = :d AND status = 'rotating'",
+            ['d' => $deviceRowId]
+        ));
+
+        $db->update('devices', ['status' => 'active', 'deleted_at' => null], ['id' => $deviceRowId]);
+        $db->update('devices', ['deleted_at' => Clock::nowString()], ['id' => $deviceRowId]);
+
+        $runner->assertEquals('a deleted terminal is refused', 'DEVICE_DELETED', $refuse($deviceRowId));
+        $runner->assertEquals('and its key is still untouched', $before, $activeKey($deviceRowId));
+
+        $db->update('devices', ['deleted_at' => null], ['id' => $deviceRowId]);
+
+        // The healthy path still does the whole job in one go.
+        $issued = \App\Services\DeviceService::reprovision($deviceRowId, $userId);
+
+        $runner->assert('a healthy terminal is issued a new key',
+            ($issued['credentials']['api_key'] ?? '') !== '' && $activeKey($deviceRowId) !== $before,
+            'the key did not change');
+
+        $runner->assert('with an HMAC secret the administrator can actually see',
+            ($issued['credentials']['hmac_secret'] ?? '') !== '');
+
+        $runner->assert('and a claim token, so the board can adopt it',
+            ($issued['claim']['token'] ?? '') !== '');
+
+        $runner->assertEquals('the provisioning file names the right terminal',
+            (string) $db->scalar('SELECT device_id FROM devices WHERE id = :d', ['d' => $deviceRowId]),
+            (string) ($issued['provisioning']['device_id'] ?? ''));
+
+        $runner->assertEquals('and carries the same key that was just issued',
+            $issued['credentials']['api_key'], $issued['provisioning']['api_key'] ?? null);
+
+        $runner->assertEquals('the previous key is in its grace window, not revoked outright',
+            'rotating', (string) $db->scalar(
+                'SELECT status FROM api_keys WHERE device_row_id = :d AND key_id = :k',
+                ['d' => $deviceRowId, 'k' => $before]
+            ));
+    }
+
+    /* =====================================================================
+     * 20. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('19. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('20. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);

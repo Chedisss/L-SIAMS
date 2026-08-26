@@ -261,6 +261,14 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**Credentials are issued all-or-nothing.** Rotating a terminal's key and
+building its provisioning file are one transaction, and every precondition is
+checked before anything is written. They used to run as separate steps with the
+rotation first, so a failure afterwards left the key already rotated and the new
+credentials unshowable — a key is stored hashed, so nobody could ever recover
+what had just been created, and the terminal was left counting down to its old
+key auto-revoking.
+
 **An import refuses what it cannot use; it never quietly drops it.** A card UID
 column was normalised before it was validated, and normalising strips
 everything that is not hexadecimal — so a cell reading `ZZZZ` became the empty
@@ -326,14 +334,15 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Nineteen groups covering session opening, the concurrent-tap race,
+Twenty groups covering session opening, the concurrent-tap race,
 cross-device taps, section mismatch, time-in/time-out sequencing, status
 resolution, session close, idempotency, offline replay, throughput, the
 realtime transport, which lesson a terminal will actually open a session for,
 the handover that carries a register into the next subject, the teacher-led
 early release, what an unrecognised card leaves behind, replacing a lost card
 without losing its history, whether a report actually applies the filters its
-form offers, and whether an import ever discards a cell somebody filled in.
+form offers, whether an import ever discards a cell somebody filled in, and
+whether issuing a terminal's credentials is all-or-nothing.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a

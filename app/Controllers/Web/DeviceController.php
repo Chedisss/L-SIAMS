@@ -223,9 +223,11 @@ final class DeviceController extends Controller
     {
         $this->requirePasswordConfirmation($request);
 
-        $deviceRowId = $request->routeInt('id');
-        $credentials = ApiKeyService::rotate($deviceRowId, $this->requireUserId());
-        $claim       = DeviceService::regenerateClaim($deviceRowId, $this->requireUserId());
+        // One atomic operation. Rotating first and building the rest afterwards
+        // meant a failure anywhere after the rotation left the key changed and
+        // the new credentials unshowable — see DeviceService::reprovision().
+        $issued      = DeviceService::reprovision($request->routeInt('id'), $this->requireUserId());
+        $credentials = $issued['credentials'];
 
         $graceHours = (int) \App\Core\Config::get('security.api_key.rotation_grace_hours', 24);
 
@@ -233,8 +235,8 @@ final class DeviceController extends Controller
             'api_key'      => $credentials['api_key'],
             'hmac_secret'  => $credentials['hmac_secret'],
             'key_id'       => $credentials['key_id'],
-            'claim_token'  => $claim['token'],
-            'provisioning' => DeviceService::buildProvisioningFile($deviceRowId, $credentials, $claim),
+            'claim_token'  => $issued['claim']['token'],
+            'provisioning' => $issued['provisioning'],
         ], sprintf(
             'New key issued. The previous key keeps working for %d hour(s), then auto-revokes.',
             $graceHours
@@ -280,9 +282,8 @@ final class DeviceController extends Controller
         $this->requirePasswordConfirmation($request);
 
         $deviceRowId = $request->routeInt('id');
-        $credentials = ApiKeyService::rotate($deviceRowId, $this->requireUserId());
-        $claim       = DeviceService::regenerateClaim($deviceRowId, $this->requireUserId());
-        $payload     = DeviceService::buildProvisioningFile($deviceRowId, $credentials, $claim);
+        $issued      = DeviceService::reprovision($deviceRowId, $this->requireUserId());
+        $payload     = $issued['provisioning'];
 
         AuditService::log(
             AuditService::DEVICE_PROVISIONING_DOWNLOADED,

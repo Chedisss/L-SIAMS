@@ -496,6 +496,95 @@ final class DeviceService
     }
 
     /** Regenerate a claim token for a device that was never activated in time. */
+    /**
+     * Issue a fresh key pair and claim token, and build the provisioning file.
+     *
+     * Both "Rotate key" and "Download provisioning file" are this operation —
+     * they differ only in whether the result is rendered or downloaded — and
+     * both used to perform it as three separate calls in the controller, in
+     * this order:
+     *
+     *     ApiKeyService::rotate()      <- commits immediately
+     *     self::regenerateClaim()
+     *     self::buildProvisioningFile()
+     *
+     * Anything that failed after the first line left the key ALREADY rotated.
+     * The device's old key was in its grace window, a new one existed, and
+     * because a key is stored hashed the administrator could never be shown
+     * the credentials they had just created. The terminal was then on a
+     * countdown: when the grace window expired the old key auto-revoked and
+     * the device was dead, recoverable only by re-provisioning it by hand.
+     *
+     * The trigger in practice was the simplest one — a device row that no
+     * longer exists, from a stale page or a terminal deleted in another tab.
+     * The insert failed on its foreign key, and the whole thing surfaced as
+     * "An unexpected error occurred" on both buttons.
+     *
+     * So: the preconditions are checked before anything is written, and the
+     * write is one transaction. Either the administrator gets credentials they
+     * can see, or nothing changed at all.
+     *
+     * @return array{device:array<string,mixed>,credentials:array<string,mixed>,claim:array<string,mixed>,provisioning:array<string,mixed>}
+     */
+    public static function reprovision(int $deviceRowId, int $userId): array
+    {
+        $db = Database::instance();
+
+        $device = $db->selectOne('SELECT * FROM devices WHERE id = :id', ['id' => $deviceRowId]);
+
+        if ($device === null) {
+            throw new BusinessRuleException(
+                'DEVICE_NOT_FOUND',
+                'This terminal no longer exists. It was probably removed in another tab — reload the '
+                . 'page to see the current list.',
+                [],
+                404
+            );
+        }
+
+        if ($device['deleted_at'] !== null) {
+            throw new BusinessRuleException(
+                'DEVICE_DELETED',
+                sprintf(
+                    'Terminal %s has been deleted. Restore it before issuing credentials, or register '
+                    . 'a new terminal for that room.',
+                    (string) $device['device_id']
+                ),
+                [],
+                409
+            );
+        }
+
+        // A retired terminal must not be handed working credentials. The key
+        // would be valid, the device would not, and the only trace of why
+        // would be a status column nobody was looking at.
+        if ((string) $device['status'] === 'decommissioned') {
+            throw new BusinessRuleException(
+                'DEVICE_DECOMMISSIONED',
+                sprintf(
+                    'Terminal %s is decommissioned. Return it to service before issuing new credentials.',
+                    (string) $device['device_id']
+                ),
+                [],
+                409
+            );
+        }
+
+        return $db->transaction(static function (Database $db) use ($deviceRowId, $userId, $device): array {
+            $credentials = ApiKeyService::rotate($deviceRowId, $userId);
+
+            $db->update('devices', ['claim_status' => 'unclaimed', 'claimed_at' => null], ['id' => $deviceRowId]);
+            $claim = self::issueClaimToken($db, $deviceRowId, $userId);
+
+            return [
+                'device'       => $device,
+                'credentials'  => $credentials,
+                'claim'        => $claim,
+                'provisioning' => self::buildProvisioningFile($deviceRowId, $credentials, $claim),
+            ];
+        });
+    }
+
     public static function regenerateClaim(int $deviceRowId, int $userId): array
     {
         $db = Database::instance();
