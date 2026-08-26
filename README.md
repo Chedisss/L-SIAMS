@@ -261,6 +261,15 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**A database behind the code says so, rather than answering 500.** The
+likeliest thing to be wrong after an update is a schema a few migrations short
+of what the code expects — and the application used to say nothing, so the
+dashboard and every page touching a new column returned "An unexpected error
+occurred", which describes a bug and sends somebody hunting for one. Pending
+migrations now produce a 503 naming them and the one command that fixes it, and
+a banner on every page that still renders. `update.bat` migrates for you; this
+is for everybody who updates another way.
+
 **Credentials are issued all-or-nothing.** Rotating a terminal's key and
 building its provisioning file are one transaction, and every precondition is
 checked before anything is written. They used to run as separate steps with the
@@ -334,7 +343,7 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Twenty groups covering session opening, the concurrent-tap race,
+Twenty-one groups covering session opening, the concurrent-tap race,
 cross-device taps, section mismatch, time-in/time-out sequencing, status
 resolution, session close, idempotency, offline replay, throughput, the
 realtime transport, which lesson a terminal will actually open a session for,
@@ -342,7 +351,8 @@ the handover that carries a register into the next subject, the teacher-led
 early release, what an unrecognised card leaves behind, replacing a lost card
 without losing its history, whether a report actually applies the filters its
 form offers, whether an import ever discards a cell somebody filled in, and
-whether issuing a terminal's credentials is all-or-nothing.
+whether issuing a terminal's credentials is all-or-nothing, and whether a
+database behind the code says so.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a

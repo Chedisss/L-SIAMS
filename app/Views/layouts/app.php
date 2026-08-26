@@ -118,6 +118,26 @@ $photo    = $authUser['photo_path'] ?? null;
         </header>
 
         <main class="content" id="main-content">
+            <?php $__pendingMigrations = App\Core\App::pendingMigrations(); ?>
+            <?php if ($__pendingMigrations !== []): ?>
+                <?php /* Shown on every page that still renders, because the
+                         ones that do not are already answering 500 and cannot
+                         explain themselves. Whoever sees this is one command
+                         away from fixing the whole thing. */ ?>
+                <div class="alert alert-danger mb-2" role="alert">
+                    <span class="alert__icon"><i class="fa-solid fa-database"></i></span>
+                    <div class="alert__body">
+                        <strong>The database is <?= e(count($__pendingMigrations)) ?> update(s) behind this version of the system.</strong>
+                        Pages that use the newer tables will fail to load until it catches up. Nothing is
+                        damaged and no data has been lost.
+                        Run <span class="mono">console.bat migrate</span> in the project folder, then reload.
+                        <div class="text-xs text-muted mt-1">
+                            Outstanding: <?= e(implode(', ', $__pendingMigrations)) ?>
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
+
             <?php if (App\Core\Clock::isShifted()): ?>
                 <?php /* Every timestamp written while this is on is a time that
                          did not happen. Impossible to leave on by accident. */ ?>

@@ -198,6 +198,32 @@ final class App
             );
         }
 
+        // Before blaming the code: is the database simply behind it?
+        //
+        // After an update the schema can be several migrations short of what
+        // the code expects, and every page touching a new column fails. The
+        // honest answer is not "an unexpected error occurred" — that describes
+        // a bug and sends somebody hunting for one. It is "run the migrations",
+        // which takes ten seconds and fixes all of it at once.
+        $pending = self::pendingMigrations();
+
+        if ($pending !== []) {
+            $explanation = sprintf(
+                'The database is %d migration(s) behind this version of the system, so pages that use '
+                . 'the newer tables cannot load. Nothing is damaged and no data has been lost. '
+                . 'Run "console.bat migrate" in the project folder — or "php bin/console migrate" — '
+                . 'then reload. Outstanding: %s.',
+                count($pending),
+                implode(', ', $pending)
+            );
+
+            if ($request->wantsJson()) {
+                return Response::fail('MIGRATIONS_PENDING', $explanation, 503);
+            }
+
+            return $this->errorPage(503, 'The database needs updating', $explanation);
+        }
+
         $debug   = (bool) Config::get('app.debug', false);
         $message = $debug
             ? $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()
@@ -310,6 +336,23 @@ final class App
         }
 
         return $this->errorPage($e->status(), self::titleForStatus($e->status()), $e->getMessage());
+    }
+
+    /**
+     * Migrations this database has never run, or [] if that cannot be answered.
+     *
+     * Wrapped so the error path can ask without any chance of throwing while
+     * already handling a throw.
+     *
+     * @return list<string>
+     */
+    public static function pendingMigrations(): array
+    {
+        try {
+            return Database::instance()->pendingMigrations();
+        } catch (Throwable) {
+            return [];
+        }
     }
 
     private function errorPage(int $status, string $title, string $message): Response
