@@ -261,6 +261,14 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**A misconfigured installation says which, rather than answering 500.** The two
+things most likely to be wrong after an update or a move both used to surface as
+"An unexpected error occurred" — a sentence that describes a bug and sends
+somebody hunting for one. A `.env` with no `APP_KEY`, `API_KEY_PEPPER` or
+`REALTIME_TICKET_SECRET` now produces a 503 naming the missing keys and the one
+command that sets them, plus a banner on every page that still renders; and so
+does a database behind the code.
+
 **A database behind the code says so, rather than answering 500.** The
 likeliest thing to be wrong after an update is a schema a few migrations short
 of what the code expects — and the application used to say nothing, so the

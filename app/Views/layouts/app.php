@@ -118,6 +118,28 @@ $photo    = $authUser['photo_path'] ?? null;
         </header>
 
         <main class="content" id="main-content">
+            <?php $__missingSecrets = App\Core\App::missingSecrets(); ?>
+            <?php if ($__missingSecrets !== []): ?>
+                <?php /* Without these nothing can encrypt a terminal's secret
+                         or issue a key, so the failure lands on whatever page
+                         needs one first and looks like a fault there. */ ?>
+                <div class="alert alert-danger mb-2" role="alert">
+                    <span class="alert__icon"><i class="fa-solid fa-key"></i></span>
+                    <div class="alert__body">
+                        <strong>This installation has no encryption keys.</strong>
+                        Registering a terminal, rotating a key and downloading a provisioning file will
+                        all fail until they are set.
+                        Run <span class="mono">console.bat key:generate</span> in the project folder,
+                        then reload.
+                        <div class="text-xs text-muted mt-1">
+                            Missing: <?= e(implode(', ', $__missingSecrets)) ?>.
+                            If this installation already holds data encrypted under a different key,
+                            restore that <span class="mono">.env</span> instead — new keys cannot recover it.
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
+
             <?php $__pendingMigrations = App\Core\App::pendingMigrations(); ?>
             <?php if ($__pendingMigrations !== []): ?>
                 <?php /* Shown on every page that still renders, because the
