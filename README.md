@@ -261,6 +261,14 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**An import refuses what it cannot use; it never quietly drops it.** A card UID
+column was normalised before it was validated, and normalising strips
+everything that is not hexadecimal — so a cell reading `ZZZZ` became the empty
+string and was read as "no card given". The preview reported no problems and
+the student was created cardless, to be marked absent every day until somebody
+worked out why. Emptiness is now decided from the raw cell, and anything that
+is not a usable UID is reported with the value that was actually typed.
+
 **Both themes are checked, not eyeballed.** Every colour that sits on a themed
 surface is a token that flips with the theme, because the ones that were
 literals did not: `alert-success` was `#14532D` text on a `#14532D` background
@@ -318,14 +326,14 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 ```
 
-Eighteen groups covering session opening, the concurrent-tap race,
+Nineteen groups covering session opening, the concurrent-tap race,
 cross-device taps, section mismatch, time-in/time-out sequencing, status
 resolution, session close, idempotency, offline replay, throughput, the
 realtime transport, which lesson a terminal will actually open a session for,
 the handover that carries a register into the next subject, the teacher-led
 early release, what an unrecognised card leaves behind, replacing a lost card
-without losing its history, and whether a report actually applies the filters
-its form offers.
+without losing its history, whether a report actually applies the filters its
+form offers, and whether an import ever discards a cell somebody filled in.
 
 The central case fires 50 simultaneous taps of the same card at the same session
 and asserts that exactly one attendance row exists afterwards. It runs against a
