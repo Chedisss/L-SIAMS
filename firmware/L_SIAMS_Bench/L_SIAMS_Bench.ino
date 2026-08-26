@@ -94,7 +94,21 @@
 #endif
 #include <time.h>
 #include <sys/time.h>
+#include <Preferences.h>
 #include "mbedtls/md.h"
+
+/* The school's root certificate, written by `console.bat tls:generate`.
+ *
+ * Optional on purpose. A bench setup talking http:// has no use for it, and
+ * requiring the file would stop the sketch compiling before anyone had a
+ * server to point it at. Drop ls_root_ca.h next to this file and it is picked
+ * up automatically — there is nothing to switch on. */
+#if defined(__has_include)
+#  if __has_include("ls_root_ca.h")
+#    include "ls_root_ca.h"
+#    define LS_HAVE_ROOT_CA 1
+#  endif
+#endif
 
 /* ArduinoJson 7 made JsonDocument concrete and self-sizing. In 6 it is an
  * abstract base and only DynamicJsonDocument can be declared. Library Manager
@@ -533,6 +547,137 @@ static String jsonToString(const LsJson &document) {
 }
 
 /* =========================================================================
+ * TLS
+ *
+ * Two things have to be true before an https:// URL will work on this board,
+ * and both fail silently if they are not.
+ *
+ * The first is the root certificate. Without one, WiFiClientSecure has nothing
+ * to check the server against, and the usual workaround — setInsecure() —
+ * accepts ANY certificate from ANY server. That is worth being blunt about: it
+ * encrypts the traffic and then hands it to whoever answered, so a laptop on
+ * the school Wi-Fi that can win a race to the address reads every card tap and
+ * every fingerprint result in clear text. It looks identical to a working
+ * system from both ends. So this sketch does not do it: no root, no https, and
+ * it says so rather than quietly downgrading.
+ *
+ * The second is the clock. A certificate is only valid between two dates, and
+ * mbedtls checks them — but an ESP32 powers on believing it is January 1970,
+ * which is outside every certificate ever issued. The board would refuse its
+ * own server's certificate as "not yet valid".
+ *
+ * That is a circle, because the board sets its clock by asking the server, and
+ * now it cannot reach the server to ask. It gets broken the same way the
+ * timestamp problem below it does: with a starting estimate good enough to get
+ * one request through, after which the real time arrives and replaces it. Two
+ * sources, whichever is later:
+ *
+ *   - the moment this sketch was compiled, which is necessarily after the
+ *     certificate was issued, since the certificate has to exist before
+ *     ls_root_ca.h can be generated from it;
+ *   - the last time the board knew for certain, saved in flash. This is what
+ *     covers a renewal: a certificate issued after the firmware was built
+ *     starts later than the build date, and without a saved time a power cut
+ *     would leave the board permanently unable to accept it.
+ *
+ * Neither is trusted for anything except getting the handshake open. The
+ * server's own time replaces it seconds later, and every attendance record
+ * carries the server's clock, not this one.
+ * ========================================================================= */
+
+/* Outside HTTPClient's own range (-1 to -11), so it cannot be mistaken for a
+ * transport failure. This one is a build problem, not a network problem. */
+#define LS_ERR_NO_ROOT_CA (-20)
+
+static Preferences tlsStore;
+
+/* When this sketch was compiled, as an epoch. __DATE__ is "Aug 26 2026" and
+ * __TIME__ is "17:53:50" — fixed formats, so parsing them is safe. */
+static time_t firmwareBuildEpoch() {
+  static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+  char monthName[4] = { 0 };
+  int  day = 0, year = 0, hour = 0, minute = 0, second = 0;
+
+  if (sscanf(__DATE__, "%3s %d %d", monthName, &day, &year) != 3) return 0;
+  if (sscanf(__TIME__, "%d:%d:%d", &hour, &minute, &second) != 3) return 0;
+
+  const char *found = strstr(months, monthName);
+  if (found == nullptr) return 0;
+
+  struct tm built{};
+  built.tm_year = year - 1900;
+  built.tm_mon  = (int) ((found - months) / 3);
+  built.tm_mday = day;
+  built.tm_hour = hour;
+  built.tm_min  = minute;
+  built.tm_sec  = second;
+
+  time_t epoch = mktime(&built);
+  return epoch > 0 ? epoch : 0;
+}
+
+/* Move the clock forward to the best estimate available. Only ever forward:
+ * the real time, once the server supplies it, is always later than either
+ * estimate, and winding backwards would invalidate it. */
+static void seedClockForTls() {
+  time_t now   = time(nullptr);
+  time_t build = firmwareBuildEpoch();
+  time_t saved = 0;
+
+  if (tlsStore.begin("lsiams", true)) {
+    saved = (time_t) tlsStore.getULong("lastgood", 0);
+    tlsStore.end();
+  }
+
+  time_t best = build > saved ? build : saved;
+
+  if (best <= now) return;
+
+  struct timeval seed = { .tv_sec = best, .tv_usec = 0 };
+  settimeofday(&seed, nullptr);
+
+  struct tm readable;
+  gmtime_r(&best, &readable);
+
+  Serial.printf("Clock: starting estimate %04d-%02d-%02d %02d:%02d UTC (%s), so the\n",
+                readable.tm_year + 1900, readable.tm_mon + 1, readable.tm_mday,
+                readable.tm_hour, readable.tm_min,
+                (saved > build) ? "last known good time" : "build date");
+  Serial.println("       server's certificate can be checked. The server's real time");
+  Serial.println("       replaces this on the first successful request.");
+}
+
+/* Remember a confirmed time, so a power cut does not send the board back to
+ * its build date. Written at most hourly: flash has a finite erase budget and
+ * this is not worth spending it on. */
+static void rememberGoodTime(time_t epoch) {
+  if (epoch <= 0) return;
+
+  if (!tlsStore.begin("lsiams", false)) return;
+
+  time_t saved = (time_t) tlsStore.getULong("lastgood", 0);
+
+  if (epoch > saved + 3600) {
+    tlsStore.putULong("lastgood", (uint32_t) epoch);
+  }
+
+  tlsStore.end();
+}
+
+/* Returns false when the sketch was built without a root certificate, which
+ * is the one case where the caller must not continue. */
+static bool configureTlsClient(WiFiClientSecure &client) {
+#ifdef LS_HAVE_ROOT_CA
+  client.setCACert(LS_ROOT_CA);
+  return true;
+#else
+  (void) client;
+  return false;
+#endif
+}
+
+/* =========================================================================
  * Talking to the server
  * ========================================================================= */
 
@@ -551,7 +696,11 @@ static int signedRequest(const char *method, const String &path, const String &b
   HTTPClient       http;
 
   if (isTls) {
-    secure.setInsecure();
+    /* No root certificate compiled in means nothing can be verified, and
+     * connecting anyway would encrypt the traffic while trusting whoever
+     * answered. Refusing is the safe answer, and LS_ERR_NO_ROOT_CA says
+     * exactly what to do about it. */
+    if (!configureTlsClient(secure)) return LS_ERR_NO_ROOT_CA;
     if (!http.begin(secure, url)) return -2;
   } else {
     if (!http.begin(plain, url)) return -2;
@@ -698,6 +847,8 @@ static const char *httpErrorText(int status) {
     case -9:   return "the reply used an encoding this client cannot read";
     case -10:  return "failed while writing the reply";
     case -11:  return "connected and sent, but the reply never arrived (timeout)";
+    case LS_ERR_NO_ROOT_CA:
+               return "https was asked for, but this sketch has no root certificate";
     default:   return "the request failed";
   }
 }
@@ -736,6 +887,17 @@ static void describeHttpError(int status, const char *indent) {
       Serial.printf("%sAnother device may have taken that IP address.\n", indent);
       break;
 
+    case LS_ERR_NO_ROOT_CA:
+      Serial.printf("%sLS_SERVER_URL starts with https://, but this sketch was compiled\n", indent);
+      Serial.printf("%swithout the school's root certificate, so there is nothing to check\n", indent);
+      Serial.printf("%sthe server against. Nothing was sent.\n", indent);
+      Serial.printf("%s1. On the server, run: console.bat tls:generate\n", indent);
+      Serial.printf("%s2. Copy storage\\tls\\ls_root_ca.h into this sketch's folder, next to\n", indent);
+      Serial.printf("%s   L_SIAMS_Bench.ino.\n", indent);
+      Serial.printf("%s3. Re-upload. The sketch finds the file on its own.\n", indent);
+      Serial.printf("%sTo run without TLS instead, change LS_SERVER_URL back to http://.\n", indent);
+      break;
+
     case -8:
       Serial.printf("%sThe board ran out of memory. If this repeats, the reply is larger\n", indent);
       Serial.printf("%sthan expected — report it rather than working around it.\n", indent);
@@ -761,7 +923,11 @@ static int unsignedPost(const String &path, const String &body, LsJson *response
   HTTPClient       http;
 
   if (isTls) {
-    secure.setInsecure();
+    /* No root certificate compiled in means nothing can be verified, and
+     * connecting anyway would encrypt the traffic while trusting whoever
+     * answered. Refusing is the safe answer, and LS_ERR_NO_ROOT_CA says
+     * exactly what to do about it. */
+    if (!configureTlsClient(secure)) return LS_ERR_NO_ROOT_CA;
     if (!http.begin(secure, url)) return -2;
   } else {
     if (!http.begin(plain, url)) return -2;
@@ -923,6 +1089,10 @@ static bool syncClockFromServer() {
   struct timeval tv = { .tv_sec = (time_t) epoch, .tv_usec = 0 };
   settimeofday(&tv, nullptr);
   clockSet = true;
+
+  /* Kept across a power cut, so the next boot starts from a time that can
+   * still accept a renewed certificate rather than from the build date. */
+  rememberGoodTime((time_t) epoch);
 
   Serial.printf("Clock: set from server (epoch %ld)\n", epoch);
   return true;
@@ -1942,6 +2112,30 @@ static bool checkConfig() {
     return false;
   }
 
+  /* Caught here rather than at the first request, because the first request is
+   * usually a card tap by somebody standing at the door. */
+#ifndef LS_HAVE_ROOT_CA
+  if (ok && strncmp(SERVER_URL, "https://", 8) == 0) {
+    Serial.println("Config: LS_SERVER_URL is https://, but this sketch has no root certificate.");
+    Serial.println("        Nothing can be sent: there would be no way to tell the real server");
+    Serial.println("        from anything else on the Wi-Fi that answered first.");
+    Serial.println("        On the server run  console.bat tls:generate  then copy");
+    Serial.println("        storage\\tls\\ls_root_ca.h into this sketch's folder and re-upload.");
+    Serial.println("        The sketch finds the file on its own — nothing to configure.");
+    return false;
+  }
+#else
+  /* The opposite mistake: the root is compiled in, so somebody has been
+   * through the TLS setup, but the URL was never switched over and every tap
+   * is still crossing the network in clear text. */
+  if (ok && strncmp(SERVER_URL, "http://", 7) == 0) {
+    Serial.println("Notice: this sketch has the school's root certificate, but LS_SERVER_URL");
+    Serial.println("        still starts with http:// — card taps and fingerprint results are");
+    Serial.println("        crossing the network unencrypted.");
+    Serial.println("        Change it to https:// once Apache is serving it.");
+  }
+#endif
+
   if (!ok) {
     Serial.println();
     Serial.println("  Edit the seven values at the top of this sketch, from the provisioning");
@@ -2392,6 +2586,10 @@ void setup() {
   Serial.println("==========================");
 
   reportBoot();
+
+  /* Before anything opens a TLS connection: a board that still believes it is
+   * 1970 rejects its own server's certificate as not yet valid. */
+  seedClockForTls();
   sanityCheckQueue();
 
   if (tapQueueCount > 0) {
