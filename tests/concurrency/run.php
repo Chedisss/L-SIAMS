@@ -2047,10 +2047,68 @@ try {
     }
 
     /* =====================================================================
-     * 20. Sustained soak (opt-in, 30 minutes)
+     * 20. A database behind the code says so
+     *
+     * The likeliest thing to be wrong after an update, and the application
+     * used to say nothing about it: the schema is a few migrations short of
+     * what the code expects, so the dashboard, the attendance list and every
+     * student and session page answer 500 with "An unexpected error occurred"
+     * — which describes a bug and sends somebody hunting for one.
+     *
+     * update.bat runs the migrations, so this only reaches somebody who
+     * updated another way, which is exactly the person with no reason to
+     * suspect it.
+     * ===================================================================== */
+    if ($want('migrations')) {
+        $runner->group('20. A database behind the code says so');
+
+        $pending = $db->pendingMigrations();
+
+        $runner->assertEquals('a fully migrated database reports nothing pending', [], $pending);
+
+        // Forget the most recent migration, exactly as an installation that
+        // pulled the code but never ran migrate.
+        $latest = (string) $db->scalar(
+            'SELECT migration FROM schema_migrations ORDER BY migration DESC LIMIT 1'
+        );
+
+        $row = $db->selectOne(
+            'SELECT * FROM schema_migrations WHERE migration = :m',
+            ['m' => $latest]
+        );
+
+        $db->execute('DELETE FROM schema_migrations WHERE migration = :m', ['m' => $latest]);
+
+        try {
+            // Primed by the call above, so it has to be told to look again.
+            $db->forgetPendingMigrations();
+            $seen = $db->pendingMigrations();
+
+            $runner->assertEquals('a missing migration is noticed', [$latest], $seen);
+
+            $runner->assert('and named, so the fix is obvious',
+                $seen !== [] && str_ends_with($seen[0], '.sql'),
+                'the pending list did not name a file');
+        } finally {
+            $db->insert('schema_migrations', [
+                'migration'  => $row['migration'],
+                'batch'      => $row['batch'],
+                'checksum'   => $row['checksum'],
+                'applied_at' => $row['applied_at'],
+            ]);
+        }
+
+        $db->forgetPendingMigrations();
+
+        $runner->assertEquals('and it is clean again once restored',
+            [], $db->pendingMigrations());
+    }
+
+    /* =====================================================================
+     * 21. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('20. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('21. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);

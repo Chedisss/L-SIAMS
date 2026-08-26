@@ -336,6 +336,85 @@ final class Database
      */
     private ?array $columnCache = null;
 
+    /** @var list<string>|null */
+    private ?array $pendingMigrationCache = null;
+
+    /**
+     * Migration files on disk that this database has never run.
+     *
+     * The single most likely thing to be wrong after an update, and until now
+     * the application said nothing about it: the code expects columns the
+     * database does not have yet, so the dashboard, the attendance list and
+     * every student and session page answer 500 with "An unexpected error
+     * occurred" — which describes a bug, not a database four migrations
+     * behind. update.bat runs the migrations, so this only bites somebody who
+     * updated another way, which is exactly the person with no reason to
+     * suspect it.
+     *
+     * Deliberately total: any failure here — no table, no directory, no
+     * permission — returns an empty list. This runs on the error path and in
+     * the layout, and a diagnostic that can itself throw is worse than no
+     * diagnostic at all.
+     *
+     * @return list<string>
+     */
+    public function pendingMigrations(): array
+    {
+        if ($this->pendingMigrationCache !== null) {
+            return $this->pendingMigrationCache;
+        }
+
+        $this->pendingMigrationCache = [];
+
+        try {
+            $directory = (string) Config::get('app.paths.migrations', '');
+
+            if ($directory === '' || !is_dir($directory)) {
+                return [];
+            }
+
+            $files = glob($directory . '/*.sql') ?: [];
+
+            if ($files === []) {
+                return [];
+            }
+
+            $applied = [];
+
+            foreach ($this->select('SELECT migration FROM schema_migrations') as $row) {
+                $applied[(string) $row['migration']] = true;
+            }
+
+            $pending = [];
+
+            foreach ($files as $path) {
+                $name = basename($path);
+
+                if (!isset($applied[$name])) {
+                    $pending[] = $name;
+                }
+            }
+
+            sort($pending, SORT_NATURAL);
+
+            return $this->pendingMigrationCache = $pending;
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Ask again next time.
+     *
+     * The answer cannot change while a request runs, which is why it is cached
+     * — but a long-lived process that has just applied a migration, or a test
+     * that changes what is applied, needs the cache to let go.
+     */
+    public function forgetPendingMigrations(): void
+    {
+        $this->pendingMigrationCache = null;
+    }
+
     public function hasColumn(string $table, string $column): bool
     {
         $key = $table . '.' . $column;
