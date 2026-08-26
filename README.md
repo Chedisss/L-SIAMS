@@ -261,6 +261,14 @@ subject, teacher and classroom are copied onto each record at write time. A
 student who transfers section in January must not have their October attendance
 retroactively reattributed — reports have to show where the student actually sat.
 
+**Both themes are checked, not eyeballed.** Every colour that sits on a themed
+surface is a token that flips with the theme, because the ones that were
+literals did not: `alert-success` was `#14532D` text on a `#14532D` background
+in dark mode — the same value, so the words were not there at all. The palette
+is audited by walking all 23 admin and teacher pages in a real browser and
+computing every text node's contrast against its effective background; both
+themes come back clean at WCAG AA.
+
 **A replaced card says what happened to it.** Issuing a card to a student who
 already holds one retires the old row and chains the new one to it, and the
 student's attendance is untouched — records reference the student, never the
