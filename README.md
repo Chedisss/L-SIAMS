@@ -209,6 +209,7 @@ realtime/          The WebSocket server
 routes/            web.php and api.php; each documents its middleware chain
 storage/           Logs, cache, generated reports, temp (writable, not in the web root)
 tests/concurrency/ The race-condition suite
+tests/tls/         Certificate authority, chain and extension checks
 ```
 
 ---
@@ -349,6 +350,8 @@ the difference.
 php tests/concurrency/run.php              # all groups
 php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
+
+php tests/tls/run.php                      # certificates: chain, extensions, renewal
 ```
 
 Twenty-one groups covering session opening, the concurrent-tap race,
@@ -389,6 +392,7 @@ a test database**, never at a school's live data.
 | [`docs/RUNNING-ON-WINDOWS.md`](docs/RUNNING-ON-WINDOWS.md) | Step-by-step first run on Windows with XAMPP, and what to do when it breaks |
 | [`docs/NETWORK-ACCESS.md`](docs/NETWORK-ACCESS.md) | Reaching the system from phones and laptops on the same school network |
 | [`docs/MOVING-TO-ANOTHER-PC.md`](docs/MOVING-TO-ANOTHER-PC.md) | Moving the system to a different computer without losing the fingerprints and the terminals |
+| [`docs/HTTPS.md`](docs/HTTPS.md) | Turning on encryption: issuing the certificate, configuring Apache, trusting the root on PCs and terminals |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Web server, TLS, systemd, MySQL tuning, database privileges, backups |
 | [`docs/API.md`](docs/API.md) | Device API, request signing, error codes, browser API |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The security model, threat by threat |

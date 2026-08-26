@@ -1,5 +1,10 @@
 /* Stub. Just enough of the Arduino core to type-check the sketch on a PC. */
 #pragma once
+/* On the ESP32 flash is memory-mapped, so the real core defines this away to
+   nothing and a PROGMEM string is read like any other. Defined here for the
+   same reason: without it the generated ls_root_ca.h will not parse, and the
+   check would fail on the one build that actually ships. */
+#define PROGMEM
 #define INPUT           0x01
 #define OUTPUT          0x03
 #define INPUT_PULLUP    0x05

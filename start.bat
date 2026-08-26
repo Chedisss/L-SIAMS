@@ -174,6 +174,40 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM ------------------------------------------------------------- https -----
+REM This launcher runs PHP's built-in web server, which cannot speak TLS.
+REM If .env says the site is https, Apache is serving it and this script would
+REM start a second, unencrypted copy of the same site on another port.
+set "HTTPSURL="
+for /f "delims=" %%U in ('""%PHP%" bin\env-check.php tls" 2^>nul') do set "HTTPSURL=%%U"
+
+"%PHP%" bin\env-check.php tls >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo   [X] This installation is set up for HTTPS, so start.bat is not the
+    echo       way to run it.
+    echo.
+    echo       APP_URL is %HTTPSURL%
+    echo.
+    echo       start.bat runs PHP's own small web server, which cannot do
+    echo       HTTPS at all. Apache serves the site now. Running this would put
+    echo       a second, UNENCRYPTED copy of the system on port %WEB_PORT% -
+    echo       same database, same records, no encryption.
+    echo.
+    echo       To start the system:
+    echo         1. Open the XAMPP Control Panel.
+    echo         2. Start MySQL, then start Apache.
+    echo         3. Open %HTTPSURL%
+    echo.
+    echo       To check it is working:
+    echo         console.bat doctor
+    echo.
+    echo       See docs\HTTPS.md
+    echo.
+    pause
+    exit /b 1
+)
+
 REM --------------------------------------------------------- database ------
 REM Start MySQL yourself in the XAMPP Control Panel; this only checks it.
 echo.

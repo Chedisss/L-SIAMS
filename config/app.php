@@ -29,6 +29,11 @@ return [
         'cache'      => BASE_PATH . '/storage/cache',
         'tmp'        => BASE_PATH . '/storage/tmp',
         'sessions'   => BASE_PATH . '/storage/framework/sessions',
+        // Certificates and the private keys behind them. Under storage/ so it
+        // is never inside the document root: a server key served over HTTP is
+        // the end of the security of the whole installation, and one stray
+        // Alias line in httpd.conf is all that would take.
+        'tls'        => BASE_PATH . '/storage/tls',
         'backups'    => BASE_PATH . '/database/backups',
         'migrations' => BASE_PATH . '/database/migrations',
         'seeders'    => BASE_PATH . '/database/seeders',

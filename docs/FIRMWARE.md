@@ -577,15 +577,41 @@ or not the transport is encrypted.
 fully readable. Anyone on the same Wi-Fi can see card UIDs, student names in
 responses, and the API key in its header.
 
-### What this firmware does NOT do
+### Talking to the server over HTTPS
 
-**It does not validate the server's certificate.** `https://` in
-`LS_SERVER_URL` works, but the client calls `setInsecure()` — it accepts any
-certificate from any host. That gives encryption against passive listening and
-**no protection against an active attacker** who redirects the terminal to
-their own server, which is exactly the attack a school network makes easy.
-Pinning the certificate's fingerprint at provisioning time is the fix, and it
-is not implemented.
+**The terminal validates the server's certificate against the school's own
+root.** Drop `ls_root_ca.h` — produced by `console.bat tls:generate` — into the
+sketch folder next to `L_SIAMS_Bench.ino`, set `LS_SERVER_URL` to the `https://`
+address, and upload. The sketch detects the file at compile time; there is
+nothing to switch on.
+
+With the root present the board accepts a connection only from a server holding
+a certificate signed by that root. Without it, an https URL is **refused
+outright** rather than downgraded: `setInsecure()` appears nowhere in this
+sketch, because accepting any certificate from any host encrypts the traffic
+and then hands it to whoever answered first — no protection at all against an
+active attacker on the school Wi-Fi, and indistinguishable from a working
+system at both ends.
+
+Two mistakes are caught at boot and named on the serial monitor rather than at
+the first card tap: an `https://` URL with no root compiled in (refused), and a
+root compiled in while the URL is still `http://` (a notice — the setup was
+started and never finished).
+
+**The clock is seeded before the first connection.** A certificate is only
+valid between two dates and mbedtls checks them, but an ESP32 powers on
+believing it is 1970 — outside every certificate ever issued — and the board
+normally learns the time *from the server* it now cannot reach. The sketch
+breaks that circle with the later of two estimates: the moment it was compiled
+(necessarily after the certificate was issued) and the last time it knew for
+certain, kept in flash so a power cut cannot send it back. Both are discarded
+the moment the server's real time arrives; every attendance record carries the
+server's clock, never the board's.
+
+Full deployment procedure, including trusting the root on staff PCs and
+renewing later: [`HTTPS.md`](HTTPS.md).
+
+### What this firmware does NOT do
 
 **Credentials are compiled into the sketch, not stored in NVS.** They are
 `#define`s at the top of the file, so the built binary *does* contain that

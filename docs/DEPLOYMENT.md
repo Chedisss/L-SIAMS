@@ -354,6 +354,14 @@ Apache picks up automatically.
 
 ## 5. TLS
 
+> **On Windows and XAMPP, do not follow this section by hand.**
+> `console.bat tls:generate` and `console.bat tls:apache` do all of it — the
+> root, the server certificate with the right SANs, the Apache configuration,
+> and the header the terminals compile in — and `console.bat doctor` verifies
+> the result. See [`HTTPS.md`](HTTPS.md). The commands work on Linux too
+> (`php bin/console tls:generate`); the manual steps below are kept for
+> administrators integrating with an existing organisational CA.
+
 The devices and browsers are all on the school LAN, so a public CA is neither
 available nor necessary. Use an internal CA and install its root certificate on
 every terminal and every administrator machine.

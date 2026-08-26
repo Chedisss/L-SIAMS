@@ -5,6 +5,9 @@
 /storage/reports/*
 /storage/tmp/*
 /storage/framework/sessions/*
+# The school's certificate authority and the server key it signs. Private keys,
+# and a repository is the last place they should be able to reach.
+/storage/tls/*
 /database/backups/*.sql
 /database/backups/*.gz
 /database/backups/*.enc
@@ -21,4 +24,9 @@ node_modules/
 # would eat them: the optional secrets.h, and the copy update.bat saves of a
 # sketch you had edited.
 /firmware/*/secrets.h
+# The school's root certificate, copied in from storage/tls. Public and safe to
+# share, but specific to one installation — and tracked files are exactly what
+# update.bat overwrites, which would silently take a terminal's ability to
+# verify the server with it.
+/firmware/*/ls_root_ca.h
 /firmware/*/*.ino.your-copy

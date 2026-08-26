@@ -42,6 +42,7 @@ use App\Services\IdempotencyService;
 use App\Services\NotificationService;
 use App\Services\RealtimeService;
 use App\Services\SessionService;
+use App\Services\TlsCertificateService;
 
 $command   = $argv[1] ?? 'help';
 $arguments = array_slice($argv, 2);
@@ -107,6 +108,8 @@ try {
         'worker'              => commandWorker($arguments),
         'backup'              => commandBackup(),
         'security:audit-keys' => commandAuditKeys(),
+        'tls:generate'        => commandTlsGenerate($arguments, $flags),
+        'tls:apache'          => commandTlsApache($arguments, $flags),
         'doctor'              => commandDoctor(),
         'db:import'           => commandDbImport($arguments, $flags),
         'backup:decrypt'      => commandBackupDecrypt($arguments),
@@ -150,6 +153,10 @@ function commandHelp(): void
     out('    db:import <file.sql>    Import a .sql file or phpMyAdmin export (--fresh drops first)');
     out('    backup:decrypt <file>   Turn a backup archive back into readable SQL');
     out('    time:shift ["+2 hours"]  Move the clock to test a schedule (--clear to undo)');
+    out('');
+    out('  HTTPS', 'cyan');
+    out('    tls:generate            Issue the server certificate (--host= --ip= --new-ca)');
+    out('    tls:apache              Write the Apache configuration that serves it');
     out('');
 }
 
@@ -730,6 +737,11 @@ function commandDoctor(): void
         $note('APP_URL is ' . $appUrl);
     }
 
+    // -------------------------------------------------- transport security --
+    heading('Transport security');
+
+    doctorTls($appUrl, $check, $warn, $note);
+
     // --------------------------------------------------------------- data --
     heading('Database');
 
@@ -1207,6 +1219,9 @@ function commandAuditKeys(): void
         'app/Services/DeviceService.php',
         'app/Services/RealtimeService.php',
         'app/Services/CsrfService.php',
+        // Issues certificate serial numbers, which have to be unpredictable:
+        // a guessable serial is one of the ingredients of a forged certificate.
+        'app/Services/TlsCertificateService.php',
     ];
 
     $forbidden = ['mt_rand', 'rand(', 'uniqid', 'shuffle(', 'str_shuffle', 'array_rand'];
@@ -2295,4 +2310,444 @@ function commandSchemaDump(): void
         substr_count($body, 'TRIGGER'),
         substr_count($body, 'INSERT INTO')
     ), 'grey');
+}
+
+/**
+ * Issue the server certificate, creating the school's own root the first time.
+ *
+ * Deliberately reuses an existing root: it is installed on staff laptops and
+ * compiled into terminal firmware, so replacing it means physically visiting
+ * every device. Renewal should cost a command and an Apache restart, and
+ * --new-ca is the only way to pay more than that.
+ */
+function commandTlsGenerate(array $arguments, array $flags): void
+{
+    heading('Issuing the server certificate');
+
+    if (trim((string) Env::get('APP_KEY', '')) === '') {
+        fail(
+            "APP_KEY is not set, and the certificate authority key is stored encrypted under it.\n"
+            . '  Run `console.bat key:generate` first, then run this again.'
+        );
+    }
+
+    $hosts = tlsFlagValues($flags, 'host');
+    $ips   = tlsFlagValues($flags, 'ip');
+    $days  = (int) (tlsFlagValues($flags, 'days')[0] ?? 825);
+    $newCa = in_array('--new-ca', $flags, true);
+
+    // Nothing named: work out what this server actually answers to, rather
+    // than issuing a certificate for a name nobody will ever type.
+    if ($hosts === [] && $ips === []) {
+        [$hosts, $ips] = tlsDiscoverNames();
+
+        out('  No --host or --ip given, so these were worked out from APP_URL and this machine:', 'grey');
+
+        foreach (array_merge($hosts, $ips) as $name) {
+            out('    ' . $name, 'grey');
+        }
+
+        out('  Add --host=name or --ip=address to name others.', 'grey');
+        out('');
+    }
+
+    if ($newCa && TlsCertificateService::caExists()) {
+        out('  --new-ca replaces the root certificate.', 'yellow');
+        out('  Every terminal already flashed with the old root will stop connecting until it is', 'yellow');
+        out('  re-flashed, and every browser that trusted the old root will warn again.', 'yellow');
+        out('');
+
+        if (strtolower(prompt('  Type REPLACE to confirm')) !== 'replace') {
+            fail('Left the existing root in place. Nothing was changed.');
+        }
+    }
+
+    $result = TlsCertificateService::generate($hosts, $ips, $newCa, $days);
+
+    if ($result['ca_created']) {
+        ok('Created the school root certificate, valid until ' . $result['ca_expires']);
+        out('    fingerprint ' . $result['fingerprint'], 'grey');
+    } else {
+        ok('Reused the existing root certificate — flashed terminals keep working');
+    }
+
+    ok('Issued the server certificate, valid until ' . $result['expires']);
+    out('    valid for ' . implode(', ', array_merge($result['hosts'], $result['ips'])), 'grey');
+
+    $paths = $result['paths'];
+
+    heading('What to do next');
+    out('  1. Configure Apache to use it:');
+    out('       console.bat tls:apache', 'cyan');
+    out('');
+    out('  2. Trust the root on every PC and phone that opens the system.');
+    out('     Send them this file — it is public and safe to copy:');
+    out('       ' . $paths['ca_cert'], 'cyan');
+    out('     On Windows: double-click it, Install Certificate, Local Machine,');
+    out('     "Place all certificates in the following store" -> Trusted Root Certification Authorities.');
+    out('');
+    out('  3. Teach the terminals the same root. Copy this file into the sketch folder,');
+    out('     next to L_SIAMS_Bench.ino, then re-flash:');
+    out('       ' . $paths['firmware_header'], 'cyan');
+    out('     Change LS_SERVER_URL to start with https:// at the same time.');
+    out('');
+    out('  Back up ' . $paths['ca_key'] . ' with .env.', 'grey');
+    out('  It is encrypted under APP_KEY: losing APP_KEY means the root cannot sign again,', 'grey');
+    out('  and renewing would then mean re-flashing every terminal.', 'grey');
+}
+
+/**
+ * Write the Apache configuration rather than asking anyone to compose it.
+ *
+ * A hand-written SSL vhost is a reliable way to spend an evening: the paths use
+ * the wrong slashes, DocumentRoot lands on the project root instead of public/
+ * and exposes .env to the network, or the certificate and key are swapped.
+ * Generating the file removes every one of those, and leaves the operator one
+ * line to add to httpd.conf.
+ */
+function commandTlsApache(array $arguments, array $flags): void
+{
+    heading('Apache configuration for HTTPS');
+
+    if (!TlsCertificateService::serverCertificateExists()) {
+        fail(
+            "There is no server certificate yet.\n"
+            . '  Run `console.bat tls:generate` first.'
+        );
+    }
+
+    $port   = (int) (tlsFlagValues($flags, 'port')[0] ?? 443);
+    $names  = TlsCertificateService::subjectAltNames();
+    $paths  = TlsCertificateService::paths();
+    $target = $paths['dir'] . '/lsiams-ssl.conf';
+
+    // Apache reads forward slashes on Windows and chokes on backslashes inside
+    // quoted paths, so every path in the file is normalised on the way out.
+    $slash = static fn (string $path): string => str_replace('\\', '/', $path);
+
+    $documentRoot = $slash(BASE_PATH . '/public');
+    $serverName   = $names[0] ?? 'localhost';
+
+    $aliases = '';
+
+    foreach (array_slice($names, 1) as $alias) {
+        // ServerAlias takes names, not IP addresses; an IP reaches this vhost
+        // by being in the certificate and matching no other ServerName.
+        if (filter_var($alias, FILTER_VALIDATE_IP) === false) {
+            $aliases .= sprintf("    ServerAlias %s\n", $alias);
+        }
+    }
+
+    $config = sprintf(
+        <<<'CONF'
+        # ===========================================================================
+        # L-SIAMS — HTTPS for Apache
+        #
+        # GENERATED FILE. Produced by `console.bat tls:apache`; regenerate rather
+        # than edit, so a later certificate change cannot leave this behind.
+        #
+        # To use it, open
+        #   C:\xampp\apache\conf\httpd.conf
+        # and at the very bottom add this one line:
+        #
+        #   Include "%s"
+        #
+        # Then comment out XAMPP's own SSL config a few lines above, so there is
+        # only one thing listening on %d:
+        #
+        #   #Include conf/extra/httpd-ssl.conf
+        #
+        # Save, then restart Apache from the XAMPP Control Panel.
+        # ===========================================================================
+
+        Listen %d
+
+        <VirtualHost *:%d>
+            ServerName %s
+        %s
+            # public/ only. The project root holds .env, the database backups and
+            # the certificate keys; serving it would publish all three.
+            DocumentRoot "%s"
+
+            SSLEngine on
+            SSLCertificateFile    "%s"
+            SSLCertificateKeyFile "%s"
+
+            # TLS 1.2 is the floor. Everything below it is broken in ways that
+            # have names, and the ESP32 speaks 1.2 perfectly well.
+            SSLProtocol -all +TLSv1.2 +TLSv1.3
+            SSLHonorCipherOrder off
+            SSLSessionTickets off
+
+            <Directory "%s">
+                Options -Indexes +FollowSymLinks
+                AllowOverride All
+                Require all granted
+            </Directory>
+
+            ErrorLog  "%s/apache-ssl-error.log"
+            CustomLog "%s/apache-ssl-access.log" combined
+        </VirtualHost>
+
+        # ---------------------------------------------------------------------------
+        # Send plain HTTP to HTTPS.
+        #
+        # Commented out because it takes over port 80 for this machine, which
+        # matters if XAMPP is also serving something else. Uncomment it once the
+        # HTTPS address above is confirmed working.
+        # ---------------------------------------------------------------------------
+        #<VirtualHost *:80>
+        #    ServerName %s
+        #    Redirect permanent / https://%s/
+        #</VirtualHost>
+
+        CONF,
+        $slash($target),
+        $port,
+        $port,
+        $port,
+        $serverName,
+        rtrim($aliases, "\n"),
+        $documentRoot,
+        $slash($paths['server_cert']),
+        $slash($paths['server_key']),
+        $documentRoot,
+        $slash((string) Config::get('app.paths.logs')),
+        $slash((string) Config::get('app.paths.logs')),
+        $serverName,
+        $serverName . ($port === 443 ? '' : ':' . $port)
+    );
+
+    if (file_put_contents($target, $config) === false) {
+        fail('Could not write ' . $target);
+    }
+
+    ok('Wrote ' . $target);
+    out('');
+    out('  Add this one line to the bottom of C:\\xampp\\apache\\conf\\httpd.conf:');
+    out('      Include "' . $slash($target) . '"', 'cyan');
+    out('');
+    out('  Comment out XAMPP\'s own SSL include in the same file, so only one thing');
+    out('  is listening on ' . $port . ':');
+    out('      #Include conf/extra/httpd-ssl.conf', 'cyan');
+    out('');
+    out('  Restart Apache in the XAMPP Control Panel, then open:');
+    out('      https://' . $serverName . ($port === 443 ? '' : ':' . $port), 'cyan');
+    out('');
+    out('  Finally set APP_URL in .env to that same address, so links and the', 'grey');
+    out('  session cookie agree with what the browser is actually using.', 'grey');
+}
+
+/**
+ * Repeatable `--name=value` flags.
+ *
+ * @return list<string>
+ */
+function tlsFlagValues(array $flags, string $name): array
+{
+    $values = [];
+    $prefix = '--' . $name . '=';
+
+    foreach ($flags as $flag) {
+        if (str_starts_with($flag, $prefix)) {
+            $value = trim(substr($flag, strlen($prefix)));
+
+            if ($value !== '') {
+                $values[] = $value;
+            }
+        }
+    }
+
+    return $values;
+}
+
+/**
+ * Work out the names this server is reachable by.
+ *
+ * APP_URL is the address the administrator already told the system to use, so
+ * it is the one that must be on the certificate. The machine's own LAN address
+ * is added as well, because terminals are configured by IP and a certificate
+ * that omits it fails on the boards while working perfectly in the browser —
+ * a split failure that is genuinely hard to read from either end.
+ *
+ * @return array{0:list<string>,1:list<string>}
+ */
+function tlsDiscoverNames(): array
+{
+    $hosts = [];
+    $ips   = [];
+
+    $appHost = (string) (parse_url((string) Config::get('app.url', ''), PHP_URL_HOST) ?: '');
+
+    if ($appHost !== '') {
+        if (filter_var($appHost, FILTER_VALIDATE_IP) !== false) {
+            $ips[] = $appHost;
+        } else {
+            $hosts[] = $appHost;
+        }
+    }
+
+    $machine = gethostname();
+
+    if (is_string($machine) && $machine !== '') {
+        $hosts[] = strtolower($machine);
+
+        $resolved = gethostbyname($machine);
+
+        if ($resolved !== $machine
+            && filter_var($resolved, FILTER_VALIDATE_IP) !== false
+            && !str_starts_with($resolved, '127.')) {
+            $ips[] = $resolved;
+        }
+    }
+
+    return [array_values(array_unique($hosts)), array_values(array_unique($ips))];
+}
+
+/**
+ * The TLS half of the doctor.
+ *
+ * Split out because it is the section most likely to be read on a bad day: a
+ * certificate that expired overnight takes the whole school offline at once,
+ * every browser and every terminal together, and the symptom people report is
+ * "nothing works" rather than anything about certificates. Every check here
+ * exists to make that a warning weeks earlier instead of a discovery.
+ */
+function doctorTls(string $appUrl, callable $check, callable $warn, callable $note): void
+{
+    $paths     = TlsCertificateService::paths();
+    $isHttps   = str_starts_with(strtolower($appUrl), 'https://');
+    $certified = TlsCertificateService::serverCertificateExists();
+
+    if (!$certified) {
+        if ($isHttps) {
+            $check(false, 'Server certificate', 'APP_URL is https:// but no certificate exists — run tls:generate');
+        } else {
+            $warn('HTTPS is not set up', 'card taps and passwords cross the network in clear text');
+            $note('Run `console.bat tls:generate` to issue a certificate, then `tls:apache`.');
+        }
+
+        return;
+    }
+
+    $state  = TlsCertificateService::inspect();
+    $server = $state['server'];
+    $ca     = $state['ca'];
+
+    if ($server === null) {
+        $check(false, 'Server certificate', 'the file exists but cannot be read as a certificate');
+
+        return;
+    }
+
+    // Expiry. Two thresholds, because the two certificates cost very different
+    // amounts to replace: the server's is a command, the root's is a trip to
+    // every terminal in the building.
+    $days = (int) $server['days_left'];
+
+    if ($days < 0) {
+        $check(false, 'Server certificate validity', sprintf('EXPIRED %d day(s) ago — run tls:generate', -$days));
+    } elseif ($days <= 30) {
+        $warn('Server certificate expires soon', sprintf('%d day(s) left — run tls:generate', $days));
+    } else {
+        $check(true, 'Server certificate validity', sprintf('%d day(s) left (%s)', $days, $server['expires']));
+    }
+
+    if ($ca !== null) {
+        $caDays = (int) $ca['days_left'];
+
+        if ($caDays < 0) {
+            $check(false, 'Root certificate validity', 'EXPIRED — every terminal needs re-flashing after tls:generate --new-ca');
+        } elseif ($caDays <= 180) {
+            $warn('Root certificate expires', sprintf('%d day(s) left — replacing it means re-flashing every terminal', $caDays));
+        } else {
+            $check(true, 'Root certificate validity', sprintf('%d day(s) left (%s)', $caDays, $ca['expires']));
+        }
+    }
+
+    // The root key is only needed to issue, so a broken one is invisible until
+    // renewal day — which is the worst possible day to find out.
+    $readable = TlsCertificateService::caKeyReadable();
+
+    $check(
+        $readable,
+        'Root key readable',
+        $readable
+            ? 'decrypts under the current APP_KEY'
+            : 'cannot be decrypted — APP_KEY differs from the one that created it'
+    );
+
+    // A certificate that does not name the address people type is valid and
+    // useless. This is the check that catches a moved DHCP lease.
+    if ($appUrl !== '') {
+        $coverage = TlsCertificateService::covers($appUrl);
+
+        $check(
+            $coverage['covered'],
+            'Certificate covers APP_URL',
+            $coverage['covered']
+                ? $coverage['name']
+                : sprintf(
+                    '%s is not on the certificate (%s) — reissue with --host or --ip',
+                    $coverage['name'],
+                    implode(', ', $coverage['names'])
+                )
+        );
+    }
+
+    if (!$isHttps) {
+        $warn('APP_URL is still http://', 'a certificate exists but nothing is using it');
+        $note('Set APP_URL to the https:// address once Apache is serving it.');
+    }
+
+    // Finally, does it actually answer? Everything above reads files; this is
+    // the only check that proves Apache picked them up.
+    if ($isHttps) {
+        doctorTlsHandshake($appUrl, $paths['ca_cert'], $check, $note);
+    }
+}
+
+/**
+ * Open a real TLS connection to the configured address and verify it against
+ * the school's own root — the same judgement a terminal makes.
+ */
+function doctorTlsHandshake(string $appUrl, string $caFile, callable $check, callable $note): void
+{
+    $host = (string) (parse_url($appUrl, PHP_URL_HOST) ?: '');
+    $port = (int) (parse_url($appUrl, PHP_URL_PORT) ?: 443);
+
+    if ($host === '') {
+        return;
+    }
+
+    $context = stream_context_create([
+        'ssl' => [
+            'cafile'            => $caFile,
+            'verify_peer'       => true,
+            'verify_peer_name'  => true,
+            'peer_name'         => $host,
+            'allow_self_signed' => false,
+        ],
+    ]);
+
+    $errno  = 0;
+    $error  = '';
+    $client = @stream_socket_client(
+        sprintf('ssl://%s:%d', $host, $port),
+        $errno,
+        $error,
+        5,
+        STREAM_CLIENT_CONNECT,
+        $context
+    );
+
+    if (is_resource($client)) {
+        fclose($client);
+        $check(true, 'HTTPS answers and validates', sprintf('%s:%d', $host, $port));
+
+        return;
+    }
+
+    $check(false, 'HTTPS answers and validates', trim($error) !== '' ? trim($error) : 'connection failed');
+    $note('Apache may not have been restarted, or may not be including the config from tls:apache.');
 }
