@@ -123,7 +123,18 @@ final class ImportService
             $lastName      = trim((string) ($row['last_name'] ?? ''));
             $sectionCode   = strtoupper(trim((string) ($row['section_code'] ?? '')));
             $gradeCode     = strtoupper(trim((string) ($row['grade_level_code'] ?? '')));
-            $cardUid       = RfidService::normalise((string) ($row['card_uid'] ?? ''));
+
+            // Kept separately from the normalised form, because normalise()
+            // strips every character that is not hexadecimal — so a cell
+            // reading "ZZZZ", "N/A" or "--" comes back as the empty string and
+            // becomes indistinguishable from a cell nobody filled in.
+            //
+            // The check below then skipped it, the preview reported no
+            // problems, and the student was created with no card at all. On a
+            // roll of three hundred that is a handful of students silently
+            // marked absent every day until somebody works out why.
+            $rawCardUid = trim((string) ($row['card_uid'] ?? ''));
+            $cardUid    = RfidService::normalise($rawCardUid);
 
             if ($studentNumber === '') {
                 $errors[] = 'Student number is required.';
@@ -193,9 +204,16 @@ final class ImportService
                 }
             }
 
-            if ($cardUid !== '') {
+            // Emptiness is decided from the raw cell. Anything somebody typed
+            // is something they meant, and if it is not a card UID they have to
+            // be told rather than have it quietly dropped.
+            if ($rawCardUid !== '') {
                 if (preg_match('/^[0-9A-F]{8,32}$/', $cardUid) !== 1) {
-                    $errors[] = 'Card UID must be 8–32 hexadecimal characters.';
+                    $errors[] = sprintf(
+                        'Card UID "%s" is not 8–32 hexadecimal characters. Leave the cell empty if this '
+                        . 'student has no card yet.',
+                        mb_substr($rawCardUid, 0, 32)
+                    );
                 } elseif (isset($seenUids[$cardUid])) {
                     $errors[] = sprintf('Duplicate card UID within this file (also on line %d).', $seenUids[$cardUid]);
                 } elseif ($db->scalar('SELECT 1 FROM rfid_cards WHERE card_uid = :u LIMIT 1', ['u' => $cardUid]) !== null) {
@@ -497,14 +515,39 @@ final class ImportService
     {
         $columns = $kind === 'devices' ? self::DEVICE_COLUMNS : self::STUDENT_COLUMNS;
 
-        $example = $kind === 'devices'
-            ? [['Room 204 Terminal', '', 'AA:BB:CC:DD:EE:01', '204', 'both', 'SN-0001']]
-            : [[
-                '2026-00001', 'Juan', 'Santos', 'Dela Cruz', '',
-                'Male', '2009-05-14', '', '123 Mabini St.',
-                'Maria Dela Cruz', '09171234567', '',
-                'G12', 'G12-STEM-A', '04A7C1935D', 'active',
-            ]];
+        if ($kind === 'devices') {
+            $room = (string) (Database::instance()->scalar(
+                'SELECT room_number FROM classrooms WHERE deleted_at IS NULL ORDER BY classroom_id LIMIT 1'
+            ) ?? '204');
+
+            return CsvWriter::build(
+                $columns,
+                [['Room ' . $room . ' Terminal', '', 'AA:BB:CC:DD:EE:01', $room, 'both', 'SN-0001']]
+            );
+        }
+
+        // The example row names a section and grade level that exist in THIS
+        // installation, not invented ones. A template whose own sample row is
+        // rejected by the importer teaches the wrong lesson on the first
+        // attempt, and "G12-STEM-A" exists in no school that did not happen to
+        // name a section that.
+        $where = Database::instance()->selectOne(
+            'SELECT g.grade_level_code, s.section_code
+               FROM sections s
+               JOIN grade_levels g ON g.grade_level_id = s.grade_level_id
+              WHERE s.status = \'active\' AND s.deleted_at IS NULL
+              ORDER BY g.numeric_level, s.section_code
+              LIMIT 1'
+        );
+
+        $example = [[
+            '2026-00001', 'Juan', 'Santos', 'Dela Cruz', '',
+            'Male', '2009-05-14', '', '123 Mabini St.',
+            'Maria Dela Cruz', '09171234567', '',
+            (string) ($where['grade_level_code'] ?? 'G7'),
+            (string) ($where['section_code'] ?? 'G7-SAMPLE'),
+            '04A7C1935D', 'active',
+        ]];
 
         return CsvWriter::build($columns, $example);
     }

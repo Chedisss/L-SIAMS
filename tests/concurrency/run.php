@@ -1846,10 +1846,110 @@ try {
     }
 
     /* =====================================================================
-     * 18. Sustained soak (opt-in, 30 minutes)
+     * 18. An import never discards a cell somebody filled in
+     *
+     * The card UID column was normalised before it was checked, and
+     * normalising strips every character that is not hexadecimal. A cell
+     * reading "ZZZZ" or "N/A" came back as the empty string, which the
+     * validator read as "no card given" — so the preview reported no problems
+     * and the student was created with no card at all.
+     *
+     * On a roll of three hundred that is a handful of students silently marked
+     * absent every day until somebody works out why. Nothing errors; the data
+     * is simply missing.
+     * ===================================================================== */
+    if ($want('import')) {
+        $runner->group('18. An import never discards a cell somebody filled in');
+
+        $fixture->build(1, 2, 1);
+
+        $sectionId = $fixture->ids['sections'][0];
+        $section   = $db->selectOne(
+            'SELECT s.section_code, g.grade_level_code
+               FROM sections s JOIN grade_levels g ON g.grade_level_id = s.grade_level_id
+              WHERE s.section_id = :id',
+            ['id' => $sectionId]
+        );
+
+        $header = ['student_number', 'first_name', 'last_name', 'gender', 'birthdate',
+                   'guardian_name', 'guardian_contact', 'grade_level_code', 'section_code',
+                   'card_uid', 'status'];
+
+        $row = static function (string $number, string $cardUid) use ($section): array {
+            return [
+                'student_number'   => $number,
+                'first_name'       => 'Test',
+                'last_name'        => 'Importer',
+                'gender'           => 'Male',
+                'birthdate'        => '2012-01-01',
+                'guardian_name'    => 'Test Guardian',
+                'guardian_contact' => '09170000000',
+                'grade_level_code' => (string) $section['grade_level_code'],
+                'section_code'     => (string) $section['section_code'],
+                'card_uid'         => $cardUid,
+                'status'           => 'active',
+            ];
+        };
+
+        $preview = \App\Services\ImportService::previewStudents([
+            $row(Fixture::PREFIX . 'I1', 'ZZZZ'),        // no hex at all
+            $row(Fixture::PREFIX . 'I2', 'N/A'),         // nor this
+            $row(Fixture::PREFIX . 'I3', '04-A7-C1-99'), // hex with separators — valid
+            $row(Fixture::PREFIX . 'I4', ''),            // genuinely no card
+        ]);
+
+        $byNumber = [];
+        foreach ($preview['valid'] as $v)   { $byNumber[$v['student_number']] = ['valid', $v]; }
+        foreach ($preview['invalid'] as $i) { $byNumber[$i['student_number']] = ['invalid', $i]; }
+
+        $runner->assertEquals('a cell of non-hex text is refused, not silently emptied',
+            'invalid', $byNumber[Fixture::PREFIX . 'I1'][0] ?? 'missing');
+
+        $runner->assertEquals('and so is "N/A"',
+            'invalid', $byNumber[Fixture::PREFIX . 'I2'][0] ?? 'missing');
+
+        $runner->assert('the refusal quotes what was actually typed',
+            str_contains(implode(' ', $byNumber[Fixture::PREFIX . 'I1'][1]['errors'] ?? []), 'ZZZZ'),
+            'the error did not name the offending value');
+
+        $runner->assertEquals('a UID written with separators is still accepted',
+            'valid', $byNumber[Fixture::PREFIX . 'I3'][0] ?? 'missing');
+
+        $runner->assertEquals('and normalised to bare hex',
+            '04A7C199', $byNumber[Fixture::PREFIX . 'I3'][1]['card_uid'] ?? null);
+
+        $runner->assertEquals('an empty cell still means no card',
+            'valid', $byNumber[Fixture::PREFIX . 'I4'][0] ?? 'missing');
+
+        $runner->assert('with nothing invented for it',
+            array_key_exists('card_uid', $byNumber[Fixture::PREFIX . 'I4'][1] ?? [])
+            && $byNumber[Fixture::PREFIX . 'I4'][1]['card_uid'] === null,
+            'a card UID appeared for a row that named none');
+
+        // The template has to survive its own importer. A sample row the
+        // importer rejects teaches the wrong lesson on the very first attempt.
+        $template = \App\Services\ImportService::template('students');
+        $lines    = array_values(array_filter(explode("\n", str_replace("\r", '', $template))));
+
+        $runner->assertEquals('the template has a header and one example row', 2, count($lines));
+
+        // The five-argument form: PHP 8.4 deprecates omitting $escape.
+        $parsed = array_combine(
+            str_getcsv(preg_replace('/^\xEF\xBB\xBF/', '', $lines[0]), ',', '"', '\\'),
+            str_getcsv($lines[1], ',', '"', '\\')
+        );
+
+        $templatePreview = \App\Services\ImportService::previewStudents([$parsed]);
+
+        $runner->assertEquals("the template's own example row imports cleanly",
+            0, count($templatePreview['invalid']));
+    }
+
+    /* =====================================================================
+     * 19. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('18. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('19. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);
