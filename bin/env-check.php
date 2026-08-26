@@ -55,6 +55,45 @@ switch ($command) {
 
         exit(0);
 
+    case 'keys':
+        // Are the three cryptographic secrets actually present in .env?
+        //
+        // start.bat used to ask a different question — does .env EXIST — and
+        // that is not the same thing. A .env copied from the example exists
+        // and has all three keys blank, so the launcher sailed past and
+        // started a system that cannot encrypt a terminal secret, hash an API
+        // key or mint a realtime ticket. Every page needing one then failed,
+        // and nothing on the way in had said a word about it.
+        //
+        // This reads the file directly rather than booting the framework: a
+        // launcher that cannot start the application still has to be able to
+        // say why it will not.
+        $envFile = dirname(__DIR__) . '/.env';
+
+        if (!is_file($envFile)) {
+            echo 'no .env', PHP_EOL;
+            exit(1);
+        }
+
+        $contents = (string) file_get_contents($envFile);
+        $blank    = [];
+
+        foreach (['APP_KEY', 'API_KEY_PEPPER', 'REALTIME_TICKET_SECRET'] as $name) {
+            $set = preg_match('/^' . $name . '=(.*)$/m', $contents, $found) === 1
+                && trim($found[1]) !== '';
+
+            if (!$set) {
+                $blank[] = $name;
+            }
+        }
+
+        if ($blank !== []) {
+            echo implode(' ', $blank), PHP_EOL;
+            exit(1);
+        }
+
+        exit(0);
+
     case 'database':
         // Probed at the socket before PDO is allowed near it.
         //

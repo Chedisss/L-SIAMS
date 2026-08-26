@@ -214,8 +214,22 @@ function commandKeyGenerate(array $flags): void
     }
 
     $appKeySet = preg_match('/^APP_KEY=(.+)$/m', $contents, $m) === 1 && trim($m[1]) !== '';
+    $withheld  = $existingSecrets > 0 && !$appKeySet && !$force;
 
-    if ($existingSecrets > 0 && !$appKeySet && !$force) {
+    // The refusal below is right, but it used to fail() before writing
+    // anything — so an installation that hit it was left with NO keys rather
+    // than one missing key, and doctor reported all three unset. Only two of
+    // them can orphan data:
+    //
+    //   APP_KEY         opens terminal secrets and fingerprint templates
+    //   API_KEY_PEPPER  hashes API keys; a new one invalidates every device key
+    //
+    // REALTIME_TICKET_SECRET signs short-lived realtime tickets and nothing
+    // stored depends on it, so withholding it protected nothing and only made
+    // the installation look more broken than it was. It is written either way.
+    $atRisk = ['APP_KEY', 'API_KEY_PEPPER'];
+
+    if ($withheld) {
         out('');
         out('  ✗ Refusing to generate a new APP_KEY.', 'red');
         out('');
@@ -234,11 +248,17 @@ function commandKeyGenerate(array $flags): void
         out('  loss: re-issue every terminal\'s provisioning file and enrol every', 'grey');
         out('  fingerprint again. Nothing else in the database is affected.', 'grey');
         out('');
-
-        fail('APP_KEY generation refused — run with --force only if the original .env is gone.');
+        out('  APP_KEY and API_KEY_PEPPER are being withheld. REALTIME_TICKET_SECRET', 'grey');
+        out('  is written below — nothing stored depends on it, so it carries no risk.', 'grey');
+        out('');
     }
 
     foreach (['APP_KEY', 'API_KEY_PEPPER', 'REALTIME_TICKET_SECRET'] as $name) {
+        if ($withheld && in_array($name, $atRisk, true)) {
+            out('  ' . $name . ' withheld — see above (use --force only if the original .env is gone)', 'yellow');
+            continue;
+        }
+
         $hasValue = preg_match('/^' . $name . '=(.+)$/m', $contents, $matches) === 1
             && trim($matches[1]) !== '';
 
@@ -267,6 +287,14 @@ function commandKeyGenerate(array $flags): void
     if ($written > 0) {
         out('');
         out('  .env permissions set to 0600. Keep this file out of version control.', 'grey');
+    }
+
+    // Non-zero, so start.bat and update.bat stop rather than launching a
+    // system that cannot encrypt anything. The two withheld keys are the whole
+    // point: this is not a partial success to be shrugged off.
+    if ($withheld) {
+        out('');
+        fail('APP_KEY generation refused — run with --force only if the original .env is gone.');
     }
 }
 

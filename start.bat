@@ -132,6 +132,48 @@ if not exist ".env" (
     )
 )
 
+REM ----------------------------------------------------------- keys --------
+REM Checked on EVERY run, not only when .env is missing.
+REM
+REM "Does .env exist" is a different question from "does .env have keys", and
+REM the gap between them is a trap. A .env copied from the example exists and
+REM has all three keys blank. If key:generate then refuses - which it does,
+REM correctly, when the database already holds data encrypted under a key that
+REM went missing - the file is left blank, this launcher printed one line about
+REM it, and every later run skipped the block above entirely because .env now
+REM existed. The system started, looked fine, and failed on anything that
+REM needed a key.
+for /f "delims=" %%K in ('""%PHP%" bin\env-check.php keys" 2^>nul') do set "BLANKKEYS=%%K"
+
+"%PHP%" bin\env-check.php keys >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo   [X] This installation has no encryption keys.
+    echo.
+    echo       Missing: %BLANKKEYS%
+    echo.
+    echo       Nothing can encrypt a terminal secret, issue an API key or open
+    echo       an enrolled fingerprint until they are set, so the system would
+    echo       start and then fail on the first page that needed one.
+    echo.
+    echo       If this is a NEW installation with an empty database:
+    echo         console.bat key:generate
+    echo.
+    echo       If the database already has terminals or fingerprints in it,
+    echo       they were encrypted with an APP_KEY that is no longer in .env.
+    echo       FIND THAT FILE FIRST - a backup, or the PC this database came
+    echo       from. Restoring it recovers everything. Generating new keys
+    echo       cannot. See docs\MOVING-TO-ANOTHER-PC.md
+    echo.
+    echo       Only if it is genuinely gone:
+    echo         console.bat key:generate --force
+    echo       then re-issue every terminal's provisioning file and enrol
+    echo       every fingerprint again.
+    echo.
+    pause
+    exit /b 1
+)
+
 REM --------------------------------------------------------- database ------
 REM Start MySQL yourself in the XAMPP Control Panel; this only checks it.
 echo.
