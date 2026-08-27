@@ -1051,15 +1051,44 @@ function commandDoctor(): void
         // which is where anyone naturally checks, and it presents at the
         // terminal as "could not connect" — indistinguishable from a stopped
         // server. Probing the machine's own LAN address separates the two.
-        $lanIp = null;
+        $lanIp    = null;
+        $lanGuess = false;
 
-        $viaHostname = @gethostbyname(@gethostname() ?: '');
+        // The certificate first, when there is one, because it is the only
+        // address here that somebody actually chose. Everything below it is
+        // this machine guessing from its network adapters, and a Windows PC
+        // running VMware, VirtualBox, Hyper-V or WSL has several — each with a
+        // private address that looks exactly as plausible as the real one.
+        //
+        // Guessing wrong is not a cosmetic problem. This is the address the
+        // note below tells somebody to compile into every terminal, and a
+        // virtual adapter's address is both unreachable from a classroom and
+        // absent from the certificate, so the boards would fail twice over.
+        $appHost = (string) (parse_url($appUrl, PHP_URL_HOST) ?: '');
 
-        if (is_string($viaHostname)
-            && filter_var($viaHostname, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
-            && !str_starts_with($viaHostname, '127.')
-        ) {
-            $lanIp = $viaHostname;
+        if (filter_var($appHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && !str_starts_with($appHost, '127.')) {
+            $lanIp = $appHost;
+        }
+
+        if ($lanIp === null && TlsCertificateService::serverCertificateExists()) {
+            foreach (TlsCertificateService::subjectAltNames() as $name) {
+                if (filter_var($name, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && !str_starts_with($name, '127.')) {
+                    $lanIp = $name;
+                    break;
+                }
+            }
+        }
+
+        if ($lanIp === null) {
+            $viaHostname = @gethostbyname(@gethostname() ?: '');
+
+            if (is_string($viaHostname)
+                && filter_var($viaHostname, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+                && !str_starts_with($viaHostname, '127.')
+            ) {
+                $lanIp    = $viaHostname;
+                $lanGuess = true;
+            }
         }
 
         if ($lanIp === null) {
@@ -1077,7 +1106,8 @@ function commandDoctor(): void
                 if (filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
                     && !str_starts_with($candidate, '127.')
                 ) {
-                    $lanIp = $candidate;
+                    $lanIp    = $candidate;
+                    $lanGuess = true;
                 }
             }
         }
@@ -1092,8 +1122,36 @@ function commandDoctor(): void
             if (is_resource($lanSocket)) {
                 fclose($lanSocket);
                 $check(true, 'Reachable from the network on ' . $lanIp . ':' . $webPort);
-                $note('That is the address the terminals must have in LS_SERVER_URL,');
-                $note('written in full: ' . $scheme . $lanIp . ($webPort === 443 || $webPort === 80 ? '' : ':' . $webPort));
+
+                // Only offer it as the terminals' address if the certificate
+                // agrees. A guessed adapter address that answers here is still
+                // the wrong thing to compile into a board.
+                $onCertificate = !TlsCertificateService::serverCertificateExists()
+                    || TlsCertificateService::covers($scheme . $lanIp)['covered'];
+
+                if ($onCertificate && !$lanGuess) {
+                    $note('That is the address the terminals must have in LS_SERVER_URL,');
+                    $note('written in full: ' . $scheme . $lanIp . ($webPort === 443 || $webPort === 80 ? '' : ':' . $webPort));
+                } elseif (!$onCertificate) {
+                    $warn('Detected address is not on the certificate', $lanIp);
+                    $note('This machine has more than one network adapter and this is probably');
+                    $note('not the real one — VMware, VirtualBox, Hyper-V and WSL each add a');
+                    $note('private address that looks just as plausible as the LAN address.');
+                    $note('');
+                    $note('Do NOT put this address in LS_SERVER_URL. A terminal would be unable');
+                    $note('to reach it from a classroom, and would reject the certificate even');
+                    $note('if it could. Use the address the certificate names:');
+
+                    foreach (TlsCertificateService::subjectAltNames() as $name) {
+                        if ($name !== '127.0.0.1' && $name !== 'localhost') {
+                            $note('  ' . $scheme . $name . ($webPort === 443 || $webPort === 80 ? '' : ':' . $webPort));
+                        }
+                    }
+                } else {
+                    $note('That address was guessed from this PC\'s adapters. Confirm it against');
+                    $note('ipconfig before putting it in LS_SERVER_URL:');
+                    $note('  ' . $scheme . $lanIp . ($webPort === 443 || $webPort === 80 ? '' : ':' . $webPort));
+                }
             } else {
                 $check(false, 'Reachable from the network on ' . $lanIp . ':' . $webPort,
                     $lanErrstr ?: 'refused');
