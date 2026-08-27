@@ -1022,6 +1022,8 @@ function commandDoctor(): void
 
     $webPort = 8080;
     $appUrl  = (string) Env::get('APP_URL', '');
+    $isHttps = str_starts_with(strtolower($appUrl), 'https://');
+    $scheme  = $isHttps ? 'https://' : 'http://';
 
     if ($appUrl !== '') {
         $parsedPort = parse_url($appUrl, PHP_URL_PORT);
@@ -1083,7 +1085,7 @@ function commandDoctor(): void
         if ($lanIp === null) {
             $note('This PC\'s LAN address could not be determined here, so whether a');
             $note('terminal can reach the site was not tested. Run ipconfig and open');
-            $note('http://<that address>:' . $webPort . ' in a browser to check by hand.');
+            $note($scheme . '<that address>:' . $webPort . ' in a browser to check by hand.');
         } else {
             $lanSocket = @fsockopen($lanIp, $webPort, $lanErrno, $lanErrstr, 1.5);
 
@@ -1091,7 +1093,7 @@ function commandDoctor(): void
                 fclose($lanSocket);
                 $check(true, 'Reachable from the network on ' . $lanIp . ':' . $webPort);
                 $note('That is the address the terminals must have in LS_SERVER_URL,');
-                $note('written in full: http://' . $lanIp . ':' . $webPort);
+                $note('written in full: ' . $scheme . $lanIp . ($webPort === 443 || $webPort === 80 ? '' : ':' . $webPort));
             } else {
                 $check(false, 'Reachable from the network on ' . $lanIp . ':' . $webPort,
                     $lanErrstr ?: 'refused');
@@ -1100,13 +1102,23 @@ function commandDoctor(): void
                 $note('terminal can reach it while the browser here works perfectly — which');
                 $note('is why this looks like a fault at the board.');
                 $note('');
+                $binary = $isHttps ? 'httpd.exe' : 'php.exe';
+
                 $note('Windows Firewall is the usual cause: it asks once whether to allow');
-                $note('php.exe, and a "Cancel" or a "Public networks only" answer produces');
-                $note('exactly this. Allow php.exe on Private networks.');
+                $note($binary . ', and a "Cancel" or a "Public networks only" answer produces');
+                $note('exactly this. Allow ' . $binary . ' on Private networks.');
                 $note('');
-                $note('The other cause is a server bound to localhost. start.bat binds');
-                $note('0.0.0.0 deliberately, so this points at the firewall unless the site');
-                $note('is being started some other way.');
+
+                if ($isHttps) {
+                    $note('The other cause is a Listen line bound to one address. The config');
+                    $note('written by tls:apache uses a bare "Listen ' . $webPort . '", which accepts');
+                    $note('every address, so this points at the firewall unless that line was');
+                    $note('edited.');
+                } else {
+                    $note('The other cause is a server bound to localhost. start.bat binds');
+                    $note('0.0.0.0 deliberately, so this points at the firewall unless the site');
+                    $note('is being started some other way.');
+                }
             }
         }
     } else {
@@ -1114,12 +1126,35 @@ function commandDoctor(): void
             $siteErrstr ?: 'nothing is listening');
 
         $note('Nothing is serving the system right now, so no browser and no terminal');
-        $note('can reach it. Run start.bat — it serves the site on port ' . $webPort . ' and');
-        $note('must stay open while the system is in use.');
+        $note('can reach it.');
         $note('');
-        $note('XAMPP\'s Apache does NOT serve L-SIAMS, so Apache showing green on ports');
-        $note('80 and 443 in the XAMPP Control Panel does not mean the site is up. Only');
-        $note('MySQL is needed from XAMPP; start.bat provides the web server itself.');
+
+        // Which advice is right depends entirely on who is meant to be serving
+        // the site, and that flipped when HTTPS was switched on. Telling an
+        // Apache installation to run start.bat — or telling a start.bat
+        // installation to look at Apache — sends someone to check the one thing
+        // that is working and ignore the one that is not.
+        if ($isHttps) {
+            $note('This installation serves over HTTPS, which means Apache serves it:');
+            $note('  1. Open the XAMPP Control Panel and Start Apache (and MySQL).');
+            $note('  2. If Apache will not stay started, open its Logs -> Apache');
+            $note('     (error.log) button. Port ' . $webPort . ' already in use is the usual');
+            $note('     cause, normally XAMPP\'s own httpd-ssl.conf still being included.');
+            $note('  3. If Apache is running but nothing answers here, it is probably not');
+            $note('     including the L-SIAMS config. Run console.bat tls:apache again and');
+            $note('     re-check the Include line at the bottom of httpd.conf.');
+            $note('');
+            $note('start.bat does NOT serve the site any more — PHP\'s built-in server');
+            $note('cannot do HTTPS. It still starts the worker and the realtime server,');
+            $note('and both are still needed.');
+        } else {
+            $note('Run start.bat — it serves the site on port ' . $webPort . ' and must stay');
+            $note('open while the system is in use.');
+            $note('');
+            $note('XAMPP\'s Apache does NOT serve L-SIAMS, so Apache showing green on ports');
+            $note('80 and 443 in the XAMPP Control Panel does not mean the site is up. Only');
+            $note('MySQL is needed from XAMPP; start.bat provides the web server itself.');
+        }
     }
 
     heading('Live updates');
