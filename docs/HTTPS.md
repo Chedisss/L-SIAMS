@@ -404,10 +404,25 @@ requests over plain HTTP are then refused with `426 HTTPS_REQUIRED`. Set
 `APP_ENV=local` again until step 8 is done everywhere.
 
 **The dashboards stopped updating live, but everything else works.**
-`REALTIME_TLS_ENABLED` is still `false`, so the page is being handed a `ws://`
-address that the browser refuses on an HTTPS page. Set it to `true` in `.env`,
-restart `start.bat`, and re-run `console.bat doctor` — there is a check for
-exactly this.
+Two different causes, and `console.bat doctor` tells them apart.
+
+If it says the realtime server is **not reachable**, either `start.bat` is not
+running or `REALTIME_TLS_ENABLED` is still `false` — the page would then be
+handed a `ws://` address that no browser accepts on an HTTPS page.
+
+If the doctor says the realtime server **is** listening and the pill still
+reads "Polling", the browser has not been given the school root. This is the
+confusing case, because the site itself opens fine:
+
+> A browser shows a click-through warning for an untrusted **page**. It shows
+> nothing at all for a **WebSocket** — the handshake just fails, with no
+> interstitial and no way to accept it. The exception you clicked for the site
+> does not help either, because the realtime server listens on its own port and
+> certificate exceptions are per port.
+
+So a PC that can open the dashboard through the warning will still sit on
+"Polling" until `ca.crt` is installed on it (Step 4). Install it, restart the
+browser completely, and the pill turns "Live".
 
 **Sessions stopped closing on their own; devices show online when they are not.**
 The worker is not running. Apache does not start it — `start.bat` does. Run

@@ -1232,6 +1232,27 @@ function commandDoctor(): void
         if (is_resource($socket)) {
             fclose($socket);
             ok('Realtime server is listening on ' . $probeHost . ':' . $wsPort);
+
+            // Reachable from here says nothing about whether a browser will
+            // accept it, and the difference is invisible from this side.
+            //
+            // A browser shows a click-through warning for an https page it does
+            // not trust. It shows nothing at all for a WebSocket: an untrusted
+            // certificate fails the handshake silently, with no interstitial
+            // and no way to accept it. The exception someone clicked for the
+            // site does not carry over either, because the realtime server is
+            // on its own port and exceptions are per port.
+            //
+            // So on a private root the dashboards sit on "Polling" until the
+            // root is installed — the page working perfectly is what makes this
+            // one hard to place.
+            if ((bool) Config::get('realtime.tls.enabled', true)
+                && TlsCertificateService::serverCertificateExists()) {
+                $note('Dashboards will still read "Polling" on any PC that has not installed');
+                $note('the school root, even where the site itself opens. A browser gives no');
+                $note('click-through for a WebSocket — an untrusted certificate just fails.');
+                $note('Install storage/tls/ca.crt on that PC and the pill turns "Live".');
+            }
         } else {
             $warn(
                 'Realtime server not reachable',
