@@ -25,14 +25,14 @@
     Header always unset Server
 </IfModule>
 
-# Uploaded files are data, never code. Even if a PHP file were somehow written
-# into uploads/, this stops the server from executing it.
-<Directory "uploads">
-    php_flag engine off
-    <FilesMatch "\.(php|phtml|phar|cgi|pl|py|sh)$">
-        Require all denied
-    </FilesMatch>
-</Directory>
+# Uploaded files are data, never code — see public/uploads/.htaccess, which is
+# where that rule now lives.
+#
+# It cannot live here. <Directory> is a server-config and virtual-host
+# directive; Apache refuses it inside .htaccess and answers the request with
+# 500 Internal Server Error. The block sat here unnoticed for as long as the
+# system was served by PHP's built-in server, which ignores .htaccess
+# altogether, and failed the moment Apache took over.
 
 <FilesMatch "^\.">
     Require all denied
