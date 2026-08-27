@@ -175,37 +175,30 @@ if errorlevel 1 (
 )
 
 REM ------------------------------------------------------------- https -----
-REM This launcher runs PHP's built-in web server, which cannot speak TLS.
-REM If .env says the site is https, Apache is serving it and this script would
-REM start a second, unencrypted copy of the same site on another port.
+REM Apache replaces ONE of the three things this launcher starts.
+REM
+REM PHP's built-in web server cannot speak TLS, so once .env says https the
+REM site is Apache's and starting the built-in one here would put a second,
+REM UNENCRYPTED copy of the same system on another port - same database, same
+REM records, no encryption, and nothing on either side saying the other exists.
+REM
+REM The worker and the realtime server are a different matter. Apache does not
+REM provide them, they are still needed, and refusing to run at all would
+REM quietly leave a school with no session auto-close and no live dashboards.
+REM So HTTPS mode skips the web server and starts the other two.
+set "HTTPSMODE="
 set "HTTPSURL="
 for /f "delims=" %%U in ('""%PHP%" bin\env-check.php tls" 2^>nul') do set "HTTPSURL=%%U"
 
 "%PHP%" bin\env-check.php tls >nul 2>&1
 if errorlevel 1 (
+    set "HTTPSMODE=1"
     echo.
-    echo   [X] This installation is set up for HTTPS, so start.bat is not the
-    echo       way to run it.
+    echo   [ok] HTTPS mode - Apache serves the site
+    echo        %HTTPSURL%
     echo.
-    echo       APP_URL is %HTTPSURL%
-    echo.
-    echo       start.bat runs PHP's own small web server, which cannot do
-    echo       HTTPS at all. Apache serves the site now. Running this would put
-    echo       a second, UNENCRYPTED copy of the system on port %WEB_PORT% -
-    echo       same database, same records, no encryption.
-    echo.
-    echo       To start the system:
-    echo         1. Open the XAMPP Control Panel.
-    echo         2. Start MySQL, then start Apache.
-    echo         3. Open %HTTPSURL%
-    echo.
-    echo       To check it is working:
-    echo         console.bat doctor
-    echo.
-    echo       See docs\HTTPS.md
-    echo.
-    pause
-    exit /b 1
+    echo        This window will start the worker and the realtime server only.
+    echo        Start Apache and MySQL yourself in the XAMPP Control Panel.
 )
 
 REM --------------------------------------------------------- database ------
@@ -288,7 +281,11 @@ start "L-SIAMS realtime" /min cmd /k ""%PHP%" realtime\server.php"
 
 REM The web server runs in this window; closing it stops the site.
 timeout /t 2 /nobreak >nul
-start "" "%URL%"
+if defined HTTPSMODE (
+    start "" "%HTTPSURL%"
+) else (
+    start "" "%URL%"
+)
 
 REM Find this PC's address on the school network so the other devices can be
 REM told where to go. Picking the first IPv4 that is not loopback is right on
@@ -302,6 +299,29 @@ for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /c:"IPv4 Address"') do (
             if not "%%B"=="127.0.0.1" set "LANIP=%%B"
         )
     )
+)
+
+if defined HTTPSMODE (
+    echo.
+    echo   ================================================
+    echo    L-SIAMS background services are running
+    echo.
+    echo      Site:     %HTTPSURL%    ^(served by Apache^)
+    echo      Worker:   closing expired sessions, marking devices offline
+    echo      Realtime: live updates on the dashboards
+    echo.
+    echo    Apache and MySQL are started from the XAMPP Control
+    echo    Panel, not from here. If the site does not load, that
+    echo    is where to look first.
+    echo.
+    echo    Check everything at once with:  console.bat doctor
+    echo.
+    echo    Run stop.bat to close the worker and the realtime server.
+    echo   ================================================
+    echo.
+    pause
+    endlocal
+    exit /b 0
 )
 
 echo.
