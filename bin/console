@@ -2631,6 +2631,34 @@ function doctorTls(string $appUrl, callable $check, callable $warn, callable $no
     $isHttps   = str_starts_with(strtolower($appUrl), 'https://');
     $certified = TlsCertificateService::serverCertificateExists();
 
+    // Checked before anything about certificates, because it is the one
+    // mismatch that locks everybody out and writes nothing anywhere.
+    //
+    // A Secure cookie is never sent over http, and the __Host- prefix the
+    // session picks up alongside it makes the browser refuse to store the
+    // cookie at all. Login then succeeds, redirects, arrives with no cookie,
+    // and returns to the login form — with a correct password, no error on
+    // screen and nothing in any log, because from the server's side nothing
+    // failed. Turning the flag on before the site actually serves https is an
+    // easy ordering mistake and an extremely hard symptom to read.
+    $cookieSecure = (bool) Config::get('security.session.cookie.secure', true);
+
+    if ($cookieSecure && $appUrl !== '' && !$isHttps) {
+        $check(
+            false,
+            'Session cookie matches the scheme',
+            'SESSION_COOKIE_SECURE=true but APP_URL is http:// — nobody can log in; set it false until https works'
+        );
+    } elseif (!$cookieSecure && $isHttps) {
+        $warn(
+            'Session cookie is not marked Secure',
+            'the site is https but SESSION_COOKIE_SECURE=false, so the cookie can leak over http'
+        );
+        $note('Set SESSION_COOKIE_SECURE=true in .env. Everyone is signed out once when you do — the cookie is renamed.');
+    } elseif ($cookieSecure && $isHttps) {
+        $check(true, 'Session cookie matches the scheme', 'Secure, __Host- prefixed');
+    }
+
     if (!$certified) {
         if ($isHttps) {
             $check(false, 'Server certificate', 'APP_URL is https:// but no certificate exists — run tls:generate');

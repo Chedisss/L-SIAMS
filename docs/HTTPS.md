@@ -170,6 +170,34 @@ console — so the symptom that reaches you is "the dashboard stopped updating",
 with nothing wrong anywhere in this system. It picks up the certificate you
 just issued on its own; there is nothing else to set.
 
+Then mark the session cookie as Secure:
+
+```
+SESSION_COOKIE_SECURE=true
+```
+
+> **Order matters here.** A Secure cookie is never sent over `http://`, and the
+> `__Host-` prefix it picks up makes the browser refuse to store it at all. Set
+> this *after* Apache is genuinely serving HTTPS — step 4 — not before. Set it
+> too early and login accepts the correct password, redirects, and returns you
+> to the login form, with no error on screen and nothing in any log, because
+> from the server's side nothing failed. `console.bat doctor` checks for this
+> exact mismatch in both directions.
+>
+> Everyone is signed out once when you change it. That is expected: the cookie
+> is renamed, so existing sessions are no longer recognised.
+
+### Leave `APP_ENV` alone until the terminals are done
+
+Do **not** set `APP_ENV=production` yet. It is the right end state, but it turns
+on a hard refusal: any device request arriving over plain HTTP is answered
+`426 HTTPS_REQUIRED` and records nothing.
+
+While it stays `local`, terminals that have not been re-flashed keep working
+over `http://` exactly as before — which is what lets you switch the site today
+and walk the terminals over the next few days. Set it to `production` once
+step 8 is finished on every terminal, and re-run the doctor.
+
 This matters more than it looks. `APP_URL` is what the system uses to build
 links, and — because the session cookie is marked `Secure` — getting it wrong
 produces a login page that accepts your password and then returns you to the
@@ -310,9 +338,15 @@ restart Apache. The generated config already sets `AllowOverride All`, which is
 the other half of what `public\.htaccess` needs.
 
 **The login page accepts the password and returns to the login page.**
-`APP_URL` does not match what the browser is using. The session cookie is
-`Secure` and scoped to that address, so a mismatch means the browser is told to
-store a cookie it then will not send back. Fix `APP_URL` in `.env` (Step 3).
+The session cookie is not reaching the browser. Two causes, both in `.env`:
+`APP_URL` does not match the address the browser is actually using, or
+`SESSION_COOKIE_SECURE=true` while the site is still on `http://`. Run
+`console.bat doctor` — it names whichever one it is.
+
+**Every terminal stopped recording the moment the site went HTTPS.**
+`APP_ENV` was set to `production` before the terminals were re-flashed. Device
+requests over plain HTTP are then refused with `426 HTTPS_REQUIRED`. Set
+`APP_ENV=local` again until step 8 is done everywhere.
 
 **The dashboards stopped updating live, but everything else works.**
 `REALTIME_TLS_ENABLED` is still `false`, so the page is being handed a `ws://`
