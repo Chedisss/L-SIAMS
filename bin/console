@@ -1020,6 +1020,13 @@ function commandDoctor(): void
     // the outside.
     heading('The website');
 
+    // Declared out here rather than inside the reachability branch below,
+    // because the realtime check further down uses it too — and a website
+    // check that fails must not leave it undefined and take the whole doctor
+    // down with it. Null means "not determined", which every reader handles.
+    $lanIp    = null;
+    $lanGuess = false;
+
     $webPort = 8080;
     $appUrl  = (string) Env::get('APP_URL', '');
     $isHttps = str_starts_with(strtolower($appUrl), 'https://');
@@ -1051,9 +1058,6 @@ function commandDoctor(): void
         // which is where anyone naturally checks, and it presents at the
         // terminal as "could not connect" — indistinguishable from a stopped
         // server. Probing the machine's own LAN address separates the two.
-        $lanIp    = null;
-        $lanGuess = false;
-
         // The certificate first, when there is one, because it is the only
         // address here that somebody actually chose. Everything below it is
         // this machine guessing from its network adapters, and a Windows PC
@@ -1232,6 +1236,48 @@ function commandDoctor(): void
         if (is_resource($socket)) {
             fclose($socket);
             ok('Realtime server is listening on ' . $probeHost . ':' . $wsPort);
+
+            // Loopback is not the address any browser will use. The page is
+            // handed wss://<the host it was opened as>:<port>, so a rule that
+            // blocks the port on the network interface leaves this check green
+            // and every dashboard on "Polling" — including the one on this very
+            // machine, because it reaches the site by its LAN address too.
+            //
+            // Loopback also bypasses Windows Firewall outright, which is what
+            // makes the difference invisible from here: the probe above cannot
+            // fail for the one reason most likely to be true.
+            // The website section works this out already, but it only gets
+            // that far when the site itself answers. The realtime port is worth
+            // testing either way, so fall back to the address people type.
+            if ($lanIp === null) {
+                $fromAppUrl = (string) (parse_url((string) Env::get('APP_URL', ''), PHP_URL_HOST) ?: '');
+
+                if (filter_var($fromAppUrl, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+                    && !str_starts_with($fromAppUrl, '127.')) {
+                    $lanIp = $fromAppUrl;
+                }
+            }
+
+            if ($lanIp !== null && $lanIp !== $probeHost) {
+                $lanWs = @fsockopen($lanIp, $wsPort, $wsErrno, $wsErrstr, 1.5);
+
+                if (is_resource($lanWs)) {
+                    fclose($lanWs);
+                    $check(true, 'Reachable for browsers on ' . $lanIp . ':' . $wsPort);
+                } else {
+                    $check(false, 'Reachable for browsers on ' . $lanIp . ':' . $wsPort,
+                        $wsErrstr ?: 'refused');
+
+                    $note('The realtime server answers on loopback but not on the address the');
+                    $note('page actually connects to, so every dashboard falls back to polling');
+                    $note('while this section otherwise looks healthy.');
+                    $note('');
+                    $note('Windows Firewall is the usual cause. It asks once per program, and');
+                    $note('the realtime server is a second php.exe — a rule granted for the web');
+                    $note('server does not cover it. Allow php.exe on Private networks, or add');
+                    $note('an inbound rule for TCP ' . $wsPort . '.');
+                }
+            }
 
             // Reachable from here says nothing about whether a browser will
             // accept it, and the difference is invisible from this side.
