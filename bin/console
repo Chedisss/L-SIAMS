@@ -1264,6 +1264,66 @@ function commandDoctor(): void
                 if (is_resource($lanWs)) {
                     fclose($lanWs);
                     $check(true, 'Reachable for browsers on ' . $lanIp . ':' . $wsPort);
+
+                    // Answering is not the same as answering with a certificate
+                    // a browser will accept, and the gap between them is the
+                    // whole difference between "Live" and "Polling".
+                    //
+                    // The realtime server decides between tls:// and tcp:// once,
+                    // when it binds, from REALTIME_TLS_ENABLED and whether the
+                    // certificate files were readable at that moment. Turn TLS
+                    // on, or issue the certificate, while it is already running
+                    // and it carries on listening in plaintext for the rest of
+                    // its life — with .env correct, the files on disk correct,
+                    // the port open, and every dashboard refusing to connect
+                    // because the page is asking for wss:// and getting ws://.
+                    //
+                    // (The certificate's contents are re-read per connection, so
+                    // reissuing one does not need a restart. Only the scheme is
+                    // fixed at startup.)
+                    if ((bool) Config::get('realtime.tls.enabled', true)
+                        && TlsCertificateService::serverCertificateExists()) {
+                        $wsContext = stream_context_create([
+                            'ssl' => [
+                                'cafile'            => TlsCertificateService::paths()['ca_cert'],
+                                'verify_peer'       => true,
+                                'verify_peer_name'  => true,
+                                'peer_name'         => $lanIp,
+                                'allow_self_signed' => false,
+                            ],
+                        ]);
+
+                        $wsTlsErrno = 0;
+                        $wsTlsError = '';
+                        $wsTls      = @stream_socket_client(
+                            sprintf('ssl://%s:%d', $lanIp, $wsPort),
+                            $wsTlsErrno,
+                            $wsTlsError,
+                            5,
+                            STREAM_CLIENT_CONNECT,
+                            $wsContext
+                        );
+
+                        if (is_resource($wsTls)) {
+                            fclose($wsTls);
+                            $check(true, 'Realtime certificate validates', 'browsers will accept wss://');
+                        } else {
+                            $check(false, 'Realtime certificate validates',
+                                trim($wsTlsError) !== '' ? trim($wsTlsError) : 'handshake refused');
+
+                            $note('The port is open but the certificate it presents does not validate,');
+                            $note('so browsers refuse the WebSocket and every dashboard stays on');
+                            $note('"Polling" — silently, because a WebSocket has no warning to show.');
+                            $note('');
+                            $note('Almost always this is a realtime server that started before TLS');
+                            $note('was switched on, or before the certificate existed. It chooses');
+                            $note('between encrypted and plaintext once, when it binds, and keeps');
+                            $note('that choice — so it is still listening in plaintext while every');
+                            $note('page asks it for wss://.');
+                            $note('');
+                            $note('Run stop.bat then start.bat. Nothing else needs changing.');
+                        }
+                    }
                 } else {
                     $check(false, 'Reachable for browsers on ' . $lanIp . ':' . $wsPort,
                         $wsErrstr ?: 'refused');
