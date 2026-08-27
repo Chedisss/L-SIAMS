@@ -377,6 +377,14 @@ Port 443 is in use, almost always because XAMPP's own
 `Include conf/extra/httpd-ssl.conf` was not commented out (Step 2). Skype and
 VMware have also been known to hold 443.
 
+**Every page gives a plain "Internal Server Error" from Apache.**
+Not L-SIAMS's own error page — Apache's, with its version in the footer. That
+means the request failed before PHP ran, and the cause is almost always a
+directive in a `.htaccess` file that Apache will not accept there. Open
+Apache's `error.log` from the XAMPP Control Panel; it names the file and the
+line. If it says `<Directory not allowed here`, update to the current version —
+that exact bug shipped in `public/.htaccess` and is fixed.
+
 **The home page loads but every other page gives 404 Not Found.**
 Apache is serving files but not routing through the front controller, which
 means `mod_rewrite` is off. In `C:\xampp\apache\conf\httpd.conf` find

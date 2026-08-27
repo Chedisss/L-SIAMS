@@ -2532,6 +2532,17 @@ function commandTlsApache(array $arguments, array $flags): void
                 Require all granted
             </Directory>
 
+            # Uploaded files are data, never code. Repeated here as well as in
+            # public/uploads/.htaccess because a virtual host cannot be turned
+            # off by an AllowOverride change, and turning a file upload into
+            # code execution is not a risk worth leaving to one layer.
+            <Directory "%s/uploads">
+                <FilesMatch "\.(php|phtml|phar|php[0-9]|cgi|pl|py|sh|exe|bat)$">
+                    Require all denied
+                </FilesMatch>
+                Options -Indexes -ExecCGI
+            </Directory>
+
             ErrorLog  "%s/apache-ssl-error.log"
             CustomLog "%s/apache-ssl-access.log" combined
         </VirtualHost>
@@ -2558,6 +2569,7 @@ function commandTlsApache(array $arguments, array $flags): void
         $documentRoot,
         $slash($paths['server_cert']),
         $slash($paths['server_key']),
+        $documentRoot,
         $documentRoot,
         $slash((string) Config::get('app.paths.logs')),
         $slash((string) Config::get('app.paths.logs')),

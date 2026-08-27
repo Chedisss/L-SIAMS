@@ -1,7 +1,37 @@
-# Uploaded content is served as inert data only.
-php_flag engine off
-Options -Indexes -ExecCGI
+# ---------------------------------------------------------------------------
+# Uploaded files are data, never code.
+#
+# Student and teacher photos, imported spreadsheets and generated documents all
+# land under here, and every one of them arrived from outside. If a .php file
+# were ever written into this directory — through a bug, a mis-validated
+# upload, or a compromised account — being able to request it would turn a file
+# upload into arbitrary code execution on the server.
+#
+# This lives in uploads/ rather than in the parent .htaccess because the
+# <Directory> block it replaces is not permitted in .htaccess at all: Apache
+# rejects that directive outside server config and a virtual host, and answers
+# every request with 500 Internal Server Error. A .htaccess placed inside the
+# directory it protects needs no <Directory> wrapper and works the same way.
+#
+# The same protection is repeated in the virtual host written by
+# `console.bat tls:apache`, where it cannot be switched off by AllowOverride.
+# ---------------------------------------------------------------------------
 
-<FilesMatch "\.(php|phtml|phar|php3|php4|php5|php7|php8|cgi|pl|py|sh|htaccess)$">
+# Refusing to serve them at all is stronger than refusing to execute them, and
+# works identically under mod_php, PHP-FPM and CGI.
+<FilesMatch "\.(php|phtml|phar|php[0-9]|cgi|pl|py|sh|exe|bat)$">
     Require all denied
 </FilesMatch>
+
+# Belt and braces where PHP runs as an Apache module. Guarded, because
+# php_flag is an unknown directive under PHP-FPM, and an unknown directive in
+# .htaccess is itself a 500 — which is the exact failure this file exists to
+# stop repeating.
+<IfModule php_module>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+
+Options -Indexes -ExecCGI
