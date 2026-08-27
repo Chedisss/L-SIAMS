@@ -22,8 +22,15 @@ return [
         // it off on a deployment, where an unencrypted WebSocket would carry
         // attendance events across the school network in the clear.
         'enabled'   => Env::bool('REALTIME_TLS_ENABLED', true),
-        'cert_file' => Env::get('REALTIME_TLS_CERT', '/etc/ssl/lsiams/server.crt'),
-        'key_file'  => Env::get('REALTIME_TLS_KEY', '/etc/ssl/lsiams/server.key'),
+        // Default to the certificate `tls:generate` issues, so turning the
+        // realtime server's TLS on is one setting rather than three. The old
+        // default pointed at /etc/ssl/lsiams, which exists on a Linux server
+        // set up by hand and on no Windows machine at all — so the one command
+        // that produced a certificate and the one server that needed it never
+        // met. An explicit value still wins, for a deployment using a
+        // certificate from somewhere else.
+        'cert_file' => Env::get('REALTIME_TLS_CERT') ?: BASE_PATH . '/storage/tls/server.crt',
+        'key_file'  => Env::get('REALTIME_TLS_KEY') ?: BASE_PATH . '/storage/tls/server.key',
     ],
 
     // Short-lived handshake tickets (Part 17.6). Cookies are unreliable for WS.

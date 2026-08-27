@@ -2391,6 +2391,18 @@ function commandTlsGenerate(array $arguments, array $flags): void
     out('       ' . $paths['firmware_header'], 'cyan');
     out('     Change LS_SERVER_URL to start with https:// at the same time.');
     out('');
+    // Easy to miss, and its failure is silent: the page loads perfectly and
+    // only the live updates stop, with the reason visible nowhere but the
+    // browser's own console.
+    if (!(bool) Config::get('realtime.tls.enabled', true)) {
+        out('  4. Turn on TLS for the live dashboards. In .env set:');
+        out('       REALTIME_TLS_ENABLED=true', 'cyan');
+        out('     An https page is refused a ws:// socket by every browser, so without this');
+        out('     the dashboards simply stop updating and nothing here reports why.');
+        out('     The certificate just issued is picked up automatically.');
+        out('');
+    }
+
     out('  Back up ' . $paths['ca_key'] . ' with .env.', 'grey');
     out('  It is encrypted under APP_KEY: losing APP_KEY means the root cannot sign again,', 'grey');
     out('  and renewing would then mean re-flashing every terminal.', 'grey');
@@ -2698,6 +2710,36 @@ function doctorTls(string $appUrl, callable $check, callable $warn, callable $no
     if (!$isHttps) {
         $warn('APP_URL is still http://', 'a certificate exists but nothing is using it');
         $note('Set APP_URL to the https:// address once Apache is serving it.');
+    }
+
+    // The realtime server is a second listener on a second port, and switching
+    // the site to https does not switch it. A browser on an https page refuses
+    // a ws:// socket as mixed content and says so only in its own console, so
+    // the symptom reaching anyone is "the dashboard stopped updating" with no
+    // error anywhere in this system at all.
+    if ($isHttps && (bool) Config::get('realtime.enabled', true)) {
+        $realtimeTls = (bool) Config::get('realtime.tls.enabled', true);
+
+        $check(
+            $realtimeTls,
+            'Realtime server uses TLS',
+            $realtimeTls
+                ? 'dashboards connect over wss://'
+                : 'REALTIME_TLS_ENABLED=false, so the page would be told to open ws:// — browsers block that on an https page'
+        );
+
+        if ($realtimeTls) {
+            $cert = (string) Config::get('realtime.tls.cert_file', '');
+            $key  = (string) Config::get('realtime.tls.key_file', '');
+
+            $present = $cert !== '' && $key !== '' && is_file($cert) && is_file($key);
+
+            $check(
+                $present,
+                'Realtime certificate readable',
+                $present ? basename($cert) : $cert . ' not found — the realtime server will not start'
+            );
+        }
     }
 
     // Finally, does it actually answer? Everything above reads files; this is
