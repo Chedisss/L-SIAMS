@@ -234,7 +234,7 @@ server-side timeout would make a stuck transaction hold up a queue of taps for
 ```nginx
 server {
     listen 80;
-    server_name lsiams.school.local 192.168.1.10;
+    server_name lsiams.yourschool.internal 192.168.1.10;
 
     # Everything is HTTPS. The device API signs requests, but the browser
     # session cookie must never travel in the clear.
@@ -243,7 +243,7 @@ server {
 
 server {
     listen 443 ssl http2;
-    server_name lsiams.school.local 192.168.1.10;
+    server_name lsiams.yourschool.internal 192.168.1.10;
 
     root /var/www/lsiams/public;
     index index.php;
@@ -307,12 +307,12 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```apache
 <VirtualHost *:80>
-    ServerName lsiams.school.local
-    Redirect permanent / https://lsiams.school.local/
+    ServerName lsiams.yourschool.internal
+    Redirect permanent / https://lsiams.yourschool.internal/
 </VirtualHost>
 
 <VirtualHost *:443>
-    ServerName lsiams.school.local
+    ServerName lsiams.yourschool.internal
     DocumentRoot /var/www/lsiams/public
 
     SSLEngine on
@@ -379,10 +379,10 @@ sudo openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
 # with — a terminal validating a certificate cannot fall back to a name.
 sudo openssl req -newkey rsa:2048 -sha256 -nodes \
     -keyout server.key -out server.csr \
-    -subj "/CN=lsiams.school.local/O=<School Name>"
+    -subj "/CN=lsiams.yourschool.internal/O=<School Name>"
 
 cat > san.cnf <<'EOF'
-subjectAltName = DNS:lsiams.school.local, DNS:lsiams, IP:192.168.1.10
+subjectAltName = DNS:lsiams.yourschool.internal, DNS:lsiams, IP:192.168.1.10
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 EOF

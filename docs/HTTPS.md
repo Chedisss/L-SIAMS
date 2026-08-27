@@ -67,7 +67,7 @@ redoing it later means re-flashing terminals.
 
 A certificate is issued *for a specific name*. A browser opening
 `https://192.168.1.10` will reject a certificate issued for
-`attendance.school.local`, and vice versa — so the name on the certificate has
+`attendance.yourschool.internal`, and vice versa — so the name on the certificate has
 to be the name people actually type.
 
 **If the server's IP address can change, fix it first.** A certificate for
@@ -80,13 +80,60 @@ configured with that address too.
 Then pick one:
 
 - **IP address only** — simplest, works everywhere, nothing else to configure.
-  Terminals and browsers both use `https://192.168.1.10`.
-- **IP address and a hostname** — nicer to type, but the hostname has to
-  resolve. That means either an entry on your router's DNS, or a line in the
-  `hosts` file of every PC that uses it. If you are not sure, use the IP.
+  Terminals and browsers both use `https://192.168.1.10`. This is a completely
+  legitimate answer; nothing about the system is weaker for it.
+- **IP for the terminals, a name for the browsers** — the recommended split if
+  you want a name at all. See below.
 
 You can put both on the certificate, and the default does. Nothing is lost by
 including a hostname you decide not to use later.
+
+### If you want a name, point only the browsers at it
+
+Give the terminals the **IP** and people the **name**:
+
+| | Address | Why |
+|---|---|---|
+| ESP32 terminals | `https://192.168.1.10` | no DNS dependency on the attendance path |
+| Staff browsers and phones | `https://attendance.yourschool.internal` | easier to type and remember |
+
+DNS is a *runtime dependency*, and attendance capture should not have one. If
+the router reboots and loses its entry, terminals pointed at a name stop
+recording, and the failure looks like a network fault rather than a naming one.
+Terminals pointed at a raw IP have nothing to resolve. Browser convenience is
+worth that dependency; card taps are not.
+
+**Do not use a `.local` name.** It is reserved for mDNS/Bonjour (RFC 6762), and
+using it as an ordinary DNS suffix causes intermittent resolution failures that
+are painful to diagnose — worst on Apple devices, which try mDNS first. Two safe
+choices instead:
+
+1. **A subdomain of a domain the school already owns** —
+   `attendance.stjohns.edu.ph`, resolving to the LAN address internally. Best
+   answer where it applies: you own the namespace, so nothing can collide.
+2. **A `.internal` name** — ICANN reserved that suffix in 2024 for private
+   networks, so it can never become a real TLD. `attendance.yourschool.internal`.
+
+Avoid inventing `.lan`, `.home` or `.school`. `.school` is already a real
+top-level domain, and the others are not reserved.
+
+**The name has to resolve for every device that uses it**, and that is what
+decides whether this is worth doing:
+
+- **An entry on the router or DNS server** — one place, works for every device
+  including phones. This is the only option worth taking.
+- **A `hosts` file on each PC** — needs administrator rights on every machine,
+  and **phones and tablets cannot do it at all**. Since staff open this system
+  from phones, this half-works, which is worse than not doing it.
+- **mDNS** — inconsistent on Android and unreliable on the ESP32. Not worth it.
+
+If your router cannot hold a DNS entry, use the IP and move on.
+
+> **The name is cheap to change; the IP is not.** Adding or changing a hostname
+> later is one `tls:generate` and an Apache restart — the root does not change,
+> so no terminal is re-flashed and no PC re-installs anything. Changing the
+> *IP* means re-flashing every terminal, because that is what is compiled into
+> each one. So do not agonise over the name. Do pin down the address.
 
 ---
 
@@ -102,7 +149,7 @@ With no arguments it works out the names from `APP_URL` and from the machine
 itself, and prints what it chose. To name them yourself:
 
 ```
-console.bat tls:generate --ip=192.168.1.10 --host=attendance.school.local
+console.bat tls:generate --ip=192.168.1.10 --host=attendance.yourschool.internal
 ```
 
 Both options can be repeated. `localhost` and `127.0.0.1` are always included.
