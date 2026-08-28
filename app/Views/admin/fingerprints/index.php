@@ -14,13 +14,24 @@ $__view->start('content');
 <div class="alert alert-info">
     <span class="alert__icon"><i class="fa-solid fa-shield-halved"></i></span>
     <div class="alert__body">
-        A fingerprint enrolled on one terminal is copied to the terminals in the rooms that teacher
-        is timetabled into — those and no others, so a terminal taken off a wall carries only the
-        handful of teachers who work in that room. That means the template is stored here as well as
-        in each sensor. It is encrypted with this installation's key, is never shown on any screen or
-        written to any log, and is a mathematical template rather than a picture of a finger — but it
-        is biometric data, and a compromise of both the database and the application key would expose
-        it.
+        <?php if ($syncScope === 'timetable'): ?>
+            A fingerprint enrolled on one terminal is copied to the terminals in the rooms that
+            teacher is timetabled into — those and no others, so a terminal taken off a wall carries
+            only the handful of teachers who work in that room. A teacher with no schedule in a room
+            is not known to its reader; set <code>FINGERPRINT_SYNC_SCOPE=all</code> if a class must be
+            able to start whatever the timetable says.
+        <?php else: ?>
+            A fingerprint enrolled on one terminal is copied to every classroom terminal, so any
+            teacher can start a class at any reader — a substitute, or a room changed at an hour's
+            notice, is recognised without the timetable being edited first. Set
+            <code>FINGERPRINT_SYNC_SCOPE=timetable</code> to narrow each sensor to the teachers
+            timetabled in its own room, which is worth doing where terminals hang in public
+            corridors.
+        <?php endif; ?>
+        Either way the template is stored here as well as in each sensor. It is encrypted with this
+        installation's key, is never shown on any screen or written to any log, and is a mathematical
+        template rather than a picture of a finger — but it is biometric data, and a compromise of
+        both the database and the application key would expose it.
     </div>
 </div>
 
@@ -69,14 +80,18 @@ $__view->start('content');
  * that room with the reader answering NOT RECOGNISED to a finger that opens
  * their class perfectly well next door.
  *
- * Counted against the room's own timetable rather than the whole staff: a
- * terminal is only ever sent the teachers scheduled to teach in it, so "2 of 2"
- * is complete in a room two people use, in a school of forty. */ ?>
+ * What "of" counts follows the sync scope: the school's enrolments under the
+ * default, or the room's own timetable under FINGERPRINT_SYNC_SCOPE=timetable,
+ * where "2 of 2" is complete in a room two people use in a school of forty. */ ?>
 <?php if ($coverage !== [] && $syncable > 0): ?>
     <div class="card">
         <div class="card__header">
             <h2 class="card__title"><i class="fa-solid fa-tower-broadcast"></i> Fingerprints on each terminal</h2>
-            <span class="text-sm text-muted">Each terminal holds only the teachers timetabled in its room</span>
+            <span class="text-sm text-muted">
+                <?= $syncScope === 'timetable'
+                    ? 'Each terminal holds only the teachers timetabled in its room'
+                    : 'Every terminal holds every enrolled teacher' ?>
+            </span>
         </div>
         <div class="card__body--flush">
             <div class="table-wrap">
@@ -112,12 +127,14 @@ $__view->start('content');
                                 <?php elseif ((string) $terminal['claim_status'] !== 'claimed'): ?>
                                     <span class="badge badge-neutral">Waiting to be claimed</span>
                                     Nothing is copied until the board boots and claims its key.
-                                <?php elseif ($expected === 0): ?>
+                                <?php elseif ($expected === 0 && $syncScope === 'timetable'): ?>
                                     <span class="badge badge-neutral">No classes here</span>
                                     Nothing is timetabled in this room, so no fingerprint is sent to it.
                                 <?php elseif ($terminal['complete']): ?>
                                     <span class="badge badge-success">Complete</span>
-                                    Every teacher timetabled in this room can open their class here.
+                                    <?= $syncScope === 'timetable'
+                                        ? 'Every teacher timetabled in this room can open their class here.'
+                                        : 'Every enrolled teacher can open a class in this room.' ?>
                                 <?php else: ?>
                                     <span class="badge badge-warning"><?= e($waiting) ?> still to copy</span>
                                     The terminal collects one per poll; teachers not yet copied will not be

@@ -179,6 +179,36 @@ return [
         // raising if you have more teachers than 127 AND sensors that can hold
         // them.
         'sensor_capacity' => Env::int('FINGERPRINT_SENSOR_CAPACITY', 127),
+
+        // Which terminals are sent a given teacher's fingerprint.
+        //
+        //   'all'       every classroom terminal holds every enrolled teacher.
+        //   'timetable' a terminal holds only the teachers scheduled into its
+        //               own room.
+        //
+        // 'all' is the default because a school runs on exceptions. A
+        // substitute covering a class in a room they never teach in, a lesson
+        // moved to the hall at an hour's notice, a make-up class on a Saturday
+        // — under 'timetable' none of those teachers can start their register
+        // until somebody has edited the timetable first, and the reader gives
+        // them the same NOT RECOGNISED as a stranger. Attendance stops for a
+        // clerical reason.
+        //
+        // What 'timetable' buys is a smaller loss if a terminal is stolen off a
+        // wall: the board carries its API key and HMAC secret in flash, and
+        // under 'all' it carries every teacher's template with them, where
+        // under 'timetable' it carries only the few who teach in that room.
+        // Neither setting lets that board open a class — a session still needs
+        // a schedule and a live signature — so what is at stake is the
+        // biometric data itself, not access.
+        //
+        // Choose 'timetable' where terminals are in publicly reachable
+        // corridors and the timetable is kept accurate enough to teach from.
+        // Choose 'all' where a class must be able to start whatever the
+        // timetable says.
+        'sync_scope' => Env::get('FINGERPRINT_SYNC_SCOPE', 'all') === 'timetable'
+            ? 'timetable'
+            : 'all',
     ],
 
     // --- Network -----------------------------------------------------------

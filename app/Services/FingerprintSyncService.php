@@ -157,19 +157,27 @@ final class FingerprintSyncService
     /**
      * The rule deciding which sensors may hold a given teacher's finger.
      *
-     * A session opens only for a lesson on that terminal's own timetable —
-     * ScheduleService::activeForDevice() joins devices.classroom_id to
-     * schedules.classroom_id, so a teacher with no schedule in a room can never
-     * open a class there however well the reader knows them. A template sent to
-     * such a terminal is therefore one that can never be used, and every one of
-     * them is biometric data sitting in a box screwed to a corridor wall where
-     * anybody can unscrew it.
+     * Under the default setting, 'all', it is no rule at all: every classroom
+     * terminal holds every enrolled teacher, and any teacher can start a class
+     * at any reader in the building. That is the behaviour a school actually
+     * runs on. A substitute covering a room they never teach in, a lesson moved
+     * to the hall at an hour's notice, a make-up class on a Saturday — under a
+     * timetable restriction each of those meets the same NOT RECOGNISED a
+     * stranger would, and attendance stops for a clerical reason while a class
+     * waits.
      *
-     * Sending only what a room can use makes a stolen terminal worth the four
-     * teachers timetabled into that room rather than the whole staff. The cost
-     * is that a substitute, or a class moved at short notice, is not known to
-     * that reader until the schedule says so — the timetable becomes the thing
-     * that grants access, which is what it already was for opening a session.
+     * Set FINGERPRINT_SYNC_SCOPE=timetable and a terminal is sent only the
+     * teachers scheduled into its own room. That is a complete set rather than
+     * merely a smaller one: ScheduleService::activeForDevice() joins
+     * devices.classroom_id to schedules.classroom_id, so a teacher with no
+     * schedule in a room could not have opened a class there anyway. What it
+     * buys is a smaller loss when a terminal is unscrewed from a corridor wall
+     * — the board carries the templates it was sent, so under 'timetable' that
+     * is the few people who teach in that room instead of the whole staff.
+     *
+     * Neither setting decides who may open a class. That is the schedule and a
+     * live signed request, both checked server-side on every attempt, and no
+     * template in any sensor changes it.
      *
      * Returned as SQL rather than a method call because every caller needs it
      * inside a larger query, and a version of this rule that drifted out of step
@@ -177,6 +185,15 @@ final class FingerprintSyncService
      */
     private static function scopeCondition(string $teacherColumn, string $classroomColumn): string
     {
+        if (self::scope() !== 'timetable') {
+            // A condition rather than an absent clause, so every caller can
+            // interpolate this unconditionally and none of them has to
+            // assemble a WHERE differently depending on the setting.
+            // Parenthesised because callers negate it, and `NOT 1 = 1` is only
+            // accidentally right.
+            return '(1 = 1)';
+        }
+
         return "EXISTS (
                     SELECT 1 FROM schedules sch
                      WHERE sch.teacher_id   = {$teacherColumn}
@@ -184,6 +201,14 @@ final class FingerprintSyncService
                        AND sch.status = 'active'
                        AND sch.deleted_at IS NULL
                 )";
+    }
+
+    /** 'all' or 'timetable'; see config/security.php for the trade. */
+    public static function scope(): string
+    {
+        return (string) Config::get('security.fingerprint.sync_scope', 'all') === 'timetable'
+            ? 'timetable'
+            : 'all';
     }
 
     /**
@@ -326,31 +351,42 @@ final class FingerprintSyncService
         // written yet — so this is simply declining to send something we have
         // since decided not to send. Rows already written stay; withdrawing
         // those needs the sensor's cooperation and is a separate decision.
-        $db->execute(
-            "DELETE s FROM fingerprint_slots s
-               JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
-              WHERE s.device_row_id = :device
-                AND s.status = 'pending'
-                AND NOT " . self::scopeCondition('fp.teacher_id', ':classroom'),
-            ['device' => $deviceRowId, 'classroom' => (int) $device['classroom_id']]
-        );
+        //
+        // Under scope 'all' nothing is ever out of scope, so this is skipped
+        // rather than run as a delete that can match nothing.
+        if (self::scope() === 'timetable') {
+            $db->execute(
+                "DELETE s FROM fingerprint_slots s
+                   JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
+                   JOIN devices d                ON d.id = s.device_row_id
+                  WHERE s.device_row_id = :device
+                    AND s.status = 'pending'
+                    AND NOT " . self::scopeCondition('fp.teacher_id', 'd.classroom_id'),
+                ['device' => $deviceRowId]
+            );
+        }
 
+        // The device is joined rather than its classroom passed as a binding,
+        // so the scope clause always has a real column to compare against. A
+        // placeholder would go unbound the moment the clause collapses to a
+        // constant under scope 'all', which PDO rejects outright.
         $missing = $db->select(
             "SELECT fp.fingerprint_id
                FROM fingerprint_templates fp
                JOIN teachers t ON t.teacher_id = fp.teacher_id
+               JOIN devices d  ON d.id = :device
               WHERE fp.template_data IS NOT NULL
                 AND fp.status = 'active'
                 AND t.status = 'active'
                 AND t.deleted_at IS NULL
-                AND " . self::scopeCondition('fp.teacher_id', ':classroom') . "
+                AND " . self::scopeCondition('fp.teacher_id', 'd.classroom_id') . "
                 AND NOT EXISTS (
                     SELECT 1 FROM fingerprint_slots s
-                     WHERE s.device_row_id = :device
+                     WHERE s.device_row_id = d.id
                        AND s.fingerprint_id = fp.fingerprint_id
                 )
               ORDER BY fp.fingerprint_id",
-            ['device' => $deviceRowId, 'classroom' => (int) $device['classroom_id']]
+            ['device' => $deviceRowId]
         );
 
         $queued = 0;
