@@ -20,9 +20,13 @@ use Throwable;
  * nothing there to match against.
  *
  * The fix is to move the template. At enrolment the terminal reads the
- * template back out of its sensor and uploads it; every other terminal pulls
- * what it is missing and writes it into its own flash. From then on the same
- * finger opens a session in any room.
+ * template back out of its sensor and uploads it; the terminals in the rooms
+ * that teacher is timetabled into pull what they are missing and write it into
+ * their own flash. From then on the same finger opens a session in any of them.
+ *
+ * Those rooms and no others — see scopeCondition(). A terminal hangs on a
+ * corridor wall with its credentials in flash, and one carried away should be
+ * worth the few teachers who work in that room rather than the whole staff.
  *
  * The cost is stated where it belongs — in migration 018 and in
  * docs/SECURITY.md — and it is real: this database now holds biometric
@@ -105,24 +109,32 @@ final class FingerprintSyncService
     }
 
     /**
-     * Queue this template onto every other terminal that does not have it.
+     * Queue this template onto every terminal whose room this teacher teaches in.
      *
      * Queued, not pushed: the server never opens a connection to a terminal.
      * Terminals poll, which is the same shape as enrolment and card issuance,
      * and it means a terminal that is switched off simply collects its backlog
      * when it comes back rather than needing a retry mechanism of its own.
+     *
+     * Not every terminal — only the rooms the teacher is timetabled into. See
+     * scopeCondition() for why that is the right set and not merely a smaller
+     * one.
      */
     public static function queueForOtherTerminals(int $fingerprintId, ?int $exceptDeviceRowId = null): int
     {
         $db = Database::instance();
 
         $devices = $db->select(
-            "SELECT id FROM devices
-              WHERE deleted_at IS NULL
-                AND status NOT IN ('decommissioned','disabled')
-                AND classroom_id IS NOT NULL
-                AND (:except IS NULL OR id <> :except2)",
-            ['except' => $exceptDeviceRowId, 'except2' => $exceptDeviceRowId]
+            "SELECT d.id
+               FROM devices d
+               JOIN fingerprint_templates fp ON fp.fingerprint_id = :fp
+              WHERE d.deleted_at IS NULL
+                AND d.status NOT IN ('decommissioned','disabled')
+                AND d.classroom_id IS NOT NULL
+                AND d.enrollment_station = 0
+                AND (:except IS NULL OR d.id <> :except2)
+                AND " . self::scopeCondition('fp.teacher_id', 'd.classroom_id'),
+            ['fp' => $fingerprintId, 'except' => $exceptDeviceRowId, 'except2' => $exceptDeviceRowId]
         );
 
         $queued = 0;
@@ -140,6 +152,38 @@ final class FingerprintSyncService
         }
 
         return $queued;
+    }
+
+    /**
+     * The rule deciding which sensors may hold a given teacher's finger.
+     *
+     * A session opens only for a lesson on that terminal's own timetable —
+     * ScheduleService::activeForDevice() joins devices.classroom_id to
+     * schedules.classroom_id, so a teacher with no schedule in a room can never
+     * open a class there however well the reader knows them. A template sent to
+     * such a terminal is therefore one that can never be used, and every one of
+     * them is biometric data sitting in a box screwed to a corridor wall where
+     * anybody can unscrew it.
+     *
+     * Sending only what a room can use makes a stolen terminal worth the four
+     * teachers timetabled into that room rather than the whole staff. The cost
+     * is that a substitute, or a class moved at short notice, is not known to
+     * that reader until the schedule says so — the timetable becomes the thing
+     * that grants access, which is what it already was for opening a session.
+     *
+     * Returned as SQL rather than a method call because every caller needs it
+     * inside a larger query, and a version of this rule that drifted out of step
+     * with the others would hand out templates nobody meant to send.
+     */
+    private static function scopeCondition(string $teacherColumn, string $classroomColumn): string
+    {
+        return "EXISTS (
+                    SELECT 1 FROM schedules sch
+                     WHERE sch.teacher_id   = {$teacherColumn}
+                       AND sch.classroom_id = {$classroomColumn}
+                       AND sch.status = 'active'
+                       AND sch.deleted_at IS NULL
+                )";
     }
 
     /**
@@ -232,7 +276,7 @@ final class FingerprintSyncService
     }
 
     /**
-     * Give one terminal every template it does not yet have a slot for.
+     * Give one terminal the templates its own timetable calls for.
      *
      * queueForOtherTerminals() runs at the moment a teacher enrols, and it can
      * only queue onto the terminals that exist *then*. A terminal registered
@@ -260,7 +304,7 @@ final class FingerprintSyncService
         $db = Database::instance();
 
         $device = $db->selectOne(
-            "SELECT id FROM devices
+            "SELECT id, classroom_id FROM devices
               WHERE id = :id
                 AND deleted_at IS NULL
                 AND status NOT IN ('decommissioned','disabled')
@@ -276,6 +320,21 @@ final class FingerprintSyncService
             return 0;
         }
 
+        // A timetable edit can take a teacher out of this room between the
+        // template being queued and the terminal collecting it. Dropping the
+        // queued row is not the same as deleting from a sensor — nothing was
+        // written yet — so this is simply declining to send something we have
+        // since decided not to send. Rows already written stay; withdrawing
+        // those needs the sensor's cooperation and is a separate decision.
+        $db->execute(
+            "DELETE s FROM fingerprint_slots s
+               JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
+              WHERE s.device_row_id = :device
+                AND s.status = 'pending'
+                AND NOT " . self::scopeCondition('fp.teacher_id', ':classroom'),
+            ['device' => $deviceRowId, 'classroom' => (int) $device['classroom_id']]
+        );
+
         $missing = $db->select(
             "SELECT fp.fingerprint_id
                FROM fingerprint_templates fp
@@ -284,13 +343,14 @@ final class FingerprintSyncService
                 AND fp.status = 'active'
                 AND t.status = 'active'
                 AND t.deleted_at IS NULL
+                AND " . self::scopeCondition('fp.teacher_id', ':classroom') . "
                 AND NOT EXISTS (
                     SELECT 1 FROM fingerprint_slots s
                      WHERE s.device_row_id = :device
                        AND s.fingerprint_id = fp.fingerprint_id
                 )
               ORDER BY fp.fingerprint_id",
-            ['device' => $deviceRowId]
+            ['device' => $deviceRowId, 'classroom' => (int) $device['classroom_id']]
         );
 
         $queued = 0;
@@ -368,7 +428,17 @@ final class FingerprintSyncService
         ];
     }
 
-    /** @return array<string,mixed>|null */
+    /**
+     * The scope test is repeated here, and deliberately so.
+     *
+     * reconcile() drops queued rows that have fallen out of scope, but it is
+     * housekeeping and this is the door. A template leaves the server here or
+     * nowhere, so the rule that decides whether it may is checked at the point
+     * of handing it over — not on the strength of a row written earlier under
+     * conditions that have since changed.
+     *
+     * @return array<string,mixed>|null
+     */
     private static function pendingRow(int $deviceRowId): ?array
     {
         return Database::instance()->selectOne(
@@ -377,12 +447,14 @@ final class FingerprintSyncService
                FROM fingerprint_slots s
                JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
                JOIN teachers t               ON t.teacher_id = fp.teacher_id
+               JOIN devices d                ON d.id = s.device_row_id
               WHERE s.device_row_id = :device
                 AND s.status = 'pending'
                 AND fp.template_data IS NOT NULL
                 AND fp.status = 'active'
                 AND t.status = 'active'
                 AND t.deleted_at IS NULL
+                AND " . self::scopeCondition('fp.teacher_id', 'd.classroom_id') . "
               ORDER BY s.created_at
               LIMIT 1",
             ['device' => $deviceRowId]
@@ -425,8 +497,6 @@ final class FingerprintSyncService
      */
     public static function terminalStatus(): array
     {
-        $syncable = self::syncableCount();
-
         // Only slots for templates that can actually be distributed are
         // counted. Migration 018 backfilled a slot row for every enrolment that
         // already existed, including the ones whose bytes were never captured;
@@ -434,18 +504,38 @@ final class FingerprintSyncService
         // shortfall or a surplus but a sentence that means nothing. Those
         // teachers are reported separately, by awaitingRecapture(), where the
         // action is re-enrolment rather than waiting for a sync.
+        //
+        // `expected` is per room, not per school: a terminal is owed the
+        // teachers its own timetable names and nobody else, so "2 of 2" in a
+        // room used by two teachers is complete even while the school has
+        // forty. `stale` is the other side of that — templates the sensor still
+        // holds for teachers no longer timetabled there. Nothing removes those
+        // automatically, so the page has to say they are there.
         $rows = Database::instance()->select(
             "SELECT d.id AS device_row_id, d.device_id, d.status AS device_status,
                     d.claim_status, c.room_number,
-                    COALESCE(SUM(s.status = 'present'), 0) AS present,
-                    COALESCE(SUM(s.status = 'pending'), 0) AS pending,
-                    COALESCE(SUM(s.status = 'failed'),  0) AS failed,
+                    COALESCE(SUM(s.status = 'present' AND s.in_scope), 0) AS present,
+                    COALESCE(SUM(s.status = 'pending' AND s.in_scope), 0) AS pending,
+                    COALESCE(SUM(s.status = 'failed'  AND s.in_scope), 0) AS failed,
+                    COALESCE(SUM(s.status = 'present' AND NOT s.in_scope), 0) AS stale,
+                    (
+                      SELECT COUNT(*)
+                        FROM fingerprint_templates fpx
+                        JOIN teachers tx ON tx.teacher_id = fpx.teacher_id
+                       WHERE fpx.template_data IS NOT NULL
+                         AND fpx.status = 'active'
+                         AND tx.status = 'active'
+                         AND tx.deleted_at IS NULL
+                         AND " . self::scopeCondition('fpx.teacher_id', 'd.classroom_id') . "
+                    ) AS expected,
                     d.sensor_template_count
                FROM devices d
           LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
           LEFT JOIN (
-                     SELECT s.device_row_id, s.status
+                     SELECT s.device_row_id, s.status,
+                            " . self::scopeCondition('fp.teacher_id', 'dv.classroom_id') . " AS in_scope
                        FROM fingerprint_slots s
+                       JOIN devices dv               ON dv.id = s.device_row_id
                        JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
                        JOIN teachers t               ON t.teacher_id = fp.teacher_id
                       WHERE fp.template_data IS NOT NULL
@@ -458,19 +548,21 @@ final class FingerprintSyncService
                 AND d.enrollment_station = 0
                 AND d.classroom_id IS NOT NULL
               GROUP BY d.id, d.device_id, d.status, d.claim_status, c.room_number,
-                       d.sensor_template_count
+                       d.classroom_id, d.sensor_template_count
               ORDER BY c.room_number, d.device_id"
         );
 
         foreach ($rows as $index => $row) {
-            $present = (int) $row['present'];
+            $expected = (int) $row['expected'];
+            $present  = (int) $row['present'];
 
-            $rows[$index]['expected'] = $syncable;
             // Anything neither present nor queued is a template this terminal
             // has no row for at all — the state a terminal added after the
             // enrolments sits in until its next poll reconciles it.
-            $rows[$index]['missing']  = max(0, $syncable - $present - (int) $row['pending'] - (int) $row['failed']);
-            $rows[$index]['complete'] = $syncable > 0 && $present >= $syncable;
+            $rows[$index]['missing']  = max(0, $expected - $present - (int) $row['pending'] - (int) $row['failed']);
+            // A room nobody is timetabled into needs nothing, and is complete
+            // by having nothing — not stuck at zero.
+            $rows[$index]['complete'] = $present >= $expected;
         }
 
         return $rows;
