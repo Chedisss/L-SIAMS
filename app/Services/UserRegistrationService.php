@@ -242,11 +242,19 @@ final class UserRegistrationService
 
         // Any status other than active means the user must not keep a live
         // session; unlocking a locked account also clears the counters.
+        //
+        // locked_until is cleared either way, which keeps one invariant true
+        // across the whole system: a non-null locked_until means an automatic
+        // lock, applied by AuthService after too many failed passwords, and
+        // that is the only kind that expires by itself. A lock an administrator
+        // applied here is a decision, holds until another administrator lifts
+        // it, and must never be undone by a stale timestamp left behind by an
+        // earlier run of failed attempts.
         if (isset($update['status'])) {
+            $db->update('users', ['failed_login_count' => 0, 'locked_until' => null], ['user_id' => $userId]);
+
             if ($update['status'] !== 'active') {
                 SessionService::terminateAllForUser($userId, SessionService::REASON_ADMIN);
-            } else {
-                $db->update('users', ['failed_login_count' => 0, 'locked_until' => null], ['user_id' => $userId]);
             }
         }
 
