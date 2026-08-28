@@ -60,18 +60,60 @@ final class AuthService
 
         $userId = (int) $user['user_id'];
 
+        // A lock set by failed attempts has to expire on its own, and until
+        // now it did not.
+        //
+        // registerFailedAttempt() writes BOTH locked_until and status='locked'.
+        // Once locked_until passed, the check below let the request through —
+        // and the status check further down then refused it anyway, with "This
+        // account is not active. Contact an administrator." Nothing ever set
+        // status back, so a teacher who mistyped five times was locked out
+        // permanently, the fifteen minutes meant nothing, and the only way
+        // back was somebody editing the record by hand.
+        //
+        // Only a lock this service applied is cleared here. 'inactive' and
+        // 'archived' are administrative decisions and must survive; the
+        // combination of status='locked' AND an elapsed locked_until is
+        // specific to the automatic lock.
+        if ((string) $user['status'] === 'locked'
+            && $user['locked_until'] !== null
+            && Clock::parse((string) $user['locked_until']) <= Clock::now()
+        ) {
+            $db->update('users', [
+                'status'             => 'active',
+                'failed_login_count' => 0,
+                'locked_until'       => null,
+            ], ['user_id' => $userId]);
+
+            $user['status']             = 'active';
+            $user['failed_login_count'] = 0;
+            $user['locked_until']       = null;
+        }
+
         if ($user['locked_until'] !== null && Clock::parse((string) $user['locked_until']) > Clock::now()) {
             self::recordFailure($identifier, $ip, $userId, 'Attempt against a locked account.');
             self::writeHistory($userId, $identifier, $ip, $request, 'locked', 'Account is locked.');
 
             throw new AuthenticationException(
-                'This account is temporarily locked. Contact an administrator.',
+                self::lockedMessage(Clock::parse((string) $user['locked_until'])),
                 'ACCOUNT_LOCKED'
             );
         }
 
         if (!Hash::verify($password, (string) $user['password_hash'])) {
-            self::registerFailedAttempt($user, $identifier, $ip, $request);
+            $lockedUntil = self::registerFailedAttempt($user, $identifier, $ip, $request);
+
+            // The attempt that trips the lock used to report the same "invalid
+            // username or password" as the four before it, so the one moment
+            // the account changed state was the one moment nothing said so.
+            // The next try then failed for a reason the person had no way to
+            // guess at.
+            if ($lockedUntil !== null) {
+                throw new AuthenticationException(
+                    self::lockedMessage($lockedUntil),
+                    'ACCOUNT_LOCKED'
+                );
+            }
 
             throw new AuthenticationException('Invalid username or password.', 'INVALID_CREDENTIALS');
         }
@@ -138,7 +180,10 @@ final class AuthService
     }
 
     /** @param array<string,mixed> $user */
-    private static function registerFailedAttempt(array $user, string $identifier, string $ip, Request $request): void
+    /**
+     * @return \DateTimeImmutable|null when this attempt locked the account
+     */
+    private static function registerFailedAttempt(array $user, string $identifier, string $ip, Request $request): ?\DateTimeImmutable
     {
         $db      = Database::instance();
         $userId  = (int) $user['user_id'];
@@ -146,10 +191,12 @@ final class AuthService
         $lockMin = (int) Config::get('security.login.lockout_minutes', 15);
         $count   = (int) $user['failed_login_count'] + 1;
 
-        $update = ['failed_login_count' => $count];
+        $update      = ['failed_login_count' => $count];
+        $lockedUntil = null;
 
         if ($count >= $max) {
-            $update['locked_until'] = Clock::now()->modify('+' . $lockMin . ' minutes')->format('Y-m-d H:i:s');
+            $lockedUntil            = Clock::now()->modify('+' . $lockMin . ' minutes');
+            $update['locked_until'] = $lockedUntil->format('Y-m-d H:i:s');
             $update['status']       = 'locked';
 
             SecurityLogService::log(
@@ -172,6 +219,37 @@ final class AuthService
 
         self::recordFailure($identifier, $ip, $userId, 'Incorrect password.');
         self::writeHistory($userId, $identifier, $ip, $request, 'failed', 'Incorrect password.');
+
+        return $lockedUntil;
+    }
+
+    /**
+     * What a locked-out person is told.
+     *
+     * It names the wait, because the lock clears itself and the previous
+     * wording — "Contact an administrator" — sent a teacher to find somebody
+     * for a problem that solves itself in a quarter of an hour, usually while
+     * a class waits.
+     *
+     * This does disclose that the username exists, which the uniform
+     * "invalid username or password" elsewhere is careful not to. The
+     * disclosure is bounded: reaching it costs five failed attempts against
+     * one name, and the sign-in throttle (ten per five minutes per IP and
+     * username) caps how fast that can be repeated. A teacher standing at a
+     * locked account with no idea whether to wait or go looking for help is
+     * the larger cost of the two.
+     */
+    private static function lockedMessage(\DateTimeImmutable $until): string
+    {
+        $minutes = (int) ceil(($until->getTimestamp() - Clock::now()->getTimestamp()) / 60);
+        $minutes = max(1, $minutes);
+
+        return sprintf(
+            'Too many failed sign-in attempts. This account is locked for another %d minute%s. '
+            . 'It unlocks by itself — no administrator is needed.',
+            $minutes,
+            $minutes === 1 ? '' : 's'
+        );
     }
 
     private static function recordFailure(string $identifier, string $ip, ?int $userId, string $detail): void

@@ -37,6 +37,16 @@ use App\Services\SettingsService;
 
 SettingsService::hydrate();
 
+// A successful sign-in creates a session and rotates the CSRF token, and both
+// go through Flash::start(). Under the CLI SAPI, headers count as sent the
+// moment anything is printed, and session_start() then fails — so the sign-in
+// group would report a session error instead of the thing it is testing.
+// Starting the session here, before the runner prints its first line, makes
+// Flash::start() find one already active and return.
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    @session_start();
+}
+
 $options = [];
 
 foreach (array_slice($argv, 1) as $argument) {
@@ -493,6 +503,66 @@ final class Fixture
         $db->execute('DELETE FROM teacher_subjects WHERE teacher_id IN
             (SELECT teacher_id FROM teachers WHERE employee_number LIKE :prefix)', ['prefix' => $prefix]);
         $db->execute('DELETE FROM teachers WHERE employee_number LIKE :prefix', ['prefix' => $prefix]);
+
+        // The sign-in group leaves a user behind, and every trace of that user
+        // sits in a table the system deliberately refuses to delete from:
+        // login history, security events and the audit trail are all guarded by
+        // BEFORE DELETE triggers, exactly as they should be. The triggers come
+        // down only for the length of this cleanup, and only rows belonging to
+        // the TEST-CONC- account are touched — the same bargain the attendance
+        // trigger above is already under.
+        $lockUsers = $db->select(
+            'SELECT user_id FROM users WHERE username LIKE :prefix',
+            ['prefix' => $prefix]
+        );
+
+        if ($lockUsers !== []) {
+            $db->pdo()->exec('DROP TRIGGER IF EXISTS trg_login_history_no_delete');
+            $db->pdo()->exec('DROP TRIGGER IF EXISTS trg_security_no_delete');
+            $db->pdo()->exec('DROP TRIGGER IF EXISTS trg_audit_no_delete');
+
+            foreach ($lockUsers as $row) {
+                $userId = (int) $row['user_id'];
+
+                $db->execute('DELETE FROM login_history WHERE user_id = :id', ['id' => $userId]);
+                $db->execute('DELETE FROM security_logs WHERE user_id = :id', ['id' => $userId]);
+                $db->execute('DELETE FROM audit_logs WHERE user_id = :id', ['id' => $userId]);
+                $db->execute('DELETE FROM user_sessions WHERE user_id = :id', ['id' => $userId]);
+                $db->execute('DELETE FROM users WHERE user_id = :id', ['id' => $userId]);
+            }
+
+            $db->pdo()->exec(
+                "CREATE TRIGGER trg_login_history_no_delete
+                 BEFORE DELETE ON login_history
+                 FOR EACH ROW
+                 BEGIN
+                   SIGNAL SQLSTATE '45000'
+                     SET MESSAGE_TEXT = 'Login history is permanent and cannot be deleted.';
+                 END"
+            );
+
+            $db->pdo()->exec(
+                "CREATE TRIGGER trg_security_no_delete
+                 BEFORE DELETE ON security_logs
+                 FOR EACH ROW
+                 BEGIN
+                   SIGNAL SQLSTATE '45000'
+                     SET MESSAGE_TEXT = 'Security logs are immutable and cannot be deleted.';
+                 END"
+            );
+
+            $db->pdo()->exec(
+                "CREATE TRIGGER trg_audit_no_delete
+                 BEFORE DELETE ON audit_logs
+                 FOR EACH ROW
+                 BEGIN
+                   SIGNAL SQLSTATE '45000'
+                     SET MESSAGE_TEXT = 'Audit logs are immutable and cannot be deleted.';
+                 END"
+            );
+        }
+
+        $db->execute('DELETE FROM login_attempts WHERE identifier LIKE :prefix', ['prefix' => $prefix]);
 
         $db->execute('DELETE FROM subject_grade_levels WHERE subject_id IN
             (SELECT subject_id FROM subjects WHERE subject_code LIKE :prefix)', ['prefix' => $prefix]);
@@ -2191,10 +2261,134 @@ try {
     }
 
     /* =====================================================================
-     * 21. Sustained soak (opt-in, 30 minutes)
+     * 21. A locked account lets go by itself
+     * ===================================================================== */
+    if ($want('lockout')) {
+        $runner->group('21. Too many wrong passwords lock the account — for fifteen minutes, not forever');
+
+        // Request::capture() reads these; under CLI they are absent.
+        $_SERVER['REQUEST_METHOD']  = 'POST';
+        $_SERVER['REQUEST_URI']     = '/login';
+        $_SERVER['REMOTE_ADDR']     = '198.51.100.7';
+        $_SERVER['HTTP_USER_AGENT'] = 'concurrency-suite';
+
+        $username = Fixture::PREFIX . 'lock';
+        $password = 'CorrectHorseBattery#2026';
+
+        $db->execute('DELETE FROM login_attempts WHERE identifier = :u', ['u' => $username]);
+
+        $db->insert('users', [
+            'username'             => $username,
+            'email'                => $username . '@test.local',
+            'password_hash'        => \App\Core\Hash::make($password),
+            'full_name'            => 'Lockout Subject',
+            'role_id'              => (int) $db->scalar(
+                "SELECT role_id FROM roles WHERE role_slug = 'administrator'"
+            ),
+            'status'               => 'active',
+            'must_change_password' => 0,
+            'failed_login_count'   => 0,
+            'created_at'           => Clock::nowString(),
+        ]);
+
+        $lockUserId = (int) $db->scalar(
+            'SELECT user_id FROM users WHERE username = :u',
+            ['u' => $username]
+        );
+
+        /** Returns the error code, or 'SIGNED_IN'. */
+        $signIn = static function (string $secret) use ($db, $username): array {
+            // The route-level throttle is a separate layer with its own tests;
+            // clearing it keeps this group measuring the account lockout alone.
+            $db->execute('DELETE FROM login_attempts WHERE identifier = :u', ['u' => $username]);
+
+            try {
+                \App\Services\AuthService::attempt($username, $secret, \App\Core\Request::capture());
+
+                return ['code' => 'SIGNED_IN', 'message' => ''];
+            } catch (\App\Core\Exceptions\AuthenticationException $e) {
+                return ['code' => $e->errorCode(), 'message' => $e->getMessage()];
+            }
+        };
+
+        $state = static fn (): array => (array) $db->selectOne(
+            'SELECT status, failed_login_count, locked_until FROM users WHERE username = :u',
+            ['u' => $username]
+        );
+
+        for ($i = 1; $i <= 4; $i++) {
+            $result = $signIn('Wrong#' . $i);
+        }
+
+        $runner->assertEquals('four wrong passwords are just wrong passwords',
+            'INVALID_CREDENTIALS', $result['code']);
+
+        $before = $state();
+
+        $runner->assertEquals('and the account is still open', 'active', $before['status']);
+        $runner->assertEquals('with the failures counted', 4, (int) $before['failed_login_count']);
+
+        // The fifth is the one that changes the account's state, and used to be
+        // the one attempt that said nothing about it.
+        $fifth = $signIn('Wrong#5');
+
+        $runner->assertEquals('the fifth locks the account', 'ACCOUNT_LOCKED', $fifth['code']);
+
+        $runner->assert('and says so, rather than repeating "invalid username or password"',
+            str_contains($fifth['message'], 'locked'), $fifth['message']);
+
+        $runner->assert('naming the wait, so nobody goes looking for an administrator',
+            preg_match('/\b\d+ minutes?\b/', $fifth['message']) === 1, $fifth['message']);
+
+        $locked = $state();
+
+        $runner->assertEquals('the record agrees it is locked', 'locked', $locked['status']);
+        $runner->assert('and carries the moment it expires',
+            $locked['locked_until'] !== null, 'locked_until was null');
+
+        // The right password during the lock is still refused — but for the
+        // real reason, not as a sixth "invalid username or password".
+        $during = $signIn($password);
+
+        $runner->assertEquals('the correct password during the lock is refused for the stated reason',
+            'ACCOUNT_LOCKED', $during['code']);
+
+        // Fifteen minutes later. The suite's clock is frozen, so the lock is
+        // moved into the past instead of waiting.
+        $db->execute(
+            'UPDATE users SET locked_until = :past WHERE user_id = :id',
+            ['past' => Clock::now()->modify('-1 minute')->format('Y-m-d H:i:s'), 'id' => $lockUserId]
+        );
+
+        $after = $signIn($password);
+
+        $runner->assertEquals('once the lock expires the right password works again',
+            'SIGNED_IN', $after['code']);
+
+        $reopened = $state();
+
+        $runner->assertEquals('and the account is active again, not left locked forever',
+            'active', $reopened['status']);
+        $runner->assertEquals('with the failure count reset', 0, (int) $reopened['failed_login_count']);
+        $runner->assertEquals('and nothing left to expire', null, $reopened['locked_until']);
+
+        // The automatic lock clears itself; a lock an administrator applied is
+        // a decision and has to outlast it.
+        $db->update('users', ['status' => 'locked', 'locked_until' => null], ['user_id' => $lockUserId]);
+
+        $admin = $signIn($password);
+
+        $runner->assertEquals('a lock an administrator set is not cleared by the same code path',
+            'ACCOUNT_INACTIVE', $admin['code']);
+
+        $db->update('users', ['status' => 'active'], ['user_id' => $lockUserId]);
+    }
+
+    /* =====================================================================
+     * 22. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('21. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('22. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);
