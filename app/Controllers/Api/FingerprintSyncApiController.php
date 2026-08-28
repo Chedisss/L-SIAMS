@@ -52,10 +52,22 @@ final class FingerprintSyncApiController extends Controller
         $next   = FingerprintSyncService::nextPendingFor((int) $device['id']);
 
         if ($next === null) {
+            // Nothing to give this terminal — so ask whether it has anything
+            // the server is missing. Enrolments made before templates were
+            // stored left the bytes in one sensor and nowhere else, and the
+            // sensor that holds them can read them back without a finger.
+            // Recovering them this way costs nobody a trip to a reader, which
+            // matters at forty teachers rather than one.
+            $wanted = FingerprintSyncService::nextBackfillFor((int) $device['id']);
+
             return $this->json([
                 'template'     => null,
+                'upload'       => $wanted === null ? null : [
+                    'slot'         => $wanted['slot'],
+                    'teacher_name' => $wanted['teacher'],
+                ],
                 'poll_seconds' => (int) Config::get('attendance.fingerprint.sync_poll_seconds', 15),
-            ], 'Nothing to sync.');
+            ], $wanted === null ? 'Nothing to sync.' : 'Send back the template in this slot.');
         }
 
         return $this->json([
@@ -65,8 +77,51 @@ final class FingerprintSyncApiController extends Controller
                 'data'         => $next['template'],
                 'teacher_name' => $next['teacher'],
             ],
+            'upload'       => null,
             'poll_seconds' => (int) Config::get('attendance.fingerprint.sync_poll_seconds', 15),
         ], 'Template to store.');
+    }
+
+    /**
+     * POST /api/fingerprint/sync/captured — a terminal handing back a template
+     * it already held.
+     *
+     * The other direction of the same route. This is how an enrolment made
+     * before the server kept templates is recovered: the terminal that did
+     * the original capture reads the slot out of its own flash and uploads it,
+     * and the teacher reaches every other room without being asked to stand
+     * at a reader again.
+     *
+     * The slot is checked against what the server already believes that device
+     * holds. A terminal cannot attach a template to a teacher of its choosing.
+     */
+    public function captured(Request $httpRequest): Response
+    {
+        $device = Auth::device();
+
+        $data = $this->validate($httpRequest, [
+            'slot'     => 'required|int|between:1,999',
+            'template' => 'required|string|max:4096',
+        ], [
+            'slot' => 'Sensor slot',
+        ]);
+
+        $stored = FingerprintSyncService::acceptBackfill(
+            (int) $device['id'],
+            (int) $data['slot'],
+            (string) $data['template']
+        );
+
+        if (!$stored) {
+            return Response::fail(
+                'TEMPLATE_REJECTED',
+                'That template was not accepted. The slot is not recorded against a teacher on '
+                . 'this terminal, or the bytes did not arrive intact.',
+                422
+            );
+        }
+
+        return $this->json([], 'Template recovered from the sensor.');
     }
 
     /**

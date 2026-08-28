@@ -1599,6 +1599,45 @@ static void pollTemplateSync() {
   LsJson response;
   if (signedRequest("GET", "/api/fingerprint/sync", "", &response) != 200) return;
 
+  /* The server may want something FROM this sensor rather than in it.
+   *
+   * A teacher enrolled here before the server kept templates has their finger
+   * in this flash and nowhere else. loadModel() pulls that slot back into the
+   * character buffer and the bytes come out of there — the same read done at
+   * the end of every enrolment, minus the finger. Sending them up is what
+   * lets that teacher work in every other room, and nobody has to be fetched
+   * to a reader for it. */
+  JsonVariantConst wanted = response["data"]["upload"];
+
+  if (!wanted.isNull()) {
+    int         slot = wanted["slot"] | 0;
+    const char *who  = wanted["teacher_name"] | "";
+
+    if (slot > 0) {
+      Serial.printf("\nSync: server is missing %s — reading slot %d back out\n", who, slot);
+
+      static uint8_t outgoing[FP_TEMPLATE_MAX];
+      size_t         outLen = 0;
+
+      if (finger.loadModel(slot) != FINGERPRINT_OK) {
+        Serial.printf("      slot %d will not load — nothing to send\n", slot);
+      } else if (!fpReadTemplate(outgoing, sizeof(outgoing), &outLen)) {
+        Serial.println("      the template could not be read off the sensor");
+      } else {
+        LsJson body;
+        body["slot"]     = slot;
+        body["template"] = fpBase64Encode(outgoing, outLen);
+
+        int status = signedRequest("POST", "/api/fingerprint/sync/captured",
+                                   jsonToString(body), nullptr);
+
+        Serial.printf("      sent %u bytes — HTTP %d\n", (unsigned) outLen, status);
+      }
+    }
+
+    return;
+  }
+
   JsonVariantConst tpl = response["data"]["template"];
   if (tpl.isNull()) return;
 
