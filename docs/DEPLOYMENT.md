@@ -623,10 +623,14 @@ verification by a teacher scheduled for that classroom at that time. Check the
 schedule, and check the teacher's fingerprint is enrolled.
 
 **A teacher opens a class in one room but the reader in another does not know
-them.** A sensor can only match templates in its own flash, so a new terminal
-starts empty and fills itself as it polls — one template per poll, a few minutes
-for a staffroom's worth. Admin → Fingerprints shows how far each terminal has
-got, room by room. Two states there need a person rather than time:
+them.** First check the timetable: a terminal is only sent the teachers
+scheduled into its own room, so a teacher with no schedule there is unknown to
+that reader by design. If the schedule is right, it is a matter of time — a
+sensor can only match templates in its own flash, so a new terminal starts empty
+and fills itself as it polls, one template per poll. Admin → Fingerprints shows
+how far each terminal has got, room by room, counted against that room's own
+timetable ("2 of 2" is complete in a room two people teach in). Two states there
+need a person rather than time:
 
 - *"enrolled on one terminal only"* — the enrolment predates template storage,
   so the bytes exist solely in the sensor that captured them. Enrol that teacher

@@ -2385,10 +2385,10 @@ try {
     }
 
     /* =====================================================================
-     * 22. A terminal added later still learns the fingerprints
+     * 22. Template distribution: enough to work, no more than that
      * ===================================================================== */
     if ($want('fingerprint-sync')) {
-        $runner->group('22. A terminal added after the enrolments still learns every fingerprint');
+        $runner->group('22. A terminal learns the fingerprints its own room needs, and no others');
 
         $fixture->build(1, 1, 1);
 
@@ -2453,6 +2453,34 @@ try {
         $runner->assertEquals('a terminal inserted straight into the table starts with nothing',
             0, $queuedAtBirth);
 
+        // A room with no timetable is owed nothing, and asking gets nothing.
+        // This is the property that keeps a stolen terminal worth the teachers
+        // who work in its room rather than the whole staff.
+        $runner->assertEquals('a room nobody is timetabled into is sent no fingerprints at all',
+            null, \App\Services\FingerprintSyncService::nextPendingFor($lateDevice));
+
+        // Now the teacher is timetabled into the new room, which is what makes
+        // the terminal owe them a template — and the only thing that does.
+        $db->insert('schedules', [
+            'teacher_id'     => $teacherId,
+            'subject_id'     => (int) $fixture->ids['subject_id'],
+            'section_id'     => (int) $fixture->ids['sections'][0],
+            'classroom_id'   => $lateClassroom,
+            'school_year_id' => (int) $fixture->ids['school_year_id'],
+            'day_of_week'    => Clock::now()->format('l'),
+            'start_time'     => Clock::now()->modify('-10 minutes')->format('H:i:s'),
+            'end_time'       => Clock::now()->modify('+110 minutes')->format('H:i:s'),
+            'time_in_window_open'    => 30,
+            'late_threshold_minutes' => 15,
+            'time_in_window_close'   => 60,
+            'time_out_window_open'   => 30,
+            'time_out_window_close'  => 30,
+            'minimum_dwell_minutes'  => 1,
+            'status'     => 'active',
+            'created_at' => Clock::nowString(),
+            'updated_at' => Clock::nowString(),
+        ]);
+
         // The terminal boots and asks for work. Being told "nothing" is the
         // bug: it is missing a template and does not know it.
         $offered = \App\Services\FingerprintSyncService::nextPendingFor($lateDevice);
@@ -2496,6 +2524,58 @@ try {
             $runner->assertEquals('holding the one enrolment there is', 1, (int) $late['present']);
             $runner->assert('and reported complete', (bool) $late['complete'], 'not complete');
         }
+
+        // A timetable edit takes the teacher back out of the new room. What has
+        // not been written yet must not be sent; what has already been written
+        // stays in the sensor — deleting from a sensor is a separate decision —
+        // and has to be visible rather than quietly forgotten.
+        $db->update('fingerprint_slots', ['status' => 'pending'],
+            ['device_row_id' => $lateDevice]);
+
+        $db->execute("UPDATE schedules SET status = 'inactive' WHERE classroom_id = :c",
+            ['c' => $lateClassroom]);
+
+        $runner->assertEquals('a template queued for a room the teacher has left is never sent',
+            null, \App\Services\FingerprintSyncService::nextPendingFor($lateDevice));
+
+        $runner->assertEquals('and the queued row is dropped rather than left pending forever',
+            0, (int) $db->scalar(
+                "SELECT COUNT(*) FROM fingerprint_slots
+                  WHERE device_row_id = :d AND status = 'pending'",
+                ['d' => $lateDevice]
+            ));
+
+        // Now the case where the sensor already holds it. The row above was
+        // dropped because nothing had been written; this one stands for a
+        // template that reached the flash before the timetable changed.
+        $db->insert('fingerprint_slots', [
+            'fingerprint_id'     => $fingerprintId,
+            'device_row_id'      => $lateDevice,
+            'sensor_template_id' => 1,
+            'source'             => 'synced',
+            'status'             => 'present',
+            'synced_at'          => Clock::nowString(),
+            'created_at'         => Clock::nowString(),
+            'updated_at'         => Clock::nowString(),
+        ]);
+
+        $stale = null;
+
+        foreach (\App\Services\FingerprintSyncService::terminalStatus() as $row) {
+            if ((string) $row['device_id'] === Fixture::PREFIX . 'DEVLATE') {
+                $stale = $row;
+            }
+        }
+
+        $runner->assert('a template already written to a sensor is reported, not forgotten',
+            $stale !== null && (int) $stale['stale'] === 1,
+            'stale count was ' . ($stale === null ? 'no row' : (string) $stale['stale']));
+
+        $runner->assertEquals('and the room is owed nothing, so it is not shown as behind',
+            0, $stale === null ? -1 : (int) $stale['expected']);
+
+        $db->execute("UPDATE schedules SET status = 'active' WHERE classroom_id = :c",
+            ['c' => $lateClassroom]);
 
         // An enrolment made before templates were stored cannot be copied
         // anywhere, and has to be named rather than silently skipped.

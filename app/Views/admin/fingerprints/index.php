@@ -14,11 +14,13 @@ $__view->start('content');
 <div class="alert alert-info">
     <span class="alert__icon"><i class="fa-solid fa-shield-halved"></i></span>
     <div class="alert__body">
-        A fingerprint enrolled on one terminal is copied to the others, so a teacher can open a
-        session in any room they teach in. That means the template is stored here as well as in each
-        sensor. It is encrypted with this installation's key, is never shown on any screen or written
-        to any log, and is a mathematical template rather than a picture of a finger — but it is
-        biometric data, and a compromise of both the database and the application key would expose it.
+        A fingerprint enrolled on one terminal is copied to the terminals in the rooms that teacher
+        is timetabled into — those and no others, so a terminal taken off a wall carries only the
+        handful of teachers who work in that room. That means the template is stored here as well as
+        in each sensor. It is encrypted with this installation's key, is never shown on any screen or
+        written to any log, and is a mathematical template rather than a picture of a finger — but it
+        is biometric data, and a compromise of both the database and the application key would expose
+        it.
     </div>
 </div>
 
@@ -65,12 +67,16 @@ $__view->start('content');
  * minutes; what is not acceptable is it being invisible. Without this table the
  * only symptom of a terminal that never caught up was a teacher standing in
  * that room with the reader answering NOT RECOGNISED to a finger that opens
- * their class perfectly well next door. */ ?>
+ * their class perfectly well next door.
+ *
+ * Counted against the room's own timetable rather than the whole staff: a
+ * terminal is only ever sent the teachers scheduled to teach in it, so "2 of 2"
+ * is complete in a room two people use, in a school of forty. */ ?>
 <?php if ($coverage !== [] && $syncable > 0): ?>
     <div class="card">
         <div class="card__header">
             <h2 class="card__title"><i class="fa-solid fa-tower-broadcast"></i> Fingerprints on each terminal</h2>
-            <span class="text-sm text-muted"><?= e($syncable) ?> enrolment<?= $syncable === 1 ? '' : 's' ?> to distribute</span>
+            <span class="text-sm text-muted">Each terminal holds only the teachers timetabled in its room</span>
         </div>
         <div class="card__body--flush">
             <div class="table-wrap">
@@ -84,14 +90,16 @@ $__view->start('content');
                     <tbody>
                     <?php foreach ($coverage as $terminal): ?>
                         <?php
-                        $present = (int) $terminal['present'];
-                        $waiting = (int) $terminal['pending'] + (int) $terminal['missing'];
-                        $failed  = (int) $terminal['failed'];
+                        $present  = (int) $terminal['present'];
+                        $expected = (int) $terminal['expected'];
+                        $waiting  = (int) $terminal['pending'] + (int) $terminal['missing'];
+                        $failed   = (int) $terminal['failed'];
+                        $stale    = (int) $terminal['stale'];
                         ?>
                         <tr>
                             <td class="mono text-sm"><?= e($terminal['device_id']) ?></td>
                             <td class="text-sm"><?= $terminal['room_number'] ? e($terminal['room_number']) : '—' ?></td>
-                            <td class="mono text-sm"><?= e($present) ?> of <?= e($terminal['expected']) ?></td>
+                            <td class="mono text-sm"><?= e($present) ?> of <?= e($expected) ?></td>
                             <td class="text-sm">
                                 <?php if ($failed > 0): ?>
                                     <span class="badge badge-danger"><?= e($failed) ?> failed</span>
@@ -101,16 +109,36 @@ $__view->start('content');
                                     <?php if ($waiting > 0): ?>
                                         <?= e($waiting) ?> more <?= $waiting === 1 ? 'is' : 'are' ?> still to copy.
                                     <?php endif; ?>
-                                <?php elseif ($terminal['complete']): ?>
-                                    <span class="badge badge-success">Complete</span>
-                                    Every enrolled teacher can open a class in this room.
                                 <?php elseif ((string) $terminal['claim_status'] !== 'claimed'): ?>
                                     <span class="badge badge-neutral">Waiting to be claimed</span>
                                     Nothing is copied until the board boots and claims its key.
+                                <?php elseif ($expected === 0): ?>
+                                    <span class="badge badge-neutral">No classes here</span>
+                                    Nothing is timetabled in this room, so no fingerprint is sent to it.
+                                <?php elseif ($terminal['complete']): ?>
+                                    <span class="badge badge-success">Complete</span>
+                                    Every teacher timetabled in this room can open their class here.
                                 <?php else: ?>
                                     <span class="badge badge-warning"><?= e($waiting) ?> still to copy</span>
                                     The terminal collects one per poll; teachers not yet copied will not be
                                     recognised in this room until it catches up.
+                                <?php endif; ?>
+
+                                <?php /* The consequence of not deleting from sensors: a teacher
+                                        moved off this room's timetable leaves their template
+                                        behind. It grants nothing on its own — a session still
+                                        needs a schedule — but it is biometric data on a board in
+                                        a corridor, so it is said out loud rather than left to be
+                                        inferred from a slot count. */ ?>
+                                <?php if ($stale > 0): ?>
+                                    <div class="text-xs text-muted mt-1">
+                                        Also holding <?= e($stale) ?> template<?= $stale === 1 ? '' : 's' ?>
+                                        for <?= $stale === 1 ? 'a teacher' : 'teachers' ?> no longer timetabled
+                                        here. <?= $stale === 1 ? 'It cannot open' : 'They cannot open' ?> a class —
+                                        that still needs a schedule — but
+                                        <?= $stale === 1 ? 'it stays' : 'they stay' ?> in the sensor until it is
+                                        cleared and the room enrolled again.
+                                    </div>
                                 <?php endif; ?>
                             </td>
                         </tr>

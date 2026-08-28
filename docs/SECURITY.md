@@ -328,7 +328,35 @@ changed.
 never put in an audit or security log value, and never placed in a URL. They
 leave the server on exactly one route, `/api/fingerprint/sync`, to a terminal
 that has presented a registered device id, a valid API key, an HMAC signature
-over the request, a fresh timestamp and a single-use nonce.
+over the request, a fresh timestamp and a single-use nonce. Registering a
+terminal is an administrator action, and a registered terminal that has not yet
+burned its single-use claim token is refused every route but `/api/device/claim`
+— so adding a terminal queues templates, and only a claimed board collects them.
+
+**How far one terminal reaches.** A terminal is sent the templates of the
+teachers timetabled into *its own room*, and no others. That is not a smaller
+version of "everybody" chosen for tidiness — it is the complete set the terminal
+can use, because `ScheduleService::activeForDevice()` joins
+`devices.classroom_id` to `schedules.classroom_id`, so a teacher with no
+schedule in a room cannot open a class there however well the reader knows them.
+Anything beyond that set is biometric data sitting in a box screwed to a
+corridor wall that could never have been used.
+
+The threat this answers is physical. A terminal is not in a server room; it is
+on a wall, and a board carried away has its API key and HMAC secret in flash.
+Scoped this way it is worth the handful of teachers who work in that room rather
+than the whole staff. The cost is that the timetable becomes the thing that
+grants a teacher access to a reader — a substitute, or a class moved at short
+notice, is unknown to that terminal until the schedule says otherwise, and then
+known within one poll.
+
+**What is not withdrawn.** A template already written into a sensor stays there
+when the timetable changes. Work already queued is dropped and never sent, and
+the server stops offering it, but nothing reaches into a sensor to erase what it
+holds. It grants nothing on its own — opening a session still requires a
+schedule — and Admin → Fingerprints reports the count per terminal rather than
+leaving it to be inferred. Clearing a sensor and re-enrolling the room is the
+way to remove them.
 
 **If you would rather not.** Nothing forces the sync on. Leave teachers enrolled
 on a single terminal and the column stays NULL for them; they open sessions in
