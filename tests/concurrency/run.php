@@ -2388,7 +2388,18 @@ try {
      * 22. Template distribution: enough to work, no more than that
      * ===================================================================== */
     if ($want('fingerprint-sync')) {
-        $runner->group('22. A terminal learns the fingerprints its own room needs, and no others');
+        $runner->group('22. A terminal learns the fingerprints it is meant to hold');
+
+        // Both settings are exercised. The default, 'all', is what a school
+        // runs on — any teacher can start a class at any reader, so a
+        // substitute or a room change never meets NOT RECOGNISED. 'timetable'
+        // is the tighter posture for terminals in public corridors, and it has
+        // to keep working too or the setting is a bluff.
+        $scopeWas = \App\Core\Config::get('security.fingerprint.sync_scope', 'all');
+        \App\Core\Config::set('security.fingerprint.sync_scope', 'all');
+
+        $runner->assertEquals('the shipped default is that every terminal holds every teacher',
+            'all', $scopeWas);
 
         $fixture->build(1, 1, 1);
 
@@ -2453,14 +2464,16 @@ try {
         $runner->assertEquals('a terminal inserted straight into the table starts with nothing',
             0, $queuedAtBirth);
 
-        // A room with no timetable is owed nothing, and asking gets nothing.
-        // This is the property that keeps a stolen terminal worth the teachers
-        // who work in its room rather than the whole staff.
-        $runner->assertEquals('a room nobody is timetabled into is sent no fingerprints at all',
-            null, \App\Services\FingerprintSyncService::nextPendingFor($lateDevice));
+        // The new room has no timetable at all yet, and under the default that
+        // is beside the point: the terminal is sent the school's fingerprints
+        // so a class can start there whatever the timetable does or does not
+        // say. This is the case a substitute teacher walks into.
+        $runner->assert('a terminal is given the fingerprints even for a room with no timetable',
+            \App\Services\FingerprintSyncService::nextPendingFor($lateDevice) !== null,
+            'the new terminal was told there was nothing to sync');
 
-        // Now the teacher is timetabled into the new room, which is what makes
-        // the terminal owe them a template — and the only thing that does.
+        // The teacher is timetabled into the new room as well. Under 'all' this
+        // changes nothing; it is what part two below turns on.
         $db->insert('schedules', [
             'teacher_id'     => $teacherId,
             'subject_id'     => (int) $fixture->ids['subject_id'],
@@ -2483,7 +2496,14 @@ try {
 
         // The terminal boots and asks for work. Being told "nothing" is the
         // bug: it is missing a template and does not know it.
-        $offered = \App\Services\FingerprintSyncService::nextPendingFor($lateDevice);
+        //
+        // Drained rather than checked one at a time, and the assertions are
+        // about this teacher rather than about totals. A real database holds
+        // other enrolled teachers, and a test that only passes when the fixture
+        // is the only enrolment in the world is a test that will fail on
+        // somebody's real data for a reason that is not a bug.
+        $offered   = \App\Services\FingerprintSyncService::nextPendingFor($lateDevice);
+        $collected = [];
 
         $runner->assert('asking for work discovers the template it never received',
             $offered !== null, 'the new terminal was told there was nothing to sync');
@@ -2494,20 +2514,35 @@ try {
 
             $runner->assert('addressed to a slot on its own sensor',
                 $offered['slot'] >= 1, 'slot was ' . $offered['slot']);
-
-            // Slot numbers are per-sensor. The new terminal allocating slot 1
-            // for the same teacher is correct, not a collision.
-            $runner->assertEquals('allocated independently of the other terminal',
-                1, $offered['slot']);
         }
 
         // Confirming the write is what marks it present — not having offered it.
-        if ($offered !== null) {
-            \App\Services\FingerprintSyncService::markStored($lateDevice, (int) $offered['slot']);
+        $guard = 0;
 
-            $runner->assertEquals('once written, the terminal is not asked again',
-                null, \App\Services\FingerprintSyncService::nextPendingFor($lateDevice));
+        while ($offered !== null && $guard++ < 200) {
+            $collected[] = (int) $offered['fingerprint_id'];
+            \App\Services\FingerprintSyncService::markStored($lateDevice, (int) $offered['slot']);
+            $offered = \App\Services\FingerprintSyncService::nextPendingFor($lateDevice);
         }
+
+        $runner->assert('the teacher enrolled elsewhere is among what it collected',
+            in_array($fingerprintId, $collected, true),
+            'the new terminal never received the enrolled teacher');
+
+        $runner->assertEquals('and once written, the terminal is not asked again',
+            null, \App\Services\FingerprintSyncService::nextPendingFor($lateDevice));
+
+        // Slot numbers are per-sensor: the same teacher sits in slot 1 on the
+        // terminal that enrolled them, and in whatever slot this sensor had
+        // free. Both are correct, and treating them as the same number is the
+        // bug migration 018 gave fingerprint_slots its own table to prevent.
+        $runner->assert('slots are allocated per sensor, not shared between terminals',
+            (int) $db->scalar(
+                'SELECT sensor_template_id FROM fingerprint_slots
+                  WHERE device_row_id = :d AND fingerprint_id = :f',
+                ['d' => $lateDevice, 'f' => $fingerprintId]
+            ) >= 1,
+            'the teacher has no slot on the new terminal');
 
         $coverage = [];
 
@@ -2521,24 +2556,71 @@ try {
             $late !== null, 'the new terminal was absent from the coverage table');
 
         if ($late !== null) {
-            $runner->assertEquals('holding the one enrolment there is', 1, (int) $late['present']);
+            $runner->assert('holding at least the enrolment it was missing',
+                (int) $late['present'] >= 1, 'present was ' . $late['present']);
             $runner->assert('and reported complete', (bool) $late['complete'], 'not complete');
         }
+
+        // --- Part two: the tighter posture, FINGERPRINT_SYNC_SCOPE=timetable --
+        //
+        // Now a terminal holds only the teachers scheduled into its own room,
+        // so a board unscrewed from a corridor wall carries those few rather
+        // than the whole staff.
+        \App\Core\Config::set('security.fingerprint.sync_scope', 'timetable');
+
+        $runner->assertEquals('the setting is what decides, not a hard-coded rule',
+            'timetable', \App\Services\FingerprintSyncService::scope());
+
+        // A room nobody teaches in is owed nothing under this setting — the
+        // property the whole posture rests on.
+        $emptyClassroom = (int) $db->insert('classrooms', [
+            'room_number' => Fixture::PREFIX . 'REMPTY',
+            'capacity'    => 30,
+            'status'      => 'active',
+            'created_at'  => Clock::nowString(),
+            'updated_at'  => Clock::nowString(),
+        ]);
+
+        $emptyDevice = (int) $db->insert('devices', [
+            'device_id'    => Fixture::PREFIX . 'DEVEMPTY',
+            'device_name'  => 'Terminal in an untimetabled room',
+            'mac_address'  => sprintf('AA:BB:CC:0E:%02X:%02X', random_int(0, 255), random_int(0, 255)),
+            'classroom_id' => $emptyClassroom,
+            'device_role'  => 'both',
+            'status'       => 'active',
+            'claim_status' => 'claimed',
+            'timezone'     => 'Asia/Manila',
+            'created_at'   => Clock::nowString(),
+            'updated_at'   => Clock::nowString(),
+        ]);
+
+        $runner->assertEquals('scoped: a room nobody is timetabled into is sent nothing at all',
+            null, \App\Services\FingerprintSyncService::nextPendingFor($emptyDevice));
 
         // A timetable edit takes the teacher back out of the new room. What has
         // not been written yet must not be sent; what has already been written
         // stays in the sensor — deleting from a sensor is a separate decision —
         // and has to be visible rather than quietly forgotten.
-        $db->update('fingerprint_slots', ['status' => 'pending'],
-            ['device_row_id' => $lateDevice]);
+        $db->execute('DELETE FROM fingerprint_slots WHERE device_row_id = :d',
+            ['d' => $lateDevice]);
+
+        $db->insert('fingerprint_slots', [
+            'fingerprint_id'     => $fingerprintId,
+            'device_row_id'      => $lateDevice,
+            'sensor_template_id' => 1,
+            'source'             => 'synced',
+            'status'             => 'pending',
+            'created_at'         => Clock::nowString(),
+            'updated_at'         => Clock::nowString(),
+        ]);
 
         $db->execute("UPDATE schedules SET status = 'inactive' WHERE classroom_id = :c",
             ['c' => $lateClassroom]);
 
-        $runner->assertEquals('a template queued for a room the teacher has left is never sent',
+        $runner->assertEquals('scoped: a template queued for a room the teacher has left is never sent',
             null, \App\Services\FingerprintSyncService::nextPendingFor($lateDevice));
 
-        $runner->assertEquals('and the queued row is dropped rather than left pending forever',
+        $runner->assertEquals('scoped: and the queued row is dropped rather than left pending forever',
             0, (int) $db->scalar(
                 "SELECT COUNT(*) FROM fingerprint_slots
                   WHERE device_row_id = :d AND status = 'pending'",
@@ -2567,15 +2649,26 @@ try {
             }
         }
 
-        $runner->assert('a template already written to a sensor is reported, not forgotten',
+        $runner->assert('scoped: a template already written to a sensor is reported, not forgotten',
             $stale !== null && (int) $stale['stale'] === 1,
             'stale count was ' . ($stale === null ? 'no row' : (string) $stale['stale']));
 
-        $runner->assertEquals('and the room is owed nothing, so it is not shown as behind',
+        $runner->assertEquals('scoped: and the room is owed nothing, so it is not shown as behind',
             0, $stale === null ? -1 : (int) $stale['expected']);
+
+        // Back to the shipped setting for the rest of the group, and for every
+        // group after it — a test that leaves configuration behind it makes the
+        // next failure somebody else's mystery.
+        \App\Core\Config::set('security.fingerprint.sync_scope', $scopeWas);
 
         $db->execute("UPDATE schedules SET status = 'active' WHERE classroom_id = :c",
             ['c' => $lateClassroom]);
+
+        // The empty room proves the switch both ways: owed nothing while
+        // scoped, owed the school's enrolments once the setting is back.
+        $runner->assert('back on the default, an untimetabled room is owed the enrolments again',
+            \App\Services\FingerprintSyncService::reconcile($emptyDevice) >= 1,
+            'the untimetabled room was still sent nothing under scope "all"');
 
         // An enrolment made before templates were stored cannot be copied
         // anywhere, and has to be named rather than silently skipped.
@@ -2583,6 +2676,9 @@ try {
             ['template_data' => null, 'template_bytes' => null],
             ['fingerprint_id' => $fingerprintId]
         );
+
+        $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id = :f AND device_row_id = :d',
+            ['f' => $fingerprintId, 'd' => $lateDevice]);
 
         $names = array_map(
             static fn (array $r): int => (int) $r['teacher_id'],
@@ -2592,8 +2688,14 @@ try {
         $runner->assert('a teacher with no stored template is named, not silently skipped',
             in_array($teacherId, $names, true), 'the teacher was not listed for re-enrolment');
 
+        \App\Services\FingerprintSyncService::reconcile($lateDevice);
+
         $runner->assertEquals('and nothing tries to copy a template that does not exist',
-            0, \App\Services\FingerprintSyncService::reconcile($lateDevice));
+            0, (int) $db->scalar(
+                'SELECT COUNT(*) FROM fingerprint_slots
+                  WHERE device_row_id = :d AND fingerprint_id = :f',
+                ['d' => $lateDevice, 'f' => $fingerprintId]
+            ));
 
         // An enrolment scanner verifies nobody, so it is never given a backlog.
         $db->update('devices', ['enrollment_station' => 1, 'classroom_id' => null], ['id' => $lateDevice]);

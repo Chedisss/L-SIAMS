@@ -72,6 +72,10 @@ final class FingerprintController extends Controller
             // empty was a teacher failing to open a class in that room.
             'coverage'    => FingerprintSyncService::terminalStatus(),
             'syncable'    => FingerprintSyncService::syncableCount(),
+            // Whether a sensor is given the whole staff or only its own room's
+            // teachers is a deployment setting, and the page has to describe
+            // the installation it is running on rather than one of the two.
+            'syncScope'   => FingerprintSyncService::scope(),
             // Enrolled before templates were stored, so no terminal but the
             // one that captured them can ever match these teachers.
             'recapture'   => FingerprintSyncService::awaitingRecapture(),

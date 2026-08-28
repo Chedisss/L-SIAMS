@@ -333,30 +333,39 @@ terminal is an administrator action, and a registered terminal that has not yet
 burned its single-use claim token is refused every route but `/api/device/claim`
 — so adding a terminal queues templates, and only a claimed board collects them.
 
-**How far one terminal reaches.** A terminal is sent the templates of the
-teachers timetabled into *its own room*, and no others. That is not a smaller
-version of "everybody" chosen for tidiness — it is the complete set the terminal
-can use, because `ScheduleService::activeForDevice()` joins
-`devices.classroom_id` to `schedules.classroom_id`, so a teacher with no
-schedule in a room cannot open a class there however well the reader knows them.
-Anything beyond that set is biometric data sitting in a box screwed to a
-corridor wall that could never have been used.
+**How far one terminal reaches — `FINGERPRINT_SYNC_SCOPE`.** Two settings, and
+the choice is a deployment one because it trades a class being able to start
+against how much is lost with a stolen board.
 
-The threat this answers is physical. A terminal is not in a server room; it is
-on a wall, and a board carried away has its API key and HMAC secret in flash.
-Scoped this way it is worth the handful of teachers who work in that room rather
-than the whole staff. The cost is that the timetable becomes the thing that
-grants a teacher access to a reader — a substitute, or a class moved at short
-notice, is unknown to that terminal until the schedule says otherwise, and then
-known within one poll.
+`all` (default). Every classroom terminal holds every enrolled teacher. Any
+teacher can start a class at any reader. This is what a school actually runs on:
+a substitute covering a room they never teach in, a lesson moved to the hall at
+an hour's notice, a make-up class on a Saturday — under the other setting each
+of those meets the same `NOT RECOGNISED` a stranger would, and attendance stops
+for a clerical reason while a class waits.
 
-**What is not withdrawn.** A template already written into a sensor stays there
-when the timetable changes. Work already queued is dropped and never sent, and
-the server stops offering it, but nothing reaches into a sensor to erase what it
-holds. It grants nothing on its own — opening a session still requires a
-schedule — and Admin → Fingerprints reports the count per terminal rather than
-leaving it to be inferred. Clearing a sensor and re-enrolling the room is the
-way to remove them.
+`timetable`. A terminal is sent only the teachers scheduled into its own room.
+That is a complete set rather than merely a smaller one:
+`ScheduleService::activeForDevice()` joins `devices.classroom_id` to
+`schedules.classroom_id`, so a teacher with no schedule in a room could not have
+opened a class there anyway. What it buys is a smaller loss when a terminal is
+unscrewed from a corridor wall — the board carries its API key and HMAC secret
+in flash, and it carries the templates it was sent with them. Under `timetable`
+that is the few people who teach in that room; under `all` it is the whole
+staff. Choose it where terminals are publicly reachable and the timetable is
+kept accurate enough to teach from.
+
+**Neither setting decides who may open a class.** That is the schedule and a
+live signed request, both checked server-side on every attempt. A template
+sitting in a sensor grants nothing on its own — what is at stake between the two
+settings is the biometric data itself, not access.
+
+**What is not withdrawn.** Under `timetable`, a template already written into a
+sensor stays there when the timetable changes. Work still queued is dropped and
+never sent, and the server stops offering it, but nothing reaches into a sensor
+to erase what it holds. Admin → Fingerprints reports the count per terminal
+rather than leaving it to be inferred. Clearing a sensor and re-enrolling the
+room is the way to remove them.
 
 **If you would rather not.** Nothing forces the sync on. Leave teachers enrolled
 on a single terminal and the column stays NULL for them; they open sessions in
