@@ -10,6 +10,7 @@ use App\Core\Exceptions\HttpException;
 use App\Core\Response;
 use App\Services\FingerprintEnrollmentService;
 use App\Services\FingerprintService;
+use App\Services\FingerprintSyncService;
 use App\Services\TeacherService;
 
 /**
@@ -65,6 +66,15 @@ final class FingerprintController extends Controller
             // is the one failure this page could not previously show: every
             // teacher reads "Active" while the reader recognises nobody.
             'mismatches'  => FingerprintService::sensorMismatches(),
+            // How much of the roll each terminal's sensor actually holds. A
+            // terminal added after the enrolments starts at zero and fills up
+            // as it polls; without this the only way to discover it was still
+            // empty was a teacher failing to open a class in that room.
+            'coverage'    => FingerprintSyncService::terminalStatus(),
+            'syncable'    => FingerprintSyncService::syncableCount(),
+            // Enrolled before templates were stored, so no terminal but the
+            // one that captured them can ever match these teachers.
+            'recapture'   => FingerprintSyncService::awaitingRecapture(),
         ]);
     }
 

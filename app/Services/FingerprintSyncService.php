@@ -232,6 +232,93 @@ final class FingerprintSyncService
     }
 
     /**
+     * Give one terminal every template it does not yet have a slot for.
+     *
+     * queueForOtherTerminals() runs at the moment a teacher enrols, and it can
+     * only queue onto the terminals that exist *then*. A terminal registered
+     * afterwards was therefore born empty and stayed empty: every teacher
+     * already enrolled was invisible to it, forever, and the only symptom was
+     * a reader in the new room answering NOT RECOGNISED to a finger that
+     * worked perfectly well down the corridor. Adding the second terminal in a
+     * building is the ordinary case, not an edge one, so the backlog has to be
+     * computed rather than remembered.
+     *
+     * Called when a terminal is registered and again whenever one asks for
+     * work and there is none — so a terminal that arrived by any route at all,
+     * including one restored from a backup or re-registered after a swap,
+     * repairs itself on its next poll without anybody knowing to intervene.
+     *
+     * Teachers whose template_data is NULL are skipped and cannot be helped
+     * here: they enrolled before the template was ever stored, the bytes exist
+     * only in the sensor that captured them, and they need one more enrolment
+     * before any of this can reach them. The Fingerprints page names them.
+     *
+     * @return int how many templates were queued
+     */
+    public static function reconcile(int $deviceRowId): int
+    {
+        $db = Database::instance();
+
+        $device = $db->selectOne(
+            "SELECT id FROM devices
+              WHERE id = :id
+                AND deleted_at IS NULL
+                AND status NOT IN ('decommissioned','disabled')
+                AND classroom_id IS NOT NULL
+                AND enrollment_station = 0",
+            ['id' => $deviceRowId]
+        );
+
+        // A desk-side enrolment scanner never verifies anybody, and a terminal
+        // with no classroom can hold no session, so neither has any use for a
+        // sensor full of other people's fingers.
+        if ($device === null) {
+            return 0;
+        }
+
+        $missing = $db->select(
+            "SELECT fp.fingerprint_id
+               FROM fingerprint_templates fp
+               JOIN teachers t ON t.teacher_id = fp.teacher_id
+              WHERE fp.template_data IS NOT NULL
+                AND fp.status = 'active'
+                AND t.status = 'active'
+                AND t.deleted_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM fingerprint_slots s
+                     WHERE s.device_row_id = :device
+                       AND s.fingerprint_id = fp.fingerprint_id
+                )
+              ORDER BY fp.fingerprint_id",
+            ['device' => $deviceRowId]
+        );
+
+        $queued = 0;
+
+        foreach ($missing as $row) {
+            $fingerprintId = (int) $row['fingerprint_id'];
+            $slot          = self::allocateSlot($deviceRowId, $fingerprintId);
+
+            if ($slot === null) {
+                // The sensor is full. Say so once, rather than silently
+                // enrolling fewer teachers than the room has.
+                Logger::warning('Fingerprint sync: sensor capacity reached', [
+                    'device_row_id' => $deviceRowId,
+                    'capacity'      => self::capacity(),
+                ]);
+
+                break;
+            }
+
+            if (self::recordSlot($fingerprintId, $deviceRowId, $slot, 'synced', 'pending')) {
+                $queued++;
+            }
+        }
+
+        return $queued;
+    }
+
+    /**
      * What this terminal is missing, oldest first.
      *
      * One at a time. Writing a template is a multi-packet UART transfer that
@@ -244,22 +331,18 @@ final class FingerprintSyncService
      */
     public static function nextPendingFor(int $deviceRowId): ?array
     {
-        $row = Database::instance()->selectOne(
-            "SELECT s.fingerprint_id, s.sensor_template_id, fp.template_data, fp.template_bytes,
-                    CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
-               FROM fingerprint_slots s
-               JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
-               JOIN teachers t               ON t.teacher_id = fp.teacher_id
-              WHERE s.device_row_id = :device
-                AND s.status = 'pending'
-                AND fp.template_data IS NOT NULL
-                AND fp.status = 'active'
-                AND t.status = 'active'
-                AND t.deleted_at IS NULL
-              ORDER BY s.created_at
-              LIMIT 1",
-            ['device' => $deviceRowId]
-        );
+        $row = self::pendingRow($deviceRowId);
+
+        // Nothing queued is the moment to ask whether anything *should* be.
+        // Putting it here rather than only at registration is what makes the
+        // backlog self-repairing: a terminal added after the teachers were
+        // enrolled asks for work, is told there is none, and the act of
+        // answering discovers the eight templates it never received. The
+        // reconciliation runs only when the queue is empty, so a terminal that
+        // is up to date pays one indexed query per poll and nothing more.
+        if ($row === null && self::reconcile($deviceRowId) > 0) {
+            $row = self::pendingRow($deviceRowId);
+        }
 
         if ($row === null) {
             return null;
@@ -283,6 +366,27 @@ final class FingerprintSyncService
             'template'       => base64_encode($plain),
             'bytes'          => (int) $row['template_bytes'],
         ];
+    }
+
+    /** @return array<string,mixed>|null */
+    private static function pendingRow(int $deviceRowId): ?array
+    {
+        return Database::instance()->selectOne(
+            "SELECT s.fingerprint_id, s.sensor_template_id, fp.template_data, fp.template_bytes,
+                    CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
+               FROM fingerprint_slots s
+               JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
+               JOIN teachers t               ON t.teacher_id = fp.teacher_id
+              WHERE s.device_row_id = :device
+                AND s.status = 'pending'
+                AND fp.template_data IS NOT NULL
+                AND fp.status = 'active'
+                AND t.status = 'active'
+                AND t.deleted_at IS NULL
+              ORDER BY s.created_at
+              LIMIT 1",
+            ['device' => $deviceRowId]
+        );
     }
 
     public static function markStored(int $deviceRowId, int $slot): void
@@ -314,24 +418,104 @@ final class FingerprintSyncService
      * is four templates behind rather than discovering it when a teacher
      * cannot open their class.
      *
+     * Enrolment scanners are left out: they verify nobody, so "0 of 8" against
+     * one would be a shortfall that never mattered and never cleared.
+     *
      * @return list<array<string,mixed>>
      */
     public static function terminalStatus(): array
     {
-        return Database::instance()->select(
+        $syncable = self::syncableCount();
+
+        // Only slots for templates that can actually be distributed are
+        // counted. Migration 018 backfilled a slot row for every enrolment that
+        // already existed, including the ones whose bytes were never captured;
+        // counting those made a terminal read "2 of 0", which is not a
+        // shortfall or a surplus but a sentence that means nothing. Those
+        // teachers are reported separately, by awaitingRecapture(), where the
+        // action is re-enrolment rather than waiting for a sync.
+        $rows = Database::instance()->select(
             "SELECT d.id AS device_row_id, d.device_id, d.status AS device_status,
-                    c.room_number,
-                    SUM(s.status = 'present') AS present,
-                    SUM(s.status = 'pending') AS pending,
-                    SUM(s.status = 'failed')  AS failed,
+                    d.claim_status, c.room_number,
+                    COALESCE(SUM(s.status = 'present'), 0) AS present,
+                    COALESCE(SUM(s.status = 'pending'), 0) AS pending,
+                    COALESCE(SUM(s.status = 'failed'),  0) AS failed,
                     d.sensor_template_count
                FROM devices d
-          LEFT JOIN classrooms c        ON c.classroom_id = d.classroom_id
-          LEFT JOIN fingerprint_slots s ON s.device_row_id = d.id
+          LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
+          LEFT JOIN (
+                     SELECT s.device_row_id, s.status
+                       FROM fingerprint_slots s
+                       JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
+                       JOIN teachers t               ON t.teacher_id = fp.teacher_id
+                      WHERE fp.template_data IS NOT NULL
+                        AND fp.status = 'active'
+                        AND t.status = 'active'
+                        AND t.deleted_at IS NULL
+                    ) s ON s.device_row_id = d.id
               WHERE d.deleted_at IS NULL
                 AND d.status NOT IN ('decommissioned','disabled')
-              GROUP BY d.id, d.device_id, d.status, c.room_number, d.sensor_template_count
+                AND d.enrollment_station = 0
+                AND d.classroom_id IS NOT NULL
+              GROUP BY d.id, d.device_id, d.status, d.claim_status, c.room_number,
+                       d.sensor_template_count
               ORDER BY c.room_number, d.device_id"
+        );
+
+        foreach ($rows as $index => $row) {
+            $present = (int) $row['present'];
+
+            $rows[$index]['expected'] = $syncable;
+            // Anything neither present nor queued is a template this terminal
+            // has no row for at all — the state a terminal added after the
+            // enrolments sits in until its next poll reconciles it.
+            $rows[$index]['missing']  = max(0, $syncable - $present - (int) $row['pending'] - (int) $row['failed']);
+            $rows[$index]['complete'] = $syncable > 0 && $present >= $syncable;
+        }
+
+        return $rows;
+    }
+
+    /** How many enrolments are in a state where they can be copied at all. */
+    public static function syncableCount(): int
+    {
+        return (int) Database::instance()->scalar(
+            "SELECT COUNT(*)
+               FROM fingerprint_templates fp
+               JOIN teachers t ON t.teacher_id = fp.teacher_id
+              WHERE fp.template_data IS NOT NULL
+                AND fp.status = 'active'
+                AND t.status = 'active'
+                AND t.deleted_at IS NULL"
+        );
+    }
+
+    /**
+     * Teachers whose enrolment predates template storage.
+     *
+     * Their bytes live only in the sensor that captured them and cannot be
+     * recovered from a slot number, so no amount of syncing will reach them —
+     * they work on the terminal they enrolled at and nowhere else until
+     * somebody enrols them once more. Migration 018 promised this page would
+     * name them; this is the query that lets it.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function awaitingRecapture(): array
+    {
+        return Database::instance()->select(
+            "SELECT fp.fingerprint_id, t.teacher_id, t.employee_number,
+                    t.first_name, t.last_name, d.device_id AS enrolled_on,
+                    c.room_number
+               FROM fingerprint_templates fp
+               JOIN teachers t         ON t.teacher_id = fp.teacher_id
+          LEFT JOIN devices d          ON d.id = fp.enrolled_device_row_id
+          LEFT JOIN classrooms c       ON c.classroom_id = d.classroom_id
+              WHERE fp.template_data IS NULL
+                AND fp.status = 'active'
+                AND t.status = 'active'
+                AND t.deleted_at IS NULL
+              ORDER BY t.last_name, t.first_name"
         );
     }
 }

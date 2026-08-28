@@ -58,6 +58,102 @@ $__view->start('content');
     </div>
 <?php endforeach; ?>
 
+<?php /* Which sensors actually hold which teachers.
+ *
+ * A terminal registered after the enrolments were done starts with an empty
+ * sensor and fills itself as it polls. That is normal and takes a couple of
+ * minutes; what is not acceptable is it being invisible. Without this table the
+ * only symptom of a terminal that never caught up was a teacher standing in
+ * that room with the reader answering NOT RECOGNISED to a finger that opens
+ * their class perfectly well next door. */ ?>
+<?php if ($coverage !== [] && $syncable > 0): ?>
+    <div class="card">
+        <div class="card__header">
+            <h2 class="card__title"><i class="fa-solid fa-tower-broadcast"></i> Fingerprints on each terminal</h2>
+            <span class="text-sm text-muted"><?= e($syncable) ?> enrolment<?= $syncable === 1 ? '' : 's' ?> to distribute</span>
+        </div>
+        <div class="card__body--flush">
+            <div class="table-wrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th>Terminal</th><th>Room</th><th style="width:140px">Sensor holds</th>
+                            <th>State</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($coverage as $terminal): ?>
+                        <?php
+                        $present = (int) $terminal['present'];
+                        $waiting = (int) $terminal['pending'] + (int) $terminal['missing'];
+                        $failed  = (int) $terminal['failed'];
+                        ?>
+                        <tr>
+                            <td class="mono text-sm"><?= e($terminal['device_id']) ?></td>
+                            <td class="text-sm"><?= $terminal['room_number'] ? e($terminal['room_number']) : '—' ?></td>
+                            <td class="mono text-sm"><?= e($present) ?> of <?= e($terminal['expected']) ?></td>
+                            <td class="text-sm">
+                                <?php if ($failed > 0): ?>
+                                    <span class="badge badge-danger"><?= e($failed) ?> failed</span>
+                                    The sensor refused <?= $failed === 1 ? 'a template' : 'these templates' ?>.
+                                    That is a sensor fault, not a teacher's finger — the terminal will not retry
+                                    on its own.
+                                    <?php if ($waiting > 0): ?>
+                                        <?= e($waiting) ?> more <?= $waiting === 1 ? 'is' : 'are' ?> still to copy.
+                                    <?php endif; ?>
+                                <?php elseif ($terminal['complete']): ?>
+                                    <span class="badge badge-success">Complete</span>
+                                    Every enrolled teacher can open a class in this room.
+                                <?php elseif ((string) $terminal['claim_status'] !== 'claimed'): ?>
+                                    <span class="badge badge-neutral">Waiting to be claimed</span>
+                                    Nothing is copied until the board boots and claims its key.
+                                <?php else: ?>
+                                    <span class="badge badge-warning"><?= e($waiting) ?> still to copy</span>
+                                    The terminal collects one per poll; teachers not yet copied will not be
+                                    recognised in this room until it catches up.
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
+
+<?php /* The enrolments that predate template storage. No amount of syncing
+         reaches these — the bytes exist only in the sensor that captured them,
+         and a slot number cannot be turned back into a template. */ ?>
+<?php if ($recapture !== []): ?>
+    <div class="alert alert-warning">
+        <span class="alert__icon"><i class="fa-solid fa-rotate"></i></span>
+        <div class="alert__body">
+            <strong><?= e(count($recapture)) ?>
+            teacher<?= count($recapture) === 1 ? '' : 's' ?>
+            <?= count($recapture) === 1 ? 'is' : 'are' ?> enrolled on one terminal only.</strong>
+            Their fingerprints were captured before this system kept a copy of the template, so the
+            print exists solely in the sensor that took it and cannot be copied anywhere else. They
+            can open a class in that room and nowhere else. Enrolling them once more — on any
+            terminal — captures the template and puts them on every reader.
+
+            <ul class="mt-1">
+                <?php foreach ($recapture as $teacher): ?>
+                    <li>
+                        <?= e($teacher['last_name']) ?>, <?= e($teacher['first_name']) ?>
+                        <span class="text-muted text-sm">
+                            (<?= e($teacher['employee_number']) ?>)
+                            <?php if ($teacher['enrolled_on']): ?>
+                                — enrolled on <?= e($teacher['enrolled_on']) ?><?= $teacher['room_number'] ? ', Room ' . e($teacher['room_number']) : '' ?>
+                            <?php endif; ?>
+                        </span>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+    </div>
+<?php endif; ?>
+
 <?php if ($teacherCount === 0): ?>
     <div class="card">
         <div class="card__body">
