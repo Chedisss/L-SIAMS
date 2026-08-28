@@ -2385,10 +2385,148 @@ try {
     }
 
     /* =====================================================================
-     * 22. Sustained soak (opt-in, 30 minutes)
+     * 22. A terminal added later still learns the fingerprints
+     * ===================================================================== */
+    if ($want('fingerprint-sync')) {
+        $runner->group('22. A terminal added after the enrolments still learns every fingerprint');
+
+        $fixture->build(1, 1, 1);
+
+        $firstDevice = (int) $fixture->ids['devices'][0];
+        $teacherId   = (int) $fixture->ids['teacher_id'];
+
+        // The teacher is enrolled on the terminal that already exists, and the
+        // template was captured — the state every enrolment reaches today.
+        $fingerprintId = (int) $fixture->ids['fingerprint_id'];
+
+        $db->update('fingerprint_templates', [
+            'sensor_template_id'     => 1,
+            'enrolled_device_row_id' => $firstDevice,
+            'template_data'          => \App\Core\Crypto::encrypt(str_repeat("\x41", 512)),
+            'template_bytes'         => 512,
+            'template_captured_at'   => Clock::nowString(),
+        ], ['fingerprint_id' => $fingerprintId]);
+
+        $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id = :fp',
+            ['fp' => $fingerprintId]);
+
+        $db->insert('fingerprint_slots', [
+            'fingerprint_id'     => $fingerprintId,
+            'device_row_id'      => $firstDevice,
+            'sensor_template_id' => 1,
+            'source'             => 'enrolled',
+            'status'             => 'present',
+            'synced_at'          => Clock::nowString(),
+            'created_at'         => Clock::nowString(),
+            'updated_at'         => Clock::nowString(),
+        ]);
+
+        // Now the second room gets a terminal — after the enrolment, which is
+        // the ordinary way a school grows and the case that used to leave the
+        // new sensor empty for good.
+        $lateClassroom = (int) $db->insert('classrooms', [
+            'room_number' => Fixture::PREFIX . 'RLATE',
+            'capacity'    => 60,
+            'status'      => 'active',
+            'created_at'  => Clock::nowString(),
+            'updated_at'  => Clock::nowString(),
+        ]);
+
+        $lateDevice = (int) $db->insert('devices', [
+            'device_id'    => Fixture::PREFIX . 'DEVLATE',
+            'device_name'  => 'Terminal added later',
+            'mac_address'  => sprintf('AA:BB:CC:0F:%02X:%02X', random_int(0, 255), random_int(0, 255)),
+            'classroom_id' => $lateClassroom,
+            'device_role'  => 'both',
+            'status'       => 'active',
+            'claim_status' => 'claimed',
+            'timezone'     => 'Asia/Manila',
+            'created_at'   => Clock::nowString(),
+            'updated_at'   => Clock::nowString(),
+        ]);
+
+        $queuedAtBirth = (int) $db->scalar(
+            'SELECT COUNT(*) FROM fingerprint_slots WHERE device_row_id = :d',
+            ['d' => $lateDevice]
+        );
+
+        $runner->assertEquals('a terminal inserted straight into the table starts with nothing',
+            0, $queuedAtBirth);
+
+        // The terminal boots and asks for work. Being told "nothing" is the
+        // bug: it is missing a template and does not know it.
+        $offered = \App\Services\FingerprintSyncService::nextPendingFor($lateDevice);
+
+        $runner->assert('asking for work discovers the template it never received',
+            $offered !== null, 'the new terminal was told there was nothing to sync');
+
+        if ($offered !== null) {
+            $runner->assertEquals('and is handed the full template, not a truncated one',
+                512, strlen((string) base64_decode($offered['template'], true)));
+
+            $runner->assert('addressed to a slot on its own sensor',
+                $offered['slot'] >= 1, 'slot was ' . $offered['slot']);
+
+            // Slot numbers are per-sensor. The new terminal allocating slot 1
+            // for the same teacher is correct, not a collision.
+            $runner->assertEquals('allocated independently of the other terminal',
+                1, $offered['slot']);
+        }
+
+        // Confirming the write is what marks it present — not having offered it.
+        if ($offered !== null) {
+            \App\Services\FingerprintSyncService::markStored($lateDevice, (int) $offered['slot']);
+
+            $runner->assertEquals('once written, the terminal is not asked again',
+                null, \App\Services\FingerprintSyncService::nextPendingFor($lateDevice));
+        }
+
+        $coverage = [];
+
+        foreach (\App\Services\FingerprintSyncService::terminalStatus() as $row) {
+            $coverage[(string) $row['device_id']] = $row;
+        }
+
+        $late = $coverage[Fixture::PREFIX . 'DEVLATE'] ?? null;
+
+        $runner->assert('the Fingerprints page can see the new terminal',
+            $late !== null, 'the new terminal was absent from the coverage table');
+
+        if ($late !== null) {
+            $runner->assertEquals('holding the one enrolment there is', 1, (int) $late['present']);
+            $runner->assert('and reported complete', (bool) $late['complete'], 'not complete');
+        }
+
+        // An enrolment made before templates were stored cannot be copied
+        // anywhere, and has to be named rather than silently skipped.
+        $db->update('fingerprint_templates',
+            ['template_data' => null, 'template_bytes' => null],
+            ['fingerprint_id' => $fingerprintId]
+        );
+
+        $names = array_map(
+            static fn (array $r): int => (int) $r['teacher_id'],
+            \App\Services\FingerprintSyncService::awaitingRecapture()
+        );
+
+        $runner->assert('a teacher with no stored template is named, not silently skipped',
+            in_array($teacherId, $names, true), 'the teacher was not listed for re-enrolment');
+
+        $runner->assertEquals('and nothing tries to copy a template that does not exist',
+            0, \App\Services\FingerprintSyncService::reconcile($lateDevice));
+
+        // An enrolment scanner verifies nobody, so it is never given a backlog.
+        $db->update('devices', ['enrollment_station' => 1, 'classroom_id' => null], ['id' => $lateDevice]);
+
+        $runner->assertEquals('an enrolment scanner is never sent other people\'s fingerprints',
+            0, \App\Services\FingerprintSyncService::reconcile($lateDevice));
+    }
+
+    /* =====================================================================
+     * 23. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('22. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('23. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);

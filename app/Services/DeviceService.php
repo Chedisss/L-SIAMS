@@ -137,6 +137,16 @@ final class DeviceService
                 'created_at'     => Clock::nowString(),
             ]);
 
+            // A new terminal starts with an empty sensor, and every teacher
+            // already enrolled is a stranger to it until their template is
+            // copied across. Queueing that here means the Fingerprints page
+            // shows the backlog the moment the terminal is registered, rather
+            // than the administrator finding out when a teacher stands in the
+            // new room and the reader does not know them.
+            if (!$isStation && $classroomId !== null) {
+                FingerprintSyncService::reconcile($deviceRowId);
+            }
+
             AuditService::log(
                 AuditService::DEVICE_REGISTERED,
                 'devices',

@@ -622,6 +622,18 @@ from the device detail page.
 verification by a teacher scheduled for that classroom at that time. Check the
 schedule, and check the teacher's fingerprint is enrolled.
 
+**A teacher opens a class in one room but the reader in another does not know
+them.** A sensor can only match templates in its own flash, so a new terminal
+starts empty and fills itself as it polls — one template per poll, a few minutes
+for a staffroom's worth. Admin → Fingerprints shows how far each terminal has
+got, room by room. Two states there need a person rather than time:
+
+- *"enrolled on one terminal only"* — the enrolment predates template storage,
+  so the bytes exist solely in the sensor that captured them. Enrol that teacher
+  once more, on any terminal, and every reader gets them.
+- *n failed* — the sensor refused the write. That is a hardware fault, not a
+  finger; the terminal will not retry on its own.
+
 **Sessions stay open past the end of the period.** The worker is not running.
 `systemctl status lsiams-worker`.
 
