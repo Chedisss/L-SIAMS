@@ -1406,6 +1406,70 @@ try {
         $runner->assertEquals('a three-hour gap is not a handover and carries nothing',
             0, $later['carried_in']);
 
+        // Nothing carries across noon, however small the gap.
+        //
+        // This is the case the gap limit cannot catch and the reason the
+        // barrier exists: 11:50 to 12:10 is twenty minutes, well inside the
+        // limit, so without a fixed boundary the morning register would carry
+        // through lunch and mark present every student who had gone home for
+        // the afternoon.
+        $fixture->build(1, 6, 2);
+
+        $device      = $fixture->device(0);
+        $classroomId = (int) $device['classroom_id'];
+        $sectionId   = $fixture->ids['sections'][0];
+        $cards       = $fixture->ids['cards'][$sectionId];
+
+        $period($db, $fixture->schedule(0), '11:00:00', '11:50:00', $sectionId, $classroomId);
+        $period($db, $fixture->schedule(1), '12:10:00', '13:00:00', $sectionId, $classroomId);
+
+        Clock::freeze(Clock::now()->setTime(11, 0, 0));
+        AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        Clock::freeze(Clock::now()->setTime(11, 5, 0));
+        foreach (array_slice($cards, 0, 3) as $card) {
+            AttendanceService::tap($device, $card, null, AttendanceService::INTENT_TIME_IN);
+        }
+
+        Clock::freeze(Clock::now()->setTime(12, 8, 0));
+        $afternoon = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(1), 0);
+
+        $runner->assertEquals('the afternoon starts from zero even after a twenty-minute break',
+            0, $afternoon['carried_in']);
+
+        $afternoonRows = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records WHERE session_id = :id',
+            ['id' => (int) $afternoon['session_id']]
+        );
+
+        $runner->assertEquals('and its register is genuinely empty', 0, $afternoonRows);
+
+        // The barrier must not swallow ordinary morning handovers, which is
+        // the regression that would make it worse than the bug it fixes.
+        $fixture->build(1, 6, 2);
+
+        $device      = $fixture->device(0);
+        $classroomId = (int) $device['classroom_id'];
+        $sectionId   = $fixture->ids['sections'][0];
+        $cards       = $fixture->ids['cards'][$sectionId];
+
+        $period($db, $fixture->schedule(0), '10:00:00', '10:50:00', $sectionId, $classroomId);
+        $period($db, $fixture->schedule(1), '11:00:00', '11:50:00', $sectionId, $classroomId);
+
+        Clock::freeze(Clock::now()->setTime(10, 0, 0));
+        AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        Clock::freeze(Clock::now()->setTime(10, 5, 0));
+        foreach (array_slice($cards, 0, 3) as $card) {
+            AttendanceService::tap($device, $card, null, AttendanceService::INTENT_TIME_IN);
+        }
+
+        Clock::freeze(Clock::now()->setTime(10, 58, 0));
+        $stillMorning = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(1), 0);
+
+        $runner->assertEquals('a morning handover still carries as it always did',
+            3, $stillMorning['carried_in']);
+
         Clock::freeze(Clock::now()->setTime(10, 0, 0));
     }
 

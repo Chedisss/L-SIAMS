@@ -559,6 +559,25 @@ final class AttendanceSessionService
             return $none;
         }
 
+        // The afternoon starts from zero. A session opening at or after the
+        // reset time never inherits a register, whatever preceded it and
+        // however small the gap.
+        //
+        // This is deliberately not expressed as a gap. A morning class ending
+        // at 11:50 and an afternoon class opening at 12:10 is twenty minutes
+        // apart — well inside the limit — and carrying that register forward
+        // would mark present every student who went home at lunch. The break
+        // that matters is a fixed point in the school day, not a duration.
+        $resetAt = trim((string) Config::get('attendance.carry_over.reset_at', '12:00'));
+
+        if ($resetAt !== '' && preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/', $resetAt, $clock) === 1) {
+            $boundary = $start->setTime((int) $clock[1], (int) $clock[2], 0);
+
+            if ($start >= $boundary) {
+                return $none;
+            }
+        }
+
         $maxGap = max(0, (int) Config::get('attendance.carry_over.max_gap_minutes', 30));
 
         // The period this section was in immediately before. Same section, same
