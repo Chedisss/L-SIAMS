@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+use App\Core\Env;
+
 /**
  * Attendance defaults. Every value here is overridable per-schedule (Part 16.3)
  * and editable at runtime through Settings, which writes to the `settings`
@@ -30,6 +32,21 @@ return [
         // The longest break that still counts as a handover. Beyond it the
         // students went somewhere in between, so the new register starts empty.
         'max_gap_minutes' => 30,
+
+        // No register is ever carried into a session opening at or after this
+        // time. The afternoon starts from zero.
+        //
+        // The gap limit alone does not achieve that. A morning class ending at
+        // 11:50 and an afternoon class opening at 12:10 is a twenty-minute
+        // gap — well inside the limit — so the morning's register would carry
+        // straight through lunch and mark present every student who had gone
+        // home for the afternoon. The break that matters here is not a
+        // measured number of minutes; it is a fixed point in the school day,
+        // and it has to be expressed as one.
+        //
+        // Set to an empty string to remove the barrier and let the gap limit
+        // decide alone.
+        'reset_at' => Env::get('ATTENDANCE_CARRY_RESET_AT', '12:00'),
     ],
 
     'section_mismatch_alert_threshold' => 3, // taps/day/student before admin notification

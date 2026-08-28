@@ -4,11 +4,15 @@ declare(strict_types=1);
 use App\Core\Env;
 
 /*
- * Requests a terminal may make per minute. 0 switches the limit off, which is
- * the default — see the note beside the 'device' bucket below for why, and for
- * what to set before deploying.
+ * Requests a terminal may make per minute. 0 switches the limit off.
+ *
+ * 240 is the default because this is a deployed system now: terminals run
+ * unattended in classrooms, and one stuck in a retry loop should not be able
+ * to saturate the server. See the note beside the 'device' bucket below for
+ * where the number comes from — comfortably above the ~110 a busy minute
+ * reaches, far below what a wedged terminal produces.
  */
-$deviceRateLimit = Env::int('DEVICE_RATE_LIMIT', 0);
+$deviceRateLimit = Env::int('DEVICE_RATE_LIMIT', 240);
 
 return [
     // --- Passwords ---------------------------------------------------------
@@ -121,12 +125,17 @@ return [
         // adds a tap per student arriving and another leaving, so a busy
         // minute reaches roughly 110.
         //
-        // It is off by default now. The limit catches exactly one thing — a
-        // terminal stuck in a retry loop — and while switched on it made every
-        // other problem harder to see. A throttled heartbeat marks the device
-        // offline, a throttled poll misses an enrolment request, and a
-        // throttled verify leaves a teacher unable to open a session, all of
-        // which look like the fault you were already chasing.
+        // It was switched off during bring-up, because the limit catches
+        // exactly one thing — a terminal stuck in a retry loop — and while it
+        // was on it made every other problem harder to see. A throttled
+        // heartbeat marks the device offline, a throttled poll misses an
+        // enrolment request, and a throttled verify leaves a teacher unable to
+        // open a session, all of which look like the fault you were already
+        // chasing.
+        //
+        // Bring-up is over and it is back on, at 240. Set DEVICE_RATE_LIMIT=0
+        // to switch it off again while diagnosing a terminal, and put it back
+        // afterwards.
         //
         // Nothing else is relaxed by this. Every device endpoint still demands
         // an HMAC signature over the request, a device id the server issued,
@@ -134,10 +143,8 @@ return [
         // ever governed how often a terminal that had already proved itself
         // could speak.
         //
-        // Set DEVICE_RATE_LIMIT=240 before a real deployment, where terminals
-        // run unattended and a wedged one should not be able to saturate the
-        // server. 240 was the working value: comfortably above the ~110 a busy
-        // minute reaches, far below the thousands a retry loop produces.
+        // 240 is the working value: comfortably above the ~110 a busy minute
+        // reaches, far below the thousands a retry loop produces.
         'device'   => $deviceRateLimit > 0
             ? ['limit' => $deviceRateLimit, 'window' => 60]
             : null,
