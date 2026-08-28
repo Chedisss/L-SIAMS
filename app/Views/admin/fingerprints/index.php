@@ -167,29 +167,89 @@ $__view->start('content');
     </div>
 <?php endif; ?>
 
-<?php /* The enrolments that predate template storage. No amount of syncing
-         reaches these — the bytes exist only in the sensor that captured them,
-         and a slot number cannot be turned back into a template. */ ?>
-<?php if ($recapture !== []): ?>
+<?php
+/* The enrolments that predate template storage, split by whether a person is
+ * needed at all.
+ *
+ * Most are not. The sensor that captured the print still holds it, and it can
+ * read the slot back out and upload it unattended — so the honest thing to
+ * show is progress, not a to-do list. Telling an administrator to round up
+ * forty teachers for something the terminals do by themselves overnight is how
+ * a system earns a reputation for being unusable.
+ *
+ * The remainder do need somebody: a slot with no device recorded against it,
+ * or a device since retired, leaves nothing to ask. Those are separated out so
+ * the instruction to re-enrol lands only on the rows it is true for. */
+$recoverable = array_values(array_filter($recapture, static fn (array $r): bool => (bool) $r['recoverable']));
+$manual      = array_values(array_filter($recapture, static fn (array $r): bool => !$r['recoverable']));
+?>
+
+<?php if ($recoverable !== []): ?>
+    <div class="alert alert-info">
+        <span class="alert__icon"><i class="fa-solid fa-download"></i></span>
+        <div class="alert__body">
+            <strong>Recovering <?= e(count($recoverable)) ?>
+            fingerprint<?= count($recoverable) === 1 ? '' : 's' ?> from the
+            <?= count($recoverable) === 1 ? 'terminal that holds it' : 'terminals that hold them' ?>.</strong>
+            <?= count($recoverable) === 1 ? 'This enrolment predates' : 'These enrolments predate' ?>
+            the system keeping a copy of the template, so for now
+            <?= count($recoverable) === 1 ? 'the print exists' : 'the prints exist' ?> only in the
+            sensor that captured
+            <?= count($recoverable) === 1 ? 'it' : 'them' ?>. Nobody needs to be fetched: that
+            terminal reads the slot back out of its own flash and uploads it on its next poll, with
+            no finger involved. Until it does,
+            <?= count($recoverable) === 1 ? 'this teacher can' : 'these teachers can' ?> open a class
+            in that room only.
+
+            <ul class="mt-1">
+                <?php foreach ($recoverable as $teacher): ?>
+                    <li>
+                        <?= e($teacher['last_name']) ?>, <?= e($teacher['first_name']) ?>
+                        <span class="text-muted text-sm">
+                            (<?= e($teacher['employee_number']) ?>)
+                            — waiting on <?= e($teacher['enrolled_on']) ?><?= $teacher['room_number'] ? ', Room ' . e($teacher['room_number']) : '' ?>
+                            <?php if (empty($teacher['last_heartbeat_at'])): ?>
+                                <em>· that terminal has never reported in, so switch it on</em>
+                            <?php endif; ?>
+                        </span>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+
+            <div class="text-xs text-muted mt-1">
+                Requires firmware that supports the read-back. A terminal on an older build simply
+                never answers, and the teacher stays on one reader until it is updated or they are
+                enrolled again.
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
+
+<?php if ($manual !== []): ?>
     <div class="alert alert-warning">
         <span class="alert__icon"><i class="fa-solid fa-rotate"></i></span>
         <div class="alert__body">
-            <strong><?= e(count($recapture)) ?>
-            teacher<?= count($recapture) === 1 ? '' : 's' ?>
-            <?= count($recapture) === 1 ? 'is' : 'are' ?> enrolled on one terminal only.</strong>
-            Their fingerprints were captured before this system kept a copy of the template, so the
-            print exists solely in the sensor that took it and cannot be copied anywhere else. They
-            can open a class in that room and nowhere else. Enrolling them once more — on any
-            terminal — captures the template and puts them on every reader.
+            <strong><?= e(count($manual)) ?>
+            teacher<?= count($manual) === 1 ? '' : 's' ?>
+            <?= count($manual) === 1 ? 'needs' : 'need' ?> enrolling again.</strong>
+            Their fingerprints were captured before this system kept a copy of the template, and
+            there is no terminal left to ask for it — the enrolment records no device, or the one it
+            names has been retired. The print cannot be recovered from a slot number, so
+            <?= count($manual) === 1 ? 'this teacher opens' : 'these teachers open' ?> a class on one
+            reader and nowhere else until
+            <?= count($manual) === 1 ? 'they are' : 'they are' ?> enrolled once more, on any
+            terminal.
 
             <ul class="mt-1">
-                <?php foreach ($recapture as $teacher): ?>
+                <?php foreach ($manual as $teacher): ?>
                     <li>
                         <?= e($teacher['last_name']) ?>, <?= e($teacher['first_name']) ?>
                         <span class="text-muted text-sm">
                             (<?= e($teacher['employee_number']) ?>)
                             <?php if ($teacher['enrolled_on']): ?>
-                                — enrolled on <?= e($teacher['enrolled_on']) ?><?= $teacher['room_number'] ? ', Room ' . e($teacher['room_number']) : '' ?>
+                                — enrolled on <?= e($teacher['enrolled_on']) ?><?= $teacher['room_number'] ? ', Room ' . e($teacher['room_number']) : '' ?>, now retired
+                            <?php else: ?>
+                                — no terminal recorded
                             <?php endif; ?>
                         </span>
                     </li>

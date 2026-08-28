@@ -57,6 +57,120 @@ final class FingerprintSyncService
     }
 
     /**
+     * A template this terminal holds that the server never got a copy of.
+     *
+     * Enrolments made before templates were stored left the bytes in one
+     * sensor and nowhere else. The obvious remedy — enrol those teachers
+     * again — is the wrong one at any real size: it summons every member of
+     * staff to a reader, one at a time, for something no human needs to be
+     * present for. The template is already sitting in the flash of the sensor
+     * that captured it, and that sensor can read it back on demand:
+     * loadModel() pulls a stored slot into the character buffer and the
+     * template comes out of there, with no finger involved. It is the same
+     * read the terminal already performs at the end of every enrolment.
+     *
+     * So the server asks for it instead. The terminal that did the original
+     * enrolling lifts the bytes out of its own flash, uploads them, and the
+     * teacher reaches every other room without knowing anything happened.
+     *
+     * Only slots this terminal is recorded as holding are ever requested. The
+     * device is not asked to enumerate its flash or to hand over whatever it
+     * finds — it is asked for one slot the server already believes belongs to
+     * one teacher, which keeps a compromised or buggy terminal from turning
+     * this into a way to harvest a sensor.
+     *
+     * @return array{fingerprint_id:int,slot:int,teacher:string}|null
+     */
+    public static function nextBackfillFor(int $deviceRowId): ?array
+    {
+        $row = Database::instance()->selectOne(
+            "SELECT fp.fingerprint_id, fp.sensor_template_id,
+                    CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
+               FROM fingerprint_templates fp
+               JOIN teachers t ON t.teacher_id = fp.teacher_id
+              WHERE fp.template_data IS NULL
+                AND fp.enrolled_device_row_id = :device
+                AND fp.sensor_template_id IS NOT NULL
+                AND fp.status = 'active'
+                AND t.status = 'active'
+                AND t.deleted_at IS NULL
+              ORDER BY fp.fingerprint_id
+              LIMIT 1",
+            ['device' => $deviceRowId]
+        );
+
+        if ($row === null) {
+            return null;
+        }
+
+        return [
+            'fingerprint_id' => (int) $row['fingerprint_id'],
+            'slot'           => (int) $row['sensor_template_id'],
+            'teacher'        => (string) $row['teacher_name'],
+        ];
+    }
+
+    /**
+     * Store a template a terminal lifted back out of its own sensor.
+     *
+     * The slot is not taken on trust. A terminal saying "here are the bytes
+     * for slot 7" is only believed if the server already had slot 7 recorded
+     * against a teacher on that device — otherwise a terminal could attach any
+     * template to any teacher, and the first sign would be the wrong person
+     * opening somebody else's class.
+     *
+     * @return bool whether the upload was accepted
+     */
+    public static function acceptBackfill(
+        int $deviceRowId,
+        int $slot,
+        #[SensitiveParameter] string $base64Template
+    ): bool {
+        $fingerprintId = Database::instance()->scalar(
+            "SELECT fingerprint_id FROM fingerprint_templates
+              WHERE enrolled_device_row_id = :device
+                AND sensor_template_id = :slot
+                AND template_data IS NULL
+                AND status = 'active'
+              LIMIT 1",
+            ['device' => $deviceRowId, 'slot' => $slot]
+        );
+
+        if ($fingerprintId === null) {
+            Logger::warning('Fingerprint backfill rejected: no enrolment owns that slot', [
+                'device_row_id' => $deviceRowId,
+                'slot'          => $slot,
+            ]);
+
+            return false;
+        }
+
+        return self::captureTemplate((int) $fingerprintId, $deviceRowId, $slot, $base64Template);
+    }
+
+    /**
+     * How many enrolments are waiting for their own terminal to hand the
+     * template over, so the Fingerprints page can say "this is in progress"
+     * rather than "go and fetch these teachers".
+     */
+    public static function backfillPendingCount(): int
+    {
+        return (int) Database::instance()->scalar(
+            "SELECT COUNT(*)
+               FROM fingerprint_templates fp
+               JOIN teachers t ON t.teacher_id = fp.teacher_id
+               JOIN devices d  ON d.id = fp.enrolled_device_row_id
+              WHERE fp.template_data IS NULL
+                AND fp.sensor_template_id IS NOT NULL
+                AND fp.status = 'active'
+                AND t.status = 'active'
+                AND t.deleted_at IS NULL
+                AND d.deleted_at IS NULL
+                AND d.status NOT IN ('decommissioned','disabled')"
+        );
+    }
+
+    /**
      * Record the template bytes captured during enrolment.
      *
      * Called from the enrolment completion path with what the sensor handed
@@ -621,20 +735,35 @@ final class FingerprintSyncService
     /**
      * Teachers whose enrolment predates template storage.
      *
-     * Their bytes live only in the sensor that captured them and cannot be
-     * recovered from a slot number, so no amount of syncing will reach them —
-     * they work on the terminal they enrolled at and nowhere else until
-     * somebody enrols them once more. Migration 018 promised this page would
-     * name them; this is the query that lets it.
+     * Their bytes live only in the sensor that captured them, so until that
+     * sensor hands them back no amount of syncing reaches them and they work
+     * on one terminal and nowhere else.
+     *
+     * Most of them are not a job for anybody: the terminal that did the
+     * enrolling can read the slot back out and upload it on its next poll,
+     * with no teacher present. Each row says which — `recoverable` is true
+     * when a live terminal is recorded as holding the slot, and the page can
+     * then say "this is in hand" instead of sending somebody to round up the
+     * staff.
+     *
+     * The rest genuinely need a person. A slot number with no device against
+     * it, or a device since decommissioned, leaves nothing to ask: the flash
+     * that held the template is gone or unidentifiable, and one more enrolment
+     * is the only way back.
      *
      * @return list<array<string,mixed>>
      */
     public static function awaitingRecapture(): array
     {
-        return Database::instance()->select(
+        $rows = Database::instance()->select(
             "SELECT fp.fingerprint_id, t.teacher_id, t.employee_number,
                     t.first_name, t.last_name, d.device_id AS enrolled_on,
-                    c.room_number
+                    c.room_number, fp.sensor_template_id,
+                    d.id IS NOT NULL
+                        AND fp.sensor_template_id IS NOT NULL
+                        AND d.deleted_at IS NULL
+                        AND d.status NOT IN ('decommissioned','disabled') AS recoverable,
+                    d.last_heartbeat_at
                FROM fingerprint_templates fp
                JOIN teachers t         ON t.teacher_id = fp.teacher_id
           LEFT JOIN devices d          ON d.id = fp.enrolled_device_row_id
@@ -645,5 +774,11 @@ final class FingerprintSyncService
                 AND t.deleted_at IS NULL
               ORDER BY t.last_name, t.first_name"
         );
+
+        foreach ($rows as $index => $row) {
+            $rows[$index]['recoverable'] = (bool) $row['recoverable'];
+        }
+
+        return $rows;
     }
 }

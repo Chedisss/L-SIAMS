@@ -124,6 +124,9 @@ $router->group('/api/fingerprint/enrollment', $deviceChain, static function ($ro
 $router->group('/api/fingerprint/sync', $deviceChain, static function ($router): void {
     $router->get('', FingerprintSyncApiController::class . '@pending');
     $router->post('/stored', FingerprintSyncApiController::class . '@stored');
+    // The other direction: a terminal handing back a template the server never
+    // got a copy of, read out of its own sensor with no teacher present.
+    $router->post('/captured', FingerprintSyncApiController::class . '@captured');
 });
 
 $router->post('/api/rfid/scan', AttendanceApiController::class . '@tap', $deviceChain);

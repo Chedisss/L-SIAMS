@@ -2705,10 +2705,114 @@ try {
     }
 
     /* =====================================================================
-     * 23. Sustained soak (opt-in, 30 minutes)
+     * 23. A legacy enrolment is recovered without fetching the teacher
+     * ===================================================================== */
+    if ($want('fingerprint-backfill')) {
+        $runner->group('23. The sensor hands back the template, so nobody is asked to enrol again');
+
+        $fixture->build(1, 1, 2);
+
+        $firstDevice   = (int) $fixture->ids['devices'][0];
+        $secondDevice  = (int) $fixture->ids['devices'][1];
+        $teacherId     = (int) $fixture->ids['teacher_id'];
+        $fingerprintId = (int) $fixture->ids['fingerprint_id'];
+
+        // The state a school that has been running a while is actually in: the
+        // teacher is enrolled, the sensor holds their finger, and the server
+        // has a slot number and nothing else. Re-enrolling every such teacher
+        // is the remedy this group exists to avoid.
+        $db->update('fingerprint_templates', [
+            'sensor_template_id'     => 7,
+            'enrolled_device_row_id' => $firstDevice,
+            'template_data'          => null,
+            'template_bytes'         => null,
+            'template_captured_at'   => null,
+        ], ['fingerprint_id' => $fingerprintId]);
+
+        $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id = :f', ['f' => $fingerprintId]);
+
+        $runner->assertEquals('nothing can be distributed while the template is only in a sensor',
+            0, \App\Services\FingerprintSyncService::syncableCount());
+
+        $runner->assertEquals('and the second terminal is offered nothing',
+            null, \App\Services\FingerprintSyncService::nextPendingFor($secondDevice));
+
+        // The terminal that did the original enrolling is asked for it.
+        $wanted = \App\Services\FingerprintSyncService::nextBackfillFor($firstDevice);
+
+        $runner->assert('the terminal holding it is asked to send it back',
+            $wanted !== null, 'no backfill was requested');
+
+        $runner->assertEquals('naming the slot it is recorded as holding',
+            7, $wanted === null ? -1 : $wanted['slot']);
+
+        $runner->assertEquals('a terminal that never enrolled anybody is asked for nothing',
+            null, \App\Services\FingerprintSyncService::nextBackfillFor($secondDevice));
+
+        // A terminal cannot attach a template to a teacher of its choosing:
+        // the slot has to be one the server already records against it.
+        $runner->assert('an upload for a slot nothing owns is refused',
+            !\App\Services\FingerprintSyncService::acceptBackfill(
+                $firstDevice, 99, base64_encode(str_repeat("\x51", 512))),
+            'a template was accepted for an unowned slot');
+
+        $runner->assert('and one from a terminal that does not hold that enrolment is refused',
+            !\App\Services\FingerprintSyncService::acceptBackfill(
+                $secondDevice, 7, base64_encode(str_repeat("\x51", 512))),
+            'another terminal was allowed to supply the template');
+
+        // A truncated transfer is worse than none: it writes cleanly into every
+        // other sensor and then matches nobody, which reads as the teacher's
+        // finger being at fault.
+        $runner->assert('a truncated upload is refused rather than distributed',
+            !\App\Services\FingerprintSyncService::acceptBackfill(
+                $firstDevice, 7, base64_encode(str_repeat("\x51", 32))),
+            'a truncated template was accepted');
+
+        $runner->assertEquals('so nothing has been recorded yet',
+            0, \App\Services\FingerprintSyncService::syncableCount());
+
+        // The real upload — bytes the sensor read back out of slot 7, with no
+        // teacher present and no finger involved.
+        $runner->assert('the genuine upload is accepted',
+            \App\Services\FingerprintSyncService::acceptBackfill(
+                $firstDevice, 7, base64_encode(str_repeat("\x52", 512))),
+            'the sensor\'s own template was refused');
+
+        $runner->assertEquals('the enrolment is now distributable',
+            1, \App\Services\FingerprintSyncService::syncableCount());
+
+        $runner->assertEquals('and no longer listed as needing a teacher to re-enrol',
+            0, count(array_filter(
+                \App\Services\FingerprintSyncService::awaitingRecapture(),
+                static fn (array $r): bool => (int) $r['teacher_id'] === $teacherId
+            )));
+
+        // The point of the whole exercise: the other room now works.
+        $reached = \App\Services\FingerprintSyncService::nextPendingFor($secondDevice);
+
+        $runner->assert('the second terminal is finally offered the template',
+            $reached !== null, 'the second terminal still has nothing to collect');
+
+        if ($reached !== null) {
+            $runner->assertEquals('intact, all 512 bytes of it',
+                512, strlen((string) base64_decode($reached['template'], true)));
+
+            $runner->assertEquals('and it is the template the sensor handed back',
+                str_repeat("\x52", 512), (string) base64_decode($reached['template'], true));
+        }
+
+        // Asked once, not forever: a recovered template must not keep the
+        // terminal re-uploading the same slot on every poll.
+        $runner->assertEquals('the terminal is not asked for it again',
+            null, \App\Services\FingerprintSyncService::nextBackfillFor($firstDevice));
+    }
+
+    /* =====================================================================
+     * 24. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('23. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('24. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);
