@@ -5,6 +5,7 @@ namespace App\Controllers\Web;
 
 use App\Controllers\Controller;
 use App\Core\Database;
+use App\Core\Flash;
 use App\Core\Request;
 use App\Core\Exceptions\HttpException;
 use App\Core\Response;
@@ -284,6 +285,51 @@ final class FingerprintController extends Controller
         return $this->json([
             'rows' => FingerprintService::logsForTeacher($request->routeInt('id'), 100),
         ]);
+    }
+
+    /**
+     * Ask a terminal to erase its sensor.
+     *
+     * The page has been recommending this since migration 015 with no way to
+     * do it. A sensor holding templates the server has no record of still
+     * matches fingers, and a scan that lands on one is refused as
+     * unrecognised — a teacher who is genuinely enrolled, turned away for
+     * matching the wrong copy of their own finger.
+     *
+     * Wiping is only reasonable because the server can rewrite what it holds:
+     * the refill starts on the terminal's next poll. Templates that exist
+     * nowhere else are the exception, and the count is put in front of the
+     * administrator before they can go ahead.
+     */
+    public function wipeSensor(Request $request): Response
+    {
+        $deviceRowId = $request->routeInt('id');
+
+        $lost = FingerprintSyncService::requestSensorWipe(
+            $deviceRowId,
+            $this->requireUserId(),
+            $request->bool('accept_loss')
+        );
+
+        $message = $lost > 0
+            ? sprintf(
+                'The terminal will erase its sensor on its next poll. %d fingerprint%s existed '
+                . 'only there and %s now be enrolled again; everything else is rewritten '
+                . 'automatically.',
+                $lost,
+                $lost === 1 ? '' : 's',
+                $lost === 1 ? 'must' : 'must'
+            )
+            : 'The terminal will erase its sensor on its next poll, then the templates are '
+              . 'rewritten automatically over the following few minutes.';
+
+        if ($request->wantsJson()) {
+            return $this->json(['templates_lost' => $lost], $message);
+        }
+
+        Flash::success($message);
+
+        return Response::redirect('/admin/fingerprints');
     }
 
     public function nextSlot(Request $request): Response

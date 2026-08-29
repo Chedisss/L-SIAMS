@@ -7,6 +7,7 @@ use App\Controllers\Controller;
 use App\Core\Auth;
 use App\Core\Config;
 use App\Core\Request;
+use App\Core\Logger;
 use App\Core\Response;
 use App\Services\FingerprintSyncService;
 
@@ -49,7 +50,20 @@ final class FingerprintSyncApiController extends Controller
     public function pending(Request $httpRequest): Response
     {
         $device = Auth::device();
-        $next   = FingerprintSyncService::nextPendingFor((int) $device['id']);
+
+        // A wipe comes before everything else. There is no sense handing a
+        // terminal templates it is about to erase, and the refill afterwards
+        // is what makes the wipe survivable — so the order matters.
+        if (FingerprintSyncService::wipeRequestedFor((int) $device['id'])) {
+            return $this->json([
+                'template'     => null,
+                'upload'       => null,
+                'wipe_sensor'  => true,
+                'poll_seconds' => (int) Config::get('attendance.fingerprint.sync_poll_seconds', 15),
+            ], 'Erase the sensor and confirm.');
+        }
+
+        $next = FingerprintSyncService::nextPendingFor((int) $device['id']);
 
         if ($next === null) {
             // Nothing to give this terminal — so ask whether it has anything
@@ -66,6 +80,7 @@ final class FingerprintSyncApiController extends Controller
                     'slot'         => $wanted['slot'],
                     'teacher_name' => $wanted['teacher'],
                 ],
+                'wipe_sensor'  => false,
                 'poll_seconds' => (int) Config::get('attendance.fingerprint.sync_poll_seconds', 15),
             ], $wanted === null ? 'Nothing to sync.' : 'Send back the template in this slot.');
         }
@@ -78,6 +93,7 @@ final class FingerprintSyncApiController extends Controller
                 'teacher_name' => $next['teacher'],
             ],
             'upload'       => null,
+            'wipe_sensor'  => false,
             'poll_seconds' => (int) Config::get('attendance.fingerprint.sync_poll_seconds', 15),
         ], 'Template to store.');
     }
@@ -161,5 +177,38 @@ final class FingerprintSyncApiController extends Controller
         );
 
         return $this->json([], 'Failure recorded.');
+    }
+
+    /**
+     * POST /api/fingerprint/sync/wiped — the terminal reports its sensor is empty.
+     *
+     * Only the confirmation clears the request. A terminal that was asked to
+     * wipe and then lost power must be asked again on its next poll, because
+     * the alternative — assuming it worked — leaves orphan templates in a
+     * sensor the page now claims is clean, which is the failure this whole
+     * feature exists to end.
+     */
+    public function wiped(Request $httpRequest): Response
+    {
+        $device = Auth::device();
+
+        $data = $this->validate($httpRequest, [
+            'wiped'  => 'required|bool',
+            'reason' => 'nullable|string|max:255',
+        ]);
+
+        if (!(bool) $data['wiped']) {
+            Logger::warning('Sensor wipe failed on the terminal', [
+                'device_row_id' => (int) $device['id'],
+                'reason'        => (string) ($data['reason'] ?? ''),
+            ]);
+
+            // The request stays set, so it is retried rather than forgotten.
+            return $this->json([], 'Failure recorded; the wipe will be requested again.');
+        }
+
+        FingerprintSyncService::confirmSensorWipe((int) $device['id']);
+
+        return $this->json([], 'Sensor recorded as empty; templates will be rewritten.');
     }
 }

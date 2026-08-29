@@ -127,6 +127,9 @@ $router->group('/api/fingerprint/sync', $deviceChain, static function ($router):
     // The other direction: a terminal handing back a template the server never
     // got a copy of, read out of its own sensor with no teacher present.
     $router->post('/captured', FingerprintSyncApiController::class . '@captured');
+    // An administrator asked this sensor to be erased; this is the terminal
+    // saying it has been.
+    $router->post('/wiped', FingerprintSyncApiController::class . '@wiped');
 });
 
 $router->post('/api/rfid/scan', AttendanceApiController::class . '@tap', $deviceChain);
