@@ -118,6 +118,7 @@ try {
         'user:create-admin'   => commandCreateAdmin(),
         'user:purge'          => commandUserPurge($arguments, $flags),
         'session:why'         => commandSessionWhy($arguments),
+        'fingerprint:reset'   => commandFingerprintReset($flags),
         default               => commandHelp(),
     };
 } catch (Throwable $e) {
@@ -142,6 +143,7 @@ function commandHelp(): void
     out('    seed [--demo]           Seed reference data, optionally with demo records');
     out('    user:create-admin       Create an administrator account interactively');
     out('    user:purge <id>         Erase a user and their history (destructive, last resort)');
+    out('    fingerprint:reset       Erase every enrolment and every sensor, to start over');
     out('');
     out('  Operations', 'cyan');
     out('    worker [--once]         Maintenance loop: sessions, heartbeats, retention');
@@ -3052,4 +3054,128 @@ function doctorTlsHandshake(string $appUrl, string $caFile, callable $check, cal
 
     $check(false, 'HTTPS answers and validates', trim($error) !== '' ? trim($error) : 'connection failed');
     $note('Apache may not have been restarted, or may not be including the config from tls:apache.');
+}
+
+/**
+ * Erase every fingerprint enrolment and ask every terminal to empty its sensor.
+ *
+ * A bring-up tool, not an everyday one, which is why it lives here and not
+ * behind a button. Wiping one sensor is a normal repair and the Fingerprints
+ * page offers it; wiping the lot is starting over, and starting over should
+ * take a deliberate command and a typed confirmation rather than a stray click
+ * on a page an administrator visits for ordinary work.
+ *
+ * What it does, in the order that matters:
+ *
+ *   1. Queues a sensor wipe on every live terminal. The terminals carry it out
+ *      on their next poll — the server cannot reach into their flash.
+ *   2. Drops every slot record, because those describe flash that is about to
+ *      be empty.
+ *   3. Deletes every enrolment, so no teacher is left listed as enrolled with
+ *      nothing behind it.
+ *
+ * fingerprint_logs are left alone. They are the record that the enrolments and
+ * verifications happened, and a reset is not a reason to lose the history of
+ * what the system did before it.
+ *
+ * @param list<string> $flags
+ */
+function commandFingerprintReset(array $flags): void
+{
+    $db = Database::instance();
+
+    heading('Reset every fingerprint enrolment');
+
+    $enrolments = (int) $db->scalar('SELECT COUNT(*) FROM fingerprint_templates');
+    $slots      = (int) $db->scalar('SELECT COUNT(*) FROM fingerprint_slots');
+
+    $terminals = $db->select(
+        "SELECT d.id, d.device_id, d.sensor_template_count, c.room_number
+           FROM devices d
+      LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
+          WHERE d.deleted_at IS NULL
+            AND d.status NOT IN ('decommissioned','disabled')
+          ORDER BY d.device_id"
+    );
+
+    out(sprintf('  %-26s %d', 'Enrolments to delete', $enrolments), 'grey');
+    out(sprintf('  %-26s %d', 'Slot records to drop', $slots), 'grey');
+    out(sprintf('  %-26s %d', 'Terminals to wipe', count($terminals)), 'grey');
+    out('');
+
+    foreach ($terminals as $terminal) {
+        out(sprintf(
+            '    %-18s %-10s sensor reports %s template(s)',
+            (string) $terminal['device_id'],
+            // ASCII, because %-10s pads by bytes and an em dash is three of
+            // them — the column silently loses two spaces on every such row.
+            $terminal['room_number'] === null ? '-' : 'Room ' . $terminal['room_number'],
+            $terminal['sensor_template_count'] === null ? '?' : (string) $terminal['sensor_template_count']
+        ), 'grey');
+    }
+
+    if ($enrolments === 0 && $slots === 0) {
+        out('');
+        out('  There are no enrolments to erase. The sensors will still be wiped.', 'cyan');
+    }
+
+    out('');
+    out('  Every teacher will have to be enrolled again, in person.', 'yellow');
+    out('  Each terminal erases its sensor on its next poll — leave them powered on.', 'grey');
+    out('  Verification history in fingerprint_logs is kept.', 'grey');
+
+    if (!in_array('--force', $flags, true)) {
+        out('');
+        out('  Dry run — nothing has been changed.', 'cyan');
+        out('  Re-run with --force to carry it out:', 'grey');
+        out('    php bin/console fingerprint:reset --force', 'grey');
+        out('');
+
+        return;
+    }
+
+    out('');
+    $typed = prompt('  Type RESET to confirm');
+
+    if (!hash_equals('RESET', $typed)) {
+        fail('Confirmation did not match. Nothing was changed.');
+    }
+
+    // Queued before the records go: requestSensorWipe() counts what would be
+    // lost, and once the enrolments are deleted there is nothing left to count.
+    // The wipe is what the terminals act on, so it has to be recorded even
+    // though the server-side rows are about to vanish.
+    $queued = 0;
+
+    foreach ($terminals as $terminal) {
+        $db->update('devices', [
+            'sensor_wipe_requested_at' => App\Core\Clock::nowString(),
+            'sensor_wipe_requested_by' => null,
+            'updated_at'               => App\Core\Clock::nowString(),
+        ], ['id' => (int) $terminal['id']]);
+
+        $queued++;
+    }
+
+    $db->execute('DELETE FROM fingerprint_slots');
+    $db->execute('DELETE FROM fingerprint_templates');
+    $db->execute("UPDATE teachers SET fingerprint_status = 'not_enrolled' WHERE deleted_at IS NULL");
+
+    App\Services\AuditService::log(
+        'fingerprint.reset',
+        'fingerprints',
+        'system',
+        null,
+        ['enrolments' => $enrolments, 'slots' => $slots],
+        ['terminals_queued' => $queued],
+        sprintf('Every fingerprint enrolment erased and %d terminal(s) queued for a sensor wipe.', $queued)
+    );
+
+    out('');
+    out(sprintf('  %d enrolment(s) and %d slot record(s) deleted.', $enrolments, $slots), 'green');
+    out(sprintf('  %d terminal(s) will erase their sensors on the next poll.', $queued), 'green');
+    out('');
+    out('  Watch each terminal\'s serial for "erased — 0 template(s) on this sensor now",', 'grey');
+    out('  then enrol the teachers again from Admin -> Fingerprints.', 'grey');
+    out('');
 }
