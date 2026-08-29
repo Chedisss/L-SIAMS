@@ -448,6 +448,23 @@ static uint32_t lastHeartbeat = 0;
 static uint32_t lastFpPoll    = 0;
 static uint32_t lastCardPoll  = 0;
 static uint32_t lastSyncPoll  = 0;
+
+/* How long to wait between sync polls, in milliseconds.
+ *
+ * Seeded from SYNC_POLL_MS and then replaced by whatever the server sends in
+ * poll_seconds. The server has been sending that number since the sync route
+ * existed and the firmware has been ignoring it, so FINGERPRINT sync ran at a
+ * fixed fifteen seconds however the installation was configured — a setting
+ * that looked adjustable and was not.
+ *
+ * It matters most on the day a school first enrols its staff. One template per
+ * poll at fifteen seconds is forty teachers in ten minutes; at three seconds it
+ * is two minutes, and dropping it for an afternoon costs nothing because there
+ * is no attendance running yet. Afterwards it goes back up, where a slow
+ * trickle is exactly right — a terminal that spends its day recording taps
+ * should not be interrupting itself every three seconds to ask about
+ * fingerprints. */
+static uint32_t syncPollMs    = SYNC_POLL_MS;
 static uint32_t lastFingerAt  = 0;
 static uint32_t lastTapAt     = 0;
 static String   lastUid       = "";
@@ -1593,11 +1610,30 @@ static void pollEnrollment() {
 
 static void pollTemplateSync() {
   if (!fingerReady || busy) return;
-  if (millis() - lastSyncPoll < SYNC_POLL_MS) return;
+  if (millis() - lastSyncPoll < syncPollMs) return;
   lastSyncPoll = millis();
 
   LsJson response;
   if (signedRequest("GET", "/api/fingerprint/sync", "", &response) != 200) return;
+
+  /* Adopt the server's cadence. Clamped rather than trusted outright: a zero
+   * would busy-loop the sync against the rate limiter and starve the card
+   * reader, and an absurd value would strand a terminal that is waiting for
+   * templates. Two seconds is as fast as one template transfer can usefully
+   * repeat; five minutes is slower than anybody would deliberately choose. */
+  int serverPoll = response["data"]["poll_seconds"] | 0;
+
+  if (serverPoll > 0) {
+    if (serverPoll < 2)   serverPoll = 2;
+    if (serverPoll > 300) serverPoll = 300;
+
+    uint32_t wanted = (uint32_t) serverPoll * 1000UL;
+
+    if (wanted != syncPollMs) {
+      Serial.printf("Sync: poll interval now %d s (set by the server)\n", serverPoll);
+      syncPollMs = wanted;
+    }
+  }
 
   /* An administrator asked for this sensor to be emptied.
    *

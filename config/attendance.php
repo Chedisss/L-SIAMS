@@ -57,7 +57,19 @@ return [
         // standing and waiting for, so it is far slower than the enrolment
         // poll — and writing a template blocks the terminal's loop, so polling
         // it hard would cost taps.
-        'sync_poll_seconds'        => 15,
+        //
+        // One template moves per poll, so this is also the rate at which a
+        // backlog drains: at fifteen seconds a staff of forty reaches a new
+        // terminal in about ten minutes. On the day the school first enrols
+        // everybody that is worth shortening — FINGERPRINT_SYNC_POLL_SECONDS=3
+        // brings the same forty down to two minutes, and there is no
+        // attendance running yet for the extra polling to interrupt. Put it
+        // back afterwards.
+        //
+        // The terminal clamps whatever it is given to between 2 and 300
+        // seconds, so a typo here cannot starve the card reader or strand a
+        // terminal that is waiting for templates.
+        'sync_poll_seconds'        => Env::int('FINGERPRINT_SYNC_POLL_SECONDS', 15),
 
         'max_failures_before_lock' => 5,
         'device_lock_minutes'      => 5,
