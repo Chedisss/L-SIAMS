@@ -2932,10 +2932,127 @@ try {
     }
 
     /* =====================================================================
-     * 25. Sustained soak (opt-in, 30 minutes)
+     * 25. The two panels on the Fingerprints page tell the same story
+     * ===================================================================== */
+    if ($want('sensor-agreement')) {
+        $runner->group('25. A synced template is not reported as an intruder');
+
+        $fixture->build(1, 1, 2);
+
+        $enrolledOn    = (int) $fixture->ids['devices'][0];
+        $syncedTo      = (int) $fixture->ids['devices'][1];
+        $fingerprintId = (int) $fixture->ids['fingerprint_id'];
+
+        $db->update('fingerprint_templates', [
+            'sensor_template_id'     => 1,
+            'enrolled_device_row_id' => $enrolledOn,
+            'template_data'          => \App\Core\Crypto::encrypt(str_repeat("\x55", 512)),
+            'template_bytes'         => 512,
+            'template_captured_at'   => Clock::nowString(),
+        ], ['fingerprint_id' => $fingerprintId]);
+
+        $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id = :f', ['f' => $fingerprintId]);
+
+        // Present on both: enrolled at the first, copied to the second. This is
+        // the ordinary state of any school with more than one terminal.
+        foreach ([$enrolledOn => 'enrolled', $syncedTo => 'synced'] as $deviceRowId => $source) {
+            $db->insert('fingerprint_slots', [
+                'fingerprint_id'     => $fingerprintId,
+                'device_row_id'      => (int) $deviceRowId,
+                'sensor_template_id' => 1,
+                'source'             => $source,
+                'status'             => 'present',
+                'synced_at'          => Clock::nowString(),
+                'created_at'         => Clock::nowString(),
+                'updated_at'         => Clock::nowString(),
+            ]);
+        }
+
+        // Both sensors report holding the one template they hold.
+        $db->update('devices', ['sensor_template_count' => 1, 'sensor_reported_at' => Clock::nowString()],
+            ['id' => $enrolledOn]);
+        $db->update('devices', ['sensor_template_count' => 1, 'sensor_reported_at' => Clock::nowString()],
+            ['id' => $syncedTo]);
+
+        $flagged = array_map(
+            static fn (array $r): int => (int) $r['device_row_id'],
+            \App\Services\FingerprintService::sensorMismatches()
+        );
+
+        $runner->assert('the terminal that did the enrolling is not flagged',
+            !in_array($enrolledOn, $flagged, true), 'the enrolling terminal was reported as mismatched');
+
+        // The bug: a terminal holding a template it did not enrol counted as
+        // holding a template belonging to nobody, and the page told the
+        // administrator to wipe a sensor that was working.
+        $runner->assert('nor is the terminal that merely received a copy',
+            !in_array($syncedTo, $flagged, true),
+            'a synced template was reported as belonging to nobody');
+
+        // And the two panels agree, which is the property that actually
+        // matters — one page saying "4 of 4 complete" and "0 are recorded
+        // here" about the same sensor leaves nobody knowing which to believe.
+        $coverage = [];
+
+        foreach (\App\Services\FingerprintSyncService::terminalStatus() as $row) {
+            $coverage[(int) $row['device_row_id']] = $row;
+        }
+
+        $runner->assertEquals('the coverage table calls the synced terminal complete',
+            true, (bool) ($coverage[$syncedTo]['complete'] ?? false));
+
+        $runner->assertEquals('and counts the template it holds',
+            1, (int) ($coverage[$syncedTo]['present'] ?? -1));
+
+        // A genuine divergence must still be caught, or the fix has simply
+        // silenced the alarm.
+        $db->update('devices', ['sensor_template_count' => 4], ['id' => $syncedTo]);
+
+        $flagged = [];
+
+        foreach (\App\Services\FingerprintService::sensorMismatches() as $row) {
+            $flagged[(int) $row['device_row_id']] = $row;
+        }
+
+        $runner->assert('a sensor holding more than its records is still reported',
+            isset($flagged[$syncedTo]), 'three orphan templates went unreported');
+
+        $runner->assertEquals('and the shortfall is stated correctly',
+            1, (int) ($flagged[$syncedTo]['expected'] ?? -1));
+
+        // The other direction: a sensor that was wiped while the records stayed.
+        $db->update('devices', ['sensor_template_count' => 0], ['id' => $syncedTo]);
+
+        $flagged = [];
+
+        foreach (\App\Services\FingerprintService::sensorMismatches() as $row) {
+            $flagged[(int) $row['device_row_id']] = $row;
+        }
+
+        $runner->assert('an erased sensor with records left behind is reported too',
+            isset($flagged[$syncedTo]), 'an emptied sensor went unreported');
+
+        // A slot still queued is not in the sensor yet, so it must not be
+        // counted as something the sensor ought to be holding.
+        $db->update('devices', ['sensor_template_count' => 1], ['id' => $syncedTo]);
+        $db->update('fingerprint_slots', ['status' => 'pending'],
+            ['device_row_id' => $syncedTo, 'fingerprint_id' => $fingerprintId]);
+
+        $flagged = array_map(
+            static fn (array $r): int => (int) $r['device_row_id'],
+            \App\Services\FingerprintService::sensorMismatches()
+        );
+
+        $runner->assert('a template still queued is not counted as already in the sensor',
+            in_array($syncedTo, $flagged, true),
+            'a pending slot was counted as present');
+    }
+
+    /* =====================================================================
+     * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('25. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('26. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);
