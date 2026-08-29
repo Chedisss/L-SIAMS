@@ -2809,10 +2809,133 @@ try {
     }
 
     /* =====================================================================
-     * 24. Sustained soak (opt-in, 30 minutes)
+     * 24. Wiping a sensor that has drifted, and refilling it
+     * ===================================================================== */
+    if ($want('sensor-wipe')) {
+        $runner->group('24. A drifted sensor can be erased, and fills itself back up');
+
+        $fixture->build(1, 1, 1);
+
+        $device        = (int) $fixture->ids['devices'][0];
+        $teacherId     = (int) $fixture->ids['teacher_id'];
+        $fingerprintId = (int) $fixture->ids['fingerprint_id'];
+        $adminId       = (int) $db->scalar('SELECT user_id FROM users ORDER BY user_id LIMIT 1');
+
+        // A stored template, present on the sensor — the ordinary case.
+        $db->update('fingerprint_templates', [
+            'sensor_template_id'     => 1,
+            'enrolled_device_row_id' => $device,
+            'template_data'          => \App\Core\Crypto::encrypt(str_repeat("\x53", 512)),
+            'template_bytes'         => 512,
+            'template_captured_at'   => Clock::nowString(),
+        ], ['fingerprint_id' => $fingerprintId]);
+
+        $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id = :f', ['f' => $fingerprintId]);
+        $db->insert('fingerprint_slots', [
+            'fingerprint_id'     => $fingerprintId,
+            'device_row_id'      => $device,
+            'sensor_template_id' => 1,
+            'source'             => 'enrolled',
+            'status'             => 'present',
+            'synced_at'          => Clock::nowString(),
+            'created_at'         => Clock::nowString(),
+            'updated_at'         => Clock::nowString(),
+        ]);
+
+        $db->update('devices', ['sensor_template_count' => 4], ['id' => $device]);
+
+        $runner->assertEquals('a terminal is not asked to wipe until somebody asks',
+            false, \App\Services\FingerprintSyncService::wipeRequestedFor($device));
+
+        $runner->assertEquals('nothing would be lost while every template has a server copy',
+            0, \App\Services\FingerprintSyncService::templatesLostByWiping($device));
+
+        \App\Services\FingerprintSyncService::requestSensorWipe($device, $adminId);
+
+        $runner->assertEquals('the request is recorded for the terminal to collect',
+            true, \App\Services\FingerprintSyncService::wipeRequestedFor($device));
+
+        // Asking is not doing. The slot records describe flash that still has
+        // something in it until the terminal says otherwise, and dropping them
+        // early would make the page claim a sensor was empty while it was
+        // still matching fingers.
+        $runner->assertEquals('asking does not by itself erase the server\'s record of the sensor',
+            1, (int) $db->scalar('SELECT COUNT(*) FROM fingerprint_slots WHERE device_row_id = :d',
+                ['d' => $device]));
+
+        // The terminal reports back.
+        \App\Services\FingerprintSyncService::confirmSensorWipe($device);
+
+        $runner->assertEquals('the request clears once the terminal confirms',
+            false, \App\Services\FingerprintSyncService::wipeRequestedFor($device));
+
+        $runner->assertEquals('and the sensor is recorded as holding nothing',
+            0, (int) $db->scalar('SELECT sensor_template_count FROM devices WHERE id = :d',
+                ['d' => $device]));
+
+        // The whole reason a wipe is survivable: the refill is automatic.
+        $refill = \App\Services\FingerprintSyncService::nextPendingFor($device);
+
+        $runner->assert('the template is queued straight back',
+            $refill !== null, 'nothing was queued after the wipe');
+
+        if ($refill !== null) {
+            $runner->assertEquals('byte for byte what the server was holding',
+                str_repeat("\x53", 512), (string) base64_decode($refill['template'], true));
+        }
+
+        // Now the case that must not happen quietly: a template that exists
+        // only in the sensor about to be erased.
+        $db->update('fingerprint_templates', [
+            'template_data'  => null,
+            'template_bytes' => null,
+        ], ['fingerprint_id' => $fingerprintId]);
+
+        $runner->assertEquals('a template with no server copy is counted as a loss',
+            1, \App\Services\FingerprintSyncService::templatesLostByWiping($device));
+
+        $refused = false;
+
+        try {
+            \App\Services\FingerprintSyncService::requestSensorWipe($device, $adminId);
+        } catch (BusinessRuleException $e) {
+            $refused = $e->errorCode() === 'WIPE_WOULD_LOSE_TEMPLATES';
+        }
+
+        $runner->assert('and the wipe is refused rather than destroying it silently',
+            $refused, 'the wipe went ahead without the loss being accepted');
+
+        $runner->assertEquals('nothing was requested',
+            false, \App\Services\FingerprintSyncService::wipeRequestedFor($device));
+
+        // Accepted deliberately, it proceeds — the administrator may know the
+        // sensor's contents are stale and worth losing.
+        $lost = \App\Services\FingerprintSyncService::requestSensorWipe($device, $adminId, true);
+
+        $runner->assertEquals('accepting the loss says how much of it there is', 1, $lost);
+
+        $runner->assertEquals('and then it proceeds',
+            true, \App\Services\FingerprintSyncService::wipeRequestedFor($device));
+
+        // A terminal that never confirms must be asked again, not assumed done.
+        $runner->assertEquals('a request the terminal never answered is still outstanding',
+            true, \App\Services\FingerprintSyncService::wipeRequestedFor($device));
+
+        \App\Services\FingerprintSyncService::confirmSensorWipe($device);
+
+        $runner->assertEquals('after the wipe there is nothing left to refill from',
+            null, \App\Services\FingerprintSyncService::nextPendingFor($device));
+
+        $runner->assertEquals('and no slot rows survive describing flash that is now empty',
+            0, (int) $db->scalar('SELECT COUNT(*) FROM fingerprint_slots WHERE device_row_id = :d',
+                ['d' => $device]));
+    }
+
+    /* =====================================================================
+     * 25. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
-        $runner->group('24. Sustained load: 100 taps/minute for 30 minutes');
+        $runner->group('25. Sustained load: 100 taps/minute for 30 minutes');
 
         $fixture->build(1, 120, 1);
         $device  = $fixture->device(0);

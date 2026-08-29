@@ -175,6 +175,8 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/fingerprints/{id:\d+}/logs', FingerprintController::class . '@logs');
     $router->post('/fingerprints/{id:\d+}/status', FingerprintController::class . '@setStatus');
     $router->post('/fingerprints/{id:\d+}/delete', FingerprintController::class . '@delete');
+    // Erase a terminal's sensor. {id} is the device row, not a fingerprint.
+    $router->post('/fingerprints/terminals/{id:\d+}/wipe', FingerprintController::class . '@wipeSensor');
 
     // --- Devices ---
     $router->get('/devices', DeviceController::class . '@index', [], 'admin.devices');

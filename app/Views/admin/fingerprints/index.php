@@ -99,7 +99,7 @@ $__view->start('content');
                     <thead>
                         <tr>
                             <th>Terminal</th><th>Room</th><th style="width:140px">Sensor holds</th>
-                            <th>State</th>
+                            <th>State</th><th style="width:120px"></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -157,6 +157,20 @@ $__view->start('content');
                                         cleared and the room enrolled again.
                                     </div>
                                 <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php /* The remedy this page has been recommending since a sensor
+                                        could first report its contents, and could not perform.
+                                        The count of templates that exist nowhere else travels with
+                                        the button, because wiping destroys those and the person
+                                        clicking has to be told before, not after. */ ?>
+                                <button class="btn btn-ghost btn-sm"
+                                        data-wipe="<?= e($terminal['device_row_id']) ?>"
+                                        data-terminal="<?= e($terminal['device_id']) ?>"
+                                        data-lost="<?= e($terminal['unrecoverable']) ?>"
+                                        title="Erase this sensor and let the server rewrite it">
+                                    <i class="fa-solid fa-eraser"></i> Clear sensor
+                                </button>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -742,6 +756,49 @@ $__view->start('scripts');
             showSetup();
             document.getElementById('e-teacher').value = enroll.dataset.enroll;
             LS.modal.open('enroll-modal');
+        }
+
+        const wipe = event.target.closest('[data-wipe]');
+
+        if (wipe) {
+            const lost = parseInt(wipe.dataset.lost, 10) || 0;
+
+            /* The loss is named before the decision, not reported after it.
+               Everything the server holds is rewritten within a few minutes;
+               templates that exist only in this sensor are gone for good and
+               those teachers have to stand at a reader again. */
+            let question = 'Erase the sensor on ' + wipe.dataset.terminal + '?\n\n'
+                + 'Every template the server holds is written back automatically over the '
+                + 'next few minutes.';
+
+            if (lost > 0) {
+                question += '\n\nBut ' + lost + ' fingerprint' + (lost === 1 ? '' : 's')
+                    + ' exist' + (lost === 1 ? 's' : '') + ' ONLY in this sensor and cannot be '
+                    + 'recovered. ' + (lost === 1 ? 'That teacher' : 'Those teachers')
+                    + ' will have to be enrolled again in person.'
+                    + '\n\nLeaving the terminal running for a few minutes first lets it hand '
+                    + (lost === 1 ? 'that template' : 'those templates') + ' back, after which '
+                    + 'nothing is lost.';
+            }
+
+            if (!window.confirm(question)) {
+                return;
+            }
+
+            const body = new FormData();
+            body.append('_csrf', LS.config.csrfToken);
+            if (lost > 0) {
+                body.append('accept_loss', '1');
+            }
+
+            try {
+                const response = await LS.http.post(
+                    '/admin/fingerprints/terminals/' + wipe.dataset.wipe + '/wipe', body);
+                LS.toast.success(response.message);
+                window.setTimeout(() => window.location.reload(), 1200);
+            } catch (error) {
+                LS.toast.error(error.message || 'The terminal could not be asked to erase its sensor.');
+            }
         }
 
         const logs = event.target.closest('[data-logs]');

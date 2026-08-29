@@ -7,6 +7,7 @@ use App\Core\Clock;
 use App\Core\Config;
 use App\Core\Crypto;
 use App\Core\Database;
+use App\Core\Exceptions\BusinessRuleException;
 use App\Core\Logger;
 use SensitiveParameter;
 use Throwable;
@@ -54,6 +55,144 @@ final class FingerprintSyncService
     private static function capacity(): int
     {
         return max(1, (int) Config::get('security.fingerprint.sensor_capacity', 127));
+    }
+
+    /**
+     * How many templates would be lost for good by wiping this sensor.
+     *
+     * An enrolment that predates template storage exists in exactly one place:
+     * the flash about to be erased. Everything else is rewritten from the
+     * server within a couple of minutes, but these have no copy to rewrite
+     * from, and the teacher has to be enrolled again in person.
+     *
+     * Counted rather than prevented. Sometimes wiping is still right — a
+     * sensor holding four templates for one record is not trustworthy, and its
+     * contents may be stale copies of a finger that no longer matches. The
+     * decision belongs to whoever can ask the teacher to spare two minutes;
+     * what the software owes them is the number before they commit to it.
+     */
+    public static function templatesLostByWiping(int $deviceRowId): int
+    {
+        return (int) Database::instance()->scalar(
+            "SELECT COUNT(*)
+               FROM fingerprint_templates fp
+               JOIN teachers t ON t.teacher_id = fp.teacher_id
+              WHERE fp.template_data IS NULL
+                AND fp.enrolled_device_row_id = :device
+                AND fp.status = 'active'
+                AND t.status = 'active'
+                AND t.deleted_at IS NULL",
+            ['device' => $deviceRowId]
+        );
+    }
+
+    /**
+     * Ask a terminal to erase its sensor.
+     *
+     * The server cannot reach into a sensor's flash, so this is a request the
+     * terminal collects on its next poll — the same shape as everything else
+     * here. It exists because the Fingerprints page has been recommending a
+     * wipe since migration 015 without offering any way to perform one.
+     *
+     * @throws BusinessRuleException when it would destroy the only copy of a
+     *                               template and that has not been accepted
+     */
+    public static function requestSensorWipe(int $deviceRowId, int $userId, bool $acceptLoss = false): int
+    {
+        $db = Database::instance();
+
+        $device = $db->selectOne(
+            "SELECT id, device_id, sensor_template_count FROM devices
+              WHERE id = :id AND deleted_at IS NULL
+                AND status NOT IN ('decommissioned','disabled')",
+            ['id' => $deviceRowId]
+        );
+
+        if ($device === null) {
+            throw new BusinessRuleException(
+                'DEVICE_UNAVAILABLE',
+                'That terminal is not available.'
+            );
+        }
+
+        $wouldLose = self::templatesLostByWiping($deviceRowId);
+
+        if ($wouldLose > 0 && !$acceptLoss) {
+            throw new BusinessRuleException(
+                'WIPE_WOULD_LOSE_TEMPLATES',
+                sprintf(
+                    'Wiping this sensor destroys the only copy of %d fingerprint%s. %s '
+                    . 'would have to be enrolled again in person. Let the terminal hand those '
+                    . 'templates back first, or confirm that you accept the loss.',
+                    $wouldLose,
+                    $wouldLose === 1 ? '' : 's',
+                    $wouldLose === 1 ? 'That teacher' : 'Those teachers'
+                )
+            );
+        }
+
+        $db->update('devices', [
+            'sensor_wipe_requested_at' => Clock::nowString(),
+            'sensor_wipe_requested_by' => $userId,
+            'updated_at'               => Clock::nowString(),
+        ], ['id' => $deviceRowId]);
+
+        AuditService::log(
+            AuditService::DEVICE_UPDATED,
+            'devices',
+            'device',
+            $deviceRowId,
+            ['sensor_template_count' => $device['sensor_template_count']],
+            ['sensor_wipe_requested' => true, 'templates_lost' => $wouldLose],
+            sprintf(
+                'Sensor wipe requested for %s%s.',
+                (string) $device['device_id'],
+                $wouldLose > 0
+                    ? sprintf(' — accepting the loss of %d unrecoverable template(s)', $wouldLose)
+                    : ''
+            )
+        );
+
+        return $wouldLose;
+    }
+
+    public static function wipeRequestedFor(int $deviceRowId): bool
+    {
+        return Database::instance()->scalar(
+            'SELECT sensor_wipe_requested_at FROM devices WHERE id = :id',
+            ['id' => $deviceRowId]
+        ) !== null;
+    }
+
+    /**
+     * The terminal reports its sensor is empty.
+     *
+     * Every slot record for this device goes with it — they described flash
+     * that no longer holds anything. Dropping them is what lets reconcile()
+     * queue the whole set again on the very next poll, so a wipe is followed
+     * by an automatic refill rather than by an administrator re-enrolling a
+     * staffroom. That refill is the reason wiping is a reasonable thing to
+     * offer at all; before templates were stored server-side it would have
+     * meant starting from nothing.
+     */
+    public static function confirmSensorWipe(int $deviceRowId): void
+    {
+        $db = Database::instance();
+
+        $db->execute('DELETE FROM fingerprint_slots WHERE device_row_id = :device',
+            ['device' => $deviceRowId]);
+
+        $db->update('devices', [
+            'sensor_wipe_requested_at' => null,
+            'sensor_wipe_requested_by' => null,
+            'sensor_wiped_at'          => Clock::nowString(),
+            'sensor_template_count'    => 0,
+            'updated_at'               => Clock::nowString(),
+        ], ['id' => $deviceRowId]);
+
+        // Straight back into the queue, so the sensor starts refilling on the
+        // poll after this one.
+        self::reconcile($deviceRowId);
     }
 
     /**
@@ -713,6 +852,9 @@ final class FingerprintSyncService
             // A room nobody is timetabled into needs nothing, and is complete
             // by having nothing — not stuck at zero.
             $rows[$index]['complete'] = $present >= $expected;
+            // What erasing this sensor would destroy for good, so the button
+            // offering to erase it can say so before it is pressed.
+            $rows[$index]['unrecoverable'] = self::templatesLostByWiping((int) $row['device_row_id']);
         }
 
         return $rows;

@@ -1599,6 +1599,40 @@ static void pollTemplateSync() {
   LsJson response;
   if (signedRequest("GET", "/api/fingerprint/sync", "", &response) != 200) return;
 
+  /* An administrator asked for this sensor to be emptied.
+   *
+   * Only the server can decide this — a sensor holding templates the server
+   * has no record of still matches fingers, and a scan landing on one is
+   * refused as unrecognised, so the reader turns away a teacher who is
+   * genuinely enrolled. Nothing on the terminal can tell which slots those
+   * are; the server compares what the sensor reports holding against what it
+   * recorded, and the only cure available is to start clean.
+   *
+   * Safe because everything the server holds is queued straight back: the
+   * refill begins on the next poll. */
+  if (response["data"]["wipe_sensor"] | false) {
+    Serial.println("\nSensor: the server asked for a full erase");
+
+    bool        ok     = finger.emptyDatabase() == FINGERPRINT_OK;
+    const char *reason = "";
+
+    if (ok) {
+      finger.getTemplateCount();
+      Serial.printf("      erased — %d template(s) on this sensor now\n", finger.templateCount);
+      Serial.println("      the server will rewrite what it holds over the next few polls");
+    } else {
+      reason = "The sensor refused to erase its database.";
+      Serial.println("      the sensor refused to erase. Check power and wiring.");
+    }
+
+    LsJson body;
+    body["wiped"] = ok;
+    if (!ok) body["reason"] = reason;
+
+    signedRequest("POST", "/api/fingerprint/sync/wiped", jsonToString(body), nullptr);
+    return;
+  }
+
   /* The server may want something FROM this sensor rather than in it.
    *
    * A teacher enrolled here before the server kept templates has their finger
