@@ -50,18 +50,20 @@ $__view->start('content');
         <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
         <div class="alert__body">
             <strong><?= e($mismatch['device_id']) ?><?= $mismatch['room_number'] ? ' in Room ' . e($mismatch['room_number']) : '' ?>
-            is holding <?= e($held) ?> fingerprint<?= $held === 1 ? '' : 's' ?>, but
-            <?= e($expected) ?> <?= $expected === 1 ? 'is' : 'are' ?> recorded here.</strong>
+            is holding <?= e($held) ?> fingerprint<?= $held === 1 ? '' : 's' ?>, but this system
+            has <?= e($expected) ?> recorded against it.</strong>
 
             <?php if ($held < $expected): ?>
                 The sensor is missing <?= e($expected - $held) ?> of them — usually because it was
-                erased, or replaced, while these records stayed. The teachers below will not be
-                recognised no matter how carefully they scan. Enrol them again to put the templates
-                back on this sensor.
+                erased, or replaced, while the records stayed. Those teachers will not be recognised
+                in this room no matter how carefully they scan. Clear the sensor and the templates
+                are written back automatically.
             <?php else: ?>
-                The sensor is holding <?= e($held - $expected) ?> more than this list accounts for.
+                The sensor is holding <?= e($held - $expected) ?> that this system has no record of.
                 Those extra templates belong to nobody, so a scan that matches one is refused as
-                unrecognised. Clearing the sensor and enrolling everybody again is the reliable fix.
+                unrecognised — a teacher who is genuinely enrolled, turned away for matching the
+                wrong copy of their own finger. Clear the sensor; everything this system holds is
+                written back within a few minutes.
             <?php endif; ?>
 
             <div class="text-xs text-muted mt-1">

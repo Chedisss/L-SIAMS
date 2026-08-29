@@ -727,13 +727,31 @@ final class FingerprintService
      */
     public static function sensorMismatches(): array
     {
+        // What the server believes this sensor holds is its slot records, not
+        // the enrolments that happened to be captured on it.
+        //
+        // The difference did not exist before templates could be copied. A
+        // sensor held exactly what had been enrolled at it, so counting
+        // enrolments by enrolled_device_row_id was the same number. Since
+        // migration 018 a terminal holding templates it never enrolled is the
+        // ordinary case — it is the entire point — and the old count read every
+        // synced template as an intruder. A terminal that had just finished
+        // collecting the staff reported "holding 4 fingerprints, but 0 are
+        // recorded here", and recommended wiping a sensor that was working
+        // perfectly, while the coverage table two inches below it said
+        // "4 of 4 · Complete".
+        //
+        // Counting present slot rows is also what makes this agree with
+        // terminalStatus(), which reads the same table. Two panels on one page
+        // disagreeing about the same sensor is worse than either being wrong
+        // alone: it leaves nobody knowing which to believe.
         return Database::instance()->select(
             "SELECT d.id AS device_row_id, d.device_id, d.device_name,
                     c.room_number,
                     d.sensor_template_count, d.sensor_reported_at,
-                    (SELECT COUNT(*) FROM fingerprint_templates fp
-                      WHERE fp.status = 'active'
-                        AND (fp.enrolled_device_row_id = d.id OR fp.enrolled_device_row_id IS NULL)
+                    (SELECT COUNT(*) FROM fingerprint_slots s
+                      WHERE s.device_row_id = d.id
+                        AND s.status = 'present'
                     ) AS expected
                FROM devices d
           LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
