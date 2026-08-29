@@ -1741,9 +1741,48 @@ static void pollTemplateSync() {
     reason = "Stored but reads back empty; the sensor flash is not accepting writes.";
     Serial.printf("      slot %d says stored but reads back empty\n", slot);
   } else {
-    ok = true;
-    finger.getTemplateCount();
-    Serial.printf("      stored — %d template(s) on this sensor now\n", finger.templateCount);
+    /* Read it back and compare. loadModel() succeeding only proves the slot
+     * holds SOMETHING — it says nothing about whether that something is the
+     * template we sent, and a sensor that stores a mangled model reports
+     * exactly the same success as one that stores a good one.
+     *
+     * This is not hypothetical. A terminal reported three templates stored,
+     * the page showed a healthy sensor, and every finger presented to it came
+     * back NOT RECOGNISED — because the check above passes on the strength of
+     * bytes existing. Comparing what came back against what went in is the
+     * only way to tell a working transfer from a convincing one.
+     *
+     * The comparison also splits the two failures that look identical from
+     * the outside. Bytes that differ mean the transfer corrupted them.
+     * Bytes that match while the finger still will not match mean the
+     * transfer is fine and this sensor needs the model re-formed before it
+     * can be stored — a hardware difference, not a bug in the transfer, and
+     * not something re-sending will ever fix. */
+    static uint8_t verify[FP_TEMPLATE_MAX];
+    size_t         verifyLen = 0;
+
+    if (!fpReadTemplate(verify, sizeof(verify), &verifyLen)) {
+      reason = "Stored, but the slot could not be read back to check it.";
+      Serial.printf("      slot %d stored but will not read back for checking\n", slot);
+    } else if (verifyLen != len) {
+      reason = "The sensor stored a different number of bytes than were sent.";
+      Serial.printf("      slot %d holds %u bytes; %u were sent\n",
+                    slot, (unsigned) verifyLen, (unsigned) len);
+      Serial.println("      the sensor is not storing this template intact — it will match nobody");
+    } else if (memcmp(verify, incoming, len) != 0) {
+      size_t first = 0;
+      while (first < len && verify[first] == incoming[first]) first++;
+
+      reason = "The sensor stored something different from what was sent.";
+      Serial.printf("      slot %d differs from what was sent, first at byte %u of %u\n",
+                    slot, (unsigned) first, (unsigned) len);
+      Serial.println("      this template would be present but unmatchable. Refusing it.");
+    } else {
+      ok = true;
+      finger.getTemplateCount();
+      Serial.printf("      stored and verified — %d template(s) on this sensor now\n",
+                    finger.templateCount);
+    }
   }
 
   LsJson body;
