@@ -628,6 +628,15 @@ flash, so a new terminal starts empty and fills itself as it polls, one template
 per poll. Admin → Fingerprints shows how far each terminal has got, room by
 room.
 
+**How long a new enrolment takes to reach the other rooms.** One template
+moves per poll, and the poll is `FINGERPRINT_SYNC_POLL_SECONDS` (default 15).
+So a single teacher reaches every terminal within about fifteen seconds, and a
+backlog of forty takes roughly ten minutes — per terminal, but terminals poll
+independently, so twenty-five of them take no longer than one. On the day you
+first enrol a whole staff, set it to 3 for the afternoon and the same forty
+take two minutes; put it back afterwards, because a terminal recording taps
+should not interrupt itself every three seconds to ask about fingerprints.
+
 If you run with `FINGERPRINT_SYNC_SCOPE=timetable`, check the schedule first —
 that setting sends a terminal only the teachers timetabled into its own room, so
 a teacher with no schedule there is unknown to that reader by design, and the
