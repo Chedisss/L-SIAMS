@@ -305,7 +305,9 @@ final class AttendanceSessionService
                             ? ''
                             : sprintf(' The room was handed over from %s, whose period had ended.', $handedOverFrom),
                         $carried['count'] === 0
-                            ? ''
+                            ? ($carried['reason'] === null
+                                ? ''
+                                : ' Nothing carried forward: ' . $carried['reason'])
                             : sprintf(
                                 ' %d student(s) carried forward from %s without tapping again.',
                                 $carried['count'],
@@ -329,6 +331,10 @@ final class AttendanceSessionService
                     'roster_count'    => $counters['total'],
                     'carried_in'      => $carried['count'],
                     'carried_from'    => $carried['from_code'],
+                    // Null when a register was carried. Otherwise the sentence
+                    // that answers "why did this open empty?" without anybody
+                    // having to read the timetable and the code together.
+                    'carry_note'      => $carried['reason'],
                     'late_after'      => $start->modify('+' . (int) $schedule['late_threshold_minutes'] . ' minutes')->format('H:i'),
                     'time_in_closes'  => $start->modify('+' . (int) $schedule['time_in_window_close'] . ' minutes')->format('H:i'),
                     'time_out_opens'  => $end->modify('-' . (int) $schedule['time_out_window_open'] . ' minutes')->format('H:i'),
@@ -547,16 +553,110 @@ final class AttendanceSessionService
      * card was presented to any reader — writing a device id would be a lie
      * that every report and audit downstream would faithfully repeat.
      *
+     * Every path that carries nothing says why.
+     *
+     * Four separate conditions can each stop a handover, and from the outside
+     * all four look identical: the register opens empty and the teacher is left
+     * to guess whether the feature is broken, switched off, or simply not
+     * applicable. The reason is recorded so the answer is available instead of
+     * inferred — this was reported as "it does not carry over" when the cause
+     * was a timetable the software could see and the person could not.
+     *
      * @param  array<string,mixed> $session the session being opened
-     * @return array{count:int,from_code:?string}
+     * @return array{count:int,from_code:?string,reason:?string}
      */
+    /**
+     * Why this section's previous period was not a handover.
+     *
+     * The main query answers one question — is there a closed session for this
+     * section that ended in the window just before this one — and a null answer
+     * covers four quite different situations. Told apart they are each
+     * actionable; lumped together they are "it does not work".
+     *
+     * Ordered by how often each is the real cause in a running school, not by
+     * how interesting it is.
+     *
+     * @param array<string,mixed> $session
+     */
+    private static function whyNoHandover(
+        Database $db,
+        array $session,
+        DateTimeImmutable $start,
+        int $maxGap
+    ): string {
+        $sectionId = (int) $session['section_id'];
+        $date      = (string) $session['session_date'];
+        $selfId    = (int) $session['session_id'];
+
+        // Anything at all for this section today, ignoring every other rule.
+        $candidates = $db->select(
+            "SELECT s.session_id, s.status, s.scheduled_end, sub.subject_code
+               FROM attendance_sessions s
+          LEFT JOIN subjects sub ON sub.subject_id = s.subject_id
+              WHERE s.section_id   = :section
+                AND s.session_date = :date
+                AND s.session_id  <> :self
+              ORDER BY s.scheduled_end DESC",
+            ['section' => $sectionId, 'date' => $date, 'self' => $selfId]
+        );
+
+        if ($candidates === []) {
+            return 'This is the first class this section has had today, so there is no register '
+                 . 'to carry.';
+        }
+
+        // Still running. Common when the previous teacher has not closed and
+        // the worker has not swept it yet — the handover is not refused so much
+        // as not ready.
+        foreach ($candidates as $candidate) {
+            if ((string) $candidate['status'] === 'open') {
+                return sprintf(
+                    'The previous class (%s) is still open. A register is only handed over once '
+                    . 'the class before it has closed.',
+                    (string) ($candidate['subject_code'] ?? 'earlier period')
+                );
+            }
+        }
+
+        // Overlapping timetable: something ended, but after this one began.
+        $latest    = $candidates[0];
+        $latestEnd = Clock::parse((string) $latest['scheduled_end']);
+
+        if ($latestEnd > $start) {
+            return sprintf(
+                'The previous class (%s) is timetabled to end at %s, after this one starts at %s. '
+                . 'Overlapping periods are a timetable error rather than a handover, so nothing '
+                . 'is carried.',
+                (string) ($latest['subject_code'] ?? 'earlier period'),
+                $latestEnd->format('H:i'),
+                $start->format('H:i')
+            );
+        }
+
+        // Ended too long ago to be "the period before".
+        $gap = (int) round(($start->getTimestamp() - $latestEnd->getTimestamp()) / 60);
+
+        return sprintf(
+            'The previous class (%s) ended at %s, %d minutes before this one starts. Anything over '
+            . '%d minutes is treated as a break rather than a handover, because the students went '
+            . 'somewhere in between.',
+            (string) ($latest['subject_code'] ?? 'earlier period'),
+            $latestEnd->format('H:i'),
+            $gap,
+            $maxGap
+        );
+    }
+
     private static function carryForward(Database $db, array $session, DateTimeImmutable $start): array
     {
-        $none    = ['count' => 0, 'from_code' => null];
+        $none = static fn (?string $why): array => [
+            'count' => 0, 'from_code' => null, 'reason' => $why,
+        ];
+
         $carryAt = Clock::now();
 
         if (!Config::get('attendance.carry_over.enabled', true)) {
-            return $none;
+            return $none('Carry-over is switched off for this installation.');
         }
 
         // The afternoon starts from zero. A session opening at or after the
@@ -574,7 +674,12 @@ final class AttendanceSessionService
             $boundary = $start->setTime((int) $clock[1], (int) $clock[2], 0);
 
             if ($start >= $boundary) {
-                return $none;
+                return $none(sprintf(
+                    'This class starts at %s, at or after the %s reset, so the afternoon begins '
+                    . 'from an empty register.',
+                    $start->format('H:i'),
+                    $resetAt
+                ));
             }
         }
 
@@ -609,7 +714,7 @@ final class AttendanceSessionService
         );
 
         if ($previous === null) {
-            return $none;
+            return $none(self::whyNoHandover($db, $session, $start, $maxGap));
         }
 
         $carried = $db->execute(
@@ -660,7 +765,11 @@ final class AttendanceSessionService
             ], ['session_id' => (int) $session['session_id']]);
         }
 
-        return ['count' => $carried, 'from_code' => (string) $previous['session_code']];
+        return [
+            'count'     => $carried,
+            'from_code' => (string) $previous['session_code'],
+            'reason'    => null,
+        ];
     }
 
     /**

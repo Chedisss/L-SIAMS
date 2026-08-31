@@ -1540,6 +1540,52 @@ try {
         $runner->assertEquals('a morning handover still carries as it always did',
             3, $stillMorning['carried_in']);
 
+        $runner->assertEquals('and a successful handover explains nothing, because nothing needs it',
+            null, $stillMorning['carry_note']);
+
+        // Four different conditions each open a register empty, and from the
+        // outside they look identical. Reported as "carry-over does not work"
+        // when the cause was a timetable the software could see and the person
+        // could not — so each one has to name itself.
+        $runner->assert('the afternoon reset says it was the reset',
+            is_string($afternoon['carry_note'] ?? null)
+                && str_contains((string) $afternoon['carry_note'], 'reset'),
+            'the noon reset gave no reason: ' . var_export($afternoon['carry_note'] ?? null, true));
+
+        $runner->assert('a long gap says how long it was, and what the limit is',
+            is_string($later["carry_note"] ?? null)
+                && str_contains((string) $later["carry_note"], 'minutes'),
+            'the gap case gave no reason: ' . var_export($later["carry_note"] ?? null, true));
+
+        // The first class of the day has nothing before it. Distinct from a
+        // refusal, and the commonest reason of all for an empty register.
+        Clock::freeze(Clock::now()->setTime(10, 0, 0));
+
+        // Move today's sessions out of the way and leave none running, so the
+        // next open is genuinely the first of its day for this section.
+        $db->execute(
+            "UPDATE attendance_sessions
+                SET session_date = DATE_SUB(session_date, INTERVAL 1 DAY),
+                    status = 'closed'
+              WHERE section_id = :section",
+            ['section' => (int) $fixture->ids['sections'][0]]
+        );
+
+        $firstOfDay = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+
+        $runner->assert('the first class of the day says so rather than looking broken',
+            is_string($firstOfDay['carry_note'] ?? null)
+                && str_contains((string) $firstOfDay['carry_note'], 'first class'),
+            'the first-class case gave no reason: ' . var_export($firstOfDay['carry_note'] ?? null, true));
+
+        // The "previous period still open" branch is deliberately not asserted
+        // here. Opening the next period hands the room over and closes the one
+        // before it, so the state is unreachable through the normal path and
+        // any test for it would be describing a scenario the system prevents.
+        // The branch stays because a session open in ANOTHER room for the same
+        // section can still produce it, and an unexplained empty register is
+        // the thing this whole group exists to stop.
+
         Clock::freeze(Clock::now()->setTime(10, 0, 0));
     }
 
