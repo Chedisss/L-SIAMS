@@ -62,6 +62,12 @@ server, and sign in with the demo credentials the seeder prints.
 | `teacher-05-sections.png` | My sections |
 | `teacher-06-reports.png` | Reports |
 
+## Security test evidence
+
+| File | Contents |
+|---|---|
+| `security-tls-test-run.png` | Output of `php tests/tls/run.php` — 40 passing assertions covering the certificate authority, trust chain, certificate extensions, reissue behaviour and hostname validation. Used as Figure 20 in the manuscript. |
+
 ## Note on the dashboard tiles
 
 The demo seeder builds 30 school days ending the day before the capture, so
