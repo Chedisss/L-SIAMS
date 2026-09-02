@@ -106,6 +106,12 @@ return static function (Database $db): void {
 
     // ---------------------------------------------------- grade levels ----
     $gradeLevels = [
+        ['G1',  'Grade 1',  1,  null],
+        ['G2',  'Grade 2',  2,  null],
+        ['G3',  'Grade 3',  3,  null],
+        ['G4',  'Grade 4',  4,  null],
+        ['G5',  'Grade 5',  5,  null],
+        ['G6',  'Grade 6',  6,  null],
         ['G7',  'Grade 7',  7,  null],
         ['G8',  'Grade 8',  8,  null],
         ['G9',  'Grade 9',  9,  null],
