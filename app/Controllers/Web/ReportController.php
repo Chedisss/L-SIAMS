@@ -61,8 +61,8 @@ final class ReportController extends Controller
         $type   = $request->string('type', 'daily');
         $format = $request->string('format', 'pdf');
 
-        if (!in_array($format, ['pdf', 'xlsx', 'csv'], true)) {
-            return $this->fail('INVALID_FORMAT', 'Choose PDF, Excel or CSV.', 422);
+        if (!in_array($format, ['pdf', 'xlsx'], true)) {
+            return $this->fail('INVALID_FORMAT', 'Choose PDF or Excel.', 422);
         }
 
         $filters = $this->filters($request);
@@ -106,7 +106,9 @@ final class ReportController extends Controller
         $mime = match ((string) $report['format']) {
             'pdf'  => 'application/pdf',
             'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            default => 'text/csv; charset=UTF-8',
+            // Reports saved before CSV export was withdrawn are still downloadable.
+            'csv'  => 'text/csv; charset=UTF-8',
+            default => 'application/octet-stream',
         };
 
         return Response::download($path, (string) $report['file_path'], $mime);

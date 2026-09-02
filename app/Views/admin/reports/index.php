@@ -37,7 +37,7 @@ $fieldsByType = [
 
 <?php $__view->include('partials.page-header', [
     'title'       => 'Reports',
-    'subtitle'    => 'Preview a report on screen, or export it straight to PDF, Excel or CSV. Exports carry every row; the preview is capped so the browser stays responsive.',
+    'subtitle'    => 'Preview a report on screen, or export it straight to PDF or Excel. Exports carry every row; the preview is capped so the browser stays responsive.',
     'breadcrumbs' => [['Dashboard', $base], ['Reports', null]],
 ]); ?>
 
@@ -191,7 +191,6 @@ $fieldsByType = [
                     </label>
                     <button class="btn btn-secondary btn-sm" data-export="pdf"><i class="fa-solid fa-file-pdf"></i> PDF</button>
                     <button class="btn btn-secondary btn-sm" data-export="xlsx"><i class="fa-solid fa-file-excel"></i> Excel</button>
-                    <button class="btn btn-secondary btn-sm" data-export="csv"><i class="fa-solid fa-file-csv"></i> CSV</button>
                 </div>
             </div>
 

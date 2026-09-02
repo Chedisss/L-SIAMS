@@ -125,7 +125,7 @@ final class SecurityController extends Controller
             'module'    => $request->string('module', ''),
         ]);
 
-        $rendered = ReportService::export($report, $request->string('format', 'csv'));
+        $rendered = ReportService::export($report, $request->string('format', 'xlsx'));
 
         return Response::attachment($rendered['content'], $rendered['filename'], $rendered['mime']);
     }

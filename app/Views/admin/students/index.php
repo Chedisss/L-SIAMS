@@ -10,7 +10,6 @@ $__view->start('content');
     'actions'     => '<a class="btn btn-secondary" href="/admin/students/import"><i class="fa-solid fa-file-import"></i> Import</a>'
         . '<div class="dropdown"><button class="btn btn-secondary" data-dropdown="export-menu"><i class="fa-solid fa-download"></i> Export</button>'
         . '<div class="dropdown__menu" id="export-menu">'
-        . '<a class="dropdown__item" href="#" data-export="csv">CSV</a>'
         . '<a class="dropdown__item" href="#" data-export="xlsx">Excel</a>'
         . '<a class="dropdown__item" href="#" data-export="pdf">PDF</a></div></div>'
         . '<a class="btn btn-primary" href="/admin/students/create"><i class="fa-solid fa-plus"></i> Add Student</a>',

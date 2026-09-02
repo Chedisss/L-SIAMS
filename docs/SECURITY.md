@@ -201,13 +201,20 @@ The stored filename is randomised, so a guessed path cannot reach an upload. And
 `location` block in the nginx configuration, so even a file that somehow arrived
 would be served as bytes rather than executed.
 
-### CSV formula injection
+### Spreadsheet formula injection
 
 A cell beginning `=`, `+`, `-`, `@`, tab or carriage return is prefixed with a
 single quote in `CsvWriter::sanitize()`. Without this, a student "named"
-`=cmd|'/c calc'!A1` would execute on the machine of whoever opened the export.
+`=cmd|'/c calc'!A1` would execute on the machine of whoever opened the file.
+This covers the CSV import templates the system hands out, which are the only
+CSV it now writes.
 
-The attack is against the person reading the report, not the server, which is
+Report exports are Excel and PDF. `XlsxWriter` emits every cell as an inline
+string (`t="inlineStr"`), which declares the cell to be text, so Excel renders
+such a value rather than evaluating it. CSV needed the sanitiser precisely
+because it carries no type information and leaves the guess to the reader.
+
+The attack is against the person reading the file, not the server, which is
 exactly why it is easy to forget.
 
 ### A backup is stolen

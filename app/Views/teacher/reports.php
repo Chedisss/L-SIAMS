@@ -20,7 +20,7 @@ $fieldsByType = [
 
 <?php $__view->include('partials.page-header', [
     'title'       => 'Reports',
-    'subtitle'    => 'Preview on screen, then export as PDF, Excel or CSV. Every report is scoped to your own classes.',
+    'subtitle'    => 'Preview on screen, then export as PDF or Excel. Every report is scoped to your own classes.',
     'breadcrumbs' => [['Dashboard', '/teacher'], ['Reports', null]],
 ]); ?>
 
@@ -95,7 +95,6 @@ $fieldsByType = [
             <div class="flex gap-1" id="export-buttons">
                 <button class="btn btn-secondary btn-sm" data-export="pdf"><i class="fa-solid fa-file-pdf"></i> PDF</button>
                 <button class="btn btn-secondary btn-sm" data-export="xlsx"><i class="fa-solid fa-file-excel"></i> Excel</button>
-                <button class="btn btn-secondary btn-sm" data-export="csv"><i class="fa-solid fa-file-csv"></i> CSV</button>
             </div>
         </div>
 

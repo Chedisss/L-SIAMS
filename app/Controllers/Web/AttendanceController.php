@@ -198,7 +198,7 @@ final class AttendanceController extends Controller
 
     public function export(Request $request): Response
     {
-        $format  = $request->string('format', 'csv');
+        $format  = $request->string('format', 'xlsx');
         $filters = $this->filters($request);
 
         $report = ReportService::build('daily', $filters + [

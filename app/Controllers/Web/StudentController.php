@@ -235,7 +235,7 @@ final class StudentController extends Controller
 
     public function export(Request $request): Response
     {
-        $format  = $request->string('format', 'csv');
+        $format  = $request->string('format', 'xlsx');
         $filters = $this->filters($request);
 
         $result = StudentService::paginate($filters, 1, 20000);

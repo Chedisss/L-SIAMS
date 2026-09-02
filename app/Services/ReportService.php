@@ -727,11 +727,6 @@ final class ReportService
         $timestamp = Clock::now()->format('Ymd-His');
 
         return match ($format) {
-            'csv' => [
-                'content'  => CsvWriter::build($report['headers'], $report['rows']),
-                'filename' => sprintf('%s-%s.csv', $slug, $timestamp),
-                'mime'     => 'text/csv; charset=UTF-8',
-            ],
             'xlsx' => [
                 'content'  => XlsxWriter::build($report['headers'], $report['rows'], mb_substr((string) $report['title'], 0, 31), (string) $report['title']),
                 'filename' => sprintf('%s-%s.xlsx', $slug, $timestamp),
@@ -750,7 +745,7 @@ final class ReportService
                 'filename' => sprintf('%s-%s.pdf', $slug, $timestamp),
                 'mime'     => 'application/pdf',
             ],
-            default => throw new ValidationException(['format' => ['Choose CSV, Excel or PDF.']]),
+            default => throw new ValidationException(['format' => ['Choose Excel or PDF.']]),
         };
     }
 

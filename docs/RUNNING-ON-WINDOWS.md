@@ -367,7 +367,7 @@ Save, then run `start.bat` again.
 **"Off, and only these features need them: zip gd"**
 Not an error — the system starts and runs normally. Those two extensions power
 three things only: Excel exports, the bulk device provisioning bundle (`zip`),
-and profile photo uploads (`gd`). Attendance, PDF and CSV reports and every
+and profile photo uploads (`gd`). Attendance and PDF reports and every
 other page work without them, and each of those three features says exactly
 what to enable if you try to use it.
 

@@ -20,7 +20,7 @@ no cloud service, no external API, and no internet dependency at runtime.
 | **Session control** | A session opens only when the teacher proves they are there — a fingerprint on the terminal, or their own password as a failover when the reader cannot read them — and only for a class they are actually scheduled to teach |
 | **Offline tolerance** | Every tap carries a timestamp taken at the tap and an idempotency key, so a retry can never double-record. The shipping sketch holds up to 40 taps in the ESP32's RTC memory while the server is unreachable and replays them with their original times once it returns; the server marks those rows `synced_offline`. RTC memory survives a reset or a watchdog reboot but **not** a power cut — held taps are lost if the classroom loses power before the link returns |
 | **Status model** | Separate arrival, departure and final statuses, so "arrived late and left early" is not flattened into one ambiguous word |
-| **Reporting** | 15 report types, exported as PDF, Excel or CSV, all generated without any third-party library |
+| **Reporting** | 15 report types, exported as PDF or Excel, all generated without any third-party library |
 | **Realtime** | WebSocket with SSE and long-polling fallbacks, with sequence-based replay so no event is lost across a reconnect |
 | **Administration** | Students, teachers, sections, subjects, schedules, classrooms, RFID cards, fingerprints, devices, users, settings and backups |
 | **Security** | Per-request HMAC signing for devices, bcrypt for humans, immutable audit and attendance history, full security logging |
