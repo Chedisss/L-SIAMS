@@ -332,6 +332,37 @@ final class FingerprintController extends Controller
         return Response::redirect('/admin/fingerprints');
     }
 
+    /**
+     * Put refused template writes back in the queue.
+     *
+     * The non-destructive half of the pair with wipeSensor(): this asks the
+     * terminal to try the same writes again, where the wipe erases everything
+     * and starts over. It should always be the first thing tried, so it is the
+     * first thing offered.
+     */
+    public function retrySensor(Request $request): Response
+    {
+        $deviceRowId = $request->routeInt('id');
+
+        $requeued = FingerprintSyncService::retryFailed($deviceRowId, $this->requireUserId());
+
+        $message = sprintf(
+            '%d template%s queued again. The terminal collects one per poll, so give it a '
+            . 'few minutes. If the same write fails again the sensor itself is at fault — '
+            . 'check its power and wiring before clearing it.',
+            $requeued,
+            $requeued === 1 ? ' is' : 's are'
+        );
+
+        if ($request->wantsJson()) {
+            return $this->json(['requeued' => $requeued], $message);
+        }
+
+        Flash::success($message);
+
+        return Response::redirect('/admin/fingerprints');
+    }
+
     public function nextSlot(Request $request): Response
     {
         return $this->json([
