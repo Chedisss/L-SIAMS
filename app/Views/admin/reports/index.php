@@ -191,7 +191,6 @@ $fieldsByType = [
                     </label>
                     <button class="btn btn-secondary btn-sm" data-export="pdf"><i class="fa-solid fa-file-pdf"></i> PDF</button>
                     <button class="btn btn-secondary btn-sm" data-export="xlsx"><i class="fa-solid fa-file-excel"></i> Excel</button>
-                    <button class="btn btn-secondary btn-sm" data-export="csv"><i class="fa-solid fa-file-csv"></i> CSV</button>
                 </div>
             </div>
 

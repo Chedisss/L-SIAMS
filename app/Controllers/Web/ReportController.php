@@ -61,8 +61,8 @@ final class ReportController extends Controller
         $type   = $request->string('type', 'daily');
         $format = $request->string('format', 'pdf');
 
-        if (!in_array($format, ['pdf', 'xlsx', 'csv'], true)) {
-            return $this->fail('INVALID_FORMAT', 'Choose PDF, Excel or CSV.', 422);
+        if (!in_array($format, ['pdf', 'xlsx'], true)) {
+            return $this->fail('INVALID_FORMAT', 'Choose PDF or Excel.', 422);
         }
 
         $filters = $this->filters($request);
@@ -103,10 +103,17 @@ final class ReportController extends Controller
             throw new HttpException(410, 'FILE_MISSING', 'This report file is no longer on disk. Generate it again.');
         }
 
+        // CSV is no longer offered, but reports generated as CSV before it was
+        // withdrawn are still on disk and still listed in the history. They
+        // download with the type they were written as; serving an old CSV as
+        // something else would break a file that was correct when it was made.
+        // The fallback is deliberately not CSV any more — an unrecognised
+        // format is an unknown file, not a comma-separated one.
         $mime = match ((string) $report['format']) {
             'pdf'  => 'application/pdf',
             'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            default => 'text/csv; charset=UTF-8',
+            'csv'  => 'text/csv; charset=UTF-8',
+            default => 'application/octet-stream',
         };
 
         return Response::download($path, (string) $report['file_path'], $mime);

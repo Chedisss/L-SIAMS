@@ -2014,7 +2014,7 @@ try {
 
         // The exports have to survive the new shape too — a report nobody can
         // export is half a report.
-        foreach (['csv', 'xlsx', 'pdf'] as $format) {
+        foreach (['xlsx', 'pdf'] as $format) {
             $rendered = \App\Services\ReportService::export($byDate, $format);
 
             $runner->assert(
@@ -2022,7 +2022,30 @@ try {
                 strlen($rendered['content']) > 0 && $rendered['filename'] !== '',
                 'empty export'
             );
+
+            // A file the receiving application dispatches on. An export that is
+            // the right length and the wrong shape opens as nothing.
+            $runner->assert(
+                sprintf('and the %s is what it claims to be', $format),
+                str_starts_with($rendered['content'], $format === 'pdf' ? '%PDF' : "PK\x03\x04"),
+                'wrong signature: ' . bin2hex(substr($rendered['content'], 0, 4))
+            );
         }
+
+        // CSV was withdrawn. Asserted rather than assumed, because a format
+        // silently still on offer is exactly what a removal is supposed to
+        // prevent, and the buttons disappearing from a page proves nothing
+        // about the service behind them.
+        $refused = false;
+
+        try {
+            \App\Services\ReportService::export($byDate, 'csv');
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $refused = true;
+        }
+
+        $runner->assert('and csv is refused, not quietly produced',
+            $refused, 'the report still exported as CSV');
     }
 
     /* =====================================================================
