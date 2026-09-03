@@ -13,6 +13,7 @@ use App\Services\AcademicStructureService;
 use App\Services\ApiKeyService;
 use App\Services\AuditService;
 use App\Services\DeviceService;
+use App\Services\Export\Zip;
 use App\Services\ImportService;
 use App\Services\NetworkService;
 
@@ -436,37 +437,16 @@ final class DeviceController extends Controller
     /** @param list<array<string,mixed>> $provisioning */
     private function buildProvisioningZip(array $provisioning): string
     {
-        if (!class_exists(\ZipArchive::class)) {
-            throw new HttpException(
-                500,
-                'ZIP_UNAVAILABLE',
-                'Bulk provisioning needs the PHP "zip" extension, which is not enabled. '
-                . 'Enable extension=zip in php.ini and restart the web server, or register '
-                . 'the terminals one at a time — a single device downloads its provisioning '
-                . 'file as plain JSON and needs no archive.'
-            );
-        }
-
-        $tmp = tempnam(sys_get_temp_dir(), 'lsiams_prov_');
-
-        if ($tmp === false) {
-            throw new HttpException(500, 'ZIP_FAILED', 'Could not build the provisioning bundle.');
-        }
-
-        $zip = new \ZipArchive();
-
-        if ($zip->open($tmp, \ZipArchive::OVERWRITE) !== true) {
-            @unlink($tmp);
-            throw new HttpException(500, 'ZIP_FAILED', 'Could not build the provisioning bundle.');
-        }
-
+        // Built with the in-house ZIP writer, not ext-zip: this bundle carries
+        // key material that is shown exactly once, and it must not be the
+        // thing that fails because a php.ini line is commented out on the
+        // machine the registrar happens to be using.
+        $entries  = [];
         $manifest = [];
 
         foreach ($provisioning as $file) {
-            $zip->addFromString(
-                sprintf('%s.json', $file['device_id']),
-                (string) json_encode($file, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
-            );
+            $entries[sprintf('%s.json', $file['device_id'])] =
+                (string) json_encode($file, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 
             $manifest[] = [
                 'device_id'   => $file['device_id'],
@@ -478,8 +458,8 @@ final class DeviceController extends Controller
             ];
         }
 
-        $zip->addFromString('MANIFEST.json', (string) json_encode($manifest, JSON_PRETTY_PRINT));
-        $zip->addFromString('README.txt', implode("\n", [
+        $entries['MANIFEST.json'] = (string) json_encode($manifest, JSON_PRETTY_PRINT);
+        $entries['README.txt']    = implode("\n", [
             'L-SIAMS device provisioning bundle',
             '',
             'Each .json file contains the credentials for one attendance terminal.',
@@ -495,13 +475,8 @@ final class DeviceController extends Controller
             'is pasted in. The token is spent on first use; blank it again after.',
             '',
             'Treat this bundle as you would a set of physical keys to the building.',
-        ]));
+        ]);
 
-        $zip->close();
-
-        $content = (string) file_get_contents($tmp);
-        @unlink($tmp);
-
-        return $content;
+        return Zip::create($entries);
     }
 }

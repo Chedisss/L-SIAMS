@@ -403,8 +403,17 @@ final class PdfWriter
             $value
         );
 
-        $converted = @iconv('UTF-8', 'Windows-1252//TRANSLIT', $value);
-        $value     = $converted === false ? preg_replace('/[^\x20-\x7E]/', '?', $value) ?? '' : $converted;
+        // iconv transliterates best — "Sección" becomes "Seccion" rather than
+        // "Secci?n" — but ext-iconv is not guaranteed to be compiled in, and
+        // an undefined function here is a fatal error and a blank 500 on the
+        // one export format that is supposed to work everywhere. mbstring is a
+        // required extension, so it is the fallback; stripping to ASCII is the
+        // last resort.
+        $converted = function_exists('iconv')
+            ? @iconv('UTF-8', 'Windows-1252//TRANSLIT', $value)
+            : @mb_convert_encoding($value, 'Windows-1252', 'UTF-8');
+
+        $value = is_string($converted) ? $converted : preg_replace('/[^\x20-\x7E]/', '?', $value) ?? '';
 
         return str_replace(['\\', '(', ')', "\r", "\n"], ['\\\\', '\\(', '\\)', '', ' '], $value);
     }

@@ -44,7 +44,9 @@ switch ($command) {
     case 'optional':
         $needed = $command === 'required'
             ? ['pdo_mysql', 'openssl', 'mbstring', 'json']
-            : ['zip', 'gd'];
+            // zip was here until the ZIP container was implemented in plain
+            // PHP; nothing needs the extension now.
+            : ['gd'];
 
         $missing = array_values(array_filter(
             $needed,

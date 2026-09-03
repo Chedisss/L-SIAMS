@@ -235,7 +235,10 @@ final class StudentController extends Controller
 
     public function export(Request $request): Response
     {
-        $format  = $request->string('format', 'csv');
+        // 'pdf', not 'csv'. The two attendance exports had the same stale
+        // default and produced "Choose Excel or PDF." for anyone who reached
+        // the route without naming a format; this one was missed.
+        $format  = $request->string('format', 'pdf');
         $filters = $this->filters($request);
 
         $result = StudentService::paginate($filters, 1, 20000);
