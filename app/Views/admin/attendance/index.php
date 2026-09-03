@@ -14,7 +14,6 @@ $__view->start('content');
     'actions'     => '<a class="btn btn-secondary" href="/admin/attendance/sessions"><i class="fa-solid fa-clock"></i> Sessions</a>'
         . '<div class="dropdown"><button class="btn btn-secondary" data-dropdown="att-export"><i class="fa-solid fa-download"></i> Export</button>'
         . '<div class="dropdown__menu" id="att-export">'
-        . '<a class="dropdown__item" href="#" data-export="csv">CSV</a>'
         . '<a class="dropdown__item" href="#" data-export="xlsx">Excel</a>'
         . '<a class="dropdown__item" href="#" data-export="pdf">PDF</a></div></div>',
 ]); ?>
