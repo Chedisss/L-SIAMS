@@ -290,7 +290,6 @@ final class AcademicController extends Controller
             'subject_name'    => 'required|string|max:150|no_html',
             'description'     => 'nullable|string|max:500|no_html',
             'department_id'   => 'required|int|exists:departments,department_id',
-            'units'           => 'nullable|numeric|between:0,20',
             'grade_level_ids' => 'required|array|min:1',
             'status'          => 'nullable|in:active,inactive',
         ], [
@@ -312,7 +311,6 @@ final class AcademicController extends Controller
             'subject_name'    => 'required|string|max:150|no_html',
             'description'     => 'nullable|string|max:500|no_html',
             'department_id'   => 'required|int|exists:departments,department_id',
-            'units'           => 'nullable|numeric|between:0,20',
             'grade_level_ids' => 'nullable|array',
             'status'          => 'nullable|in:active,inactive',
         ]);

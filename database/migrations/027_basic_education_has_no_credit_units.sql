@@ -1,0 +1,27 @@
+-- ---------------------------------------------------------------------------
+-- 027: subjects do not carry credit units
+--
+-- subjects.units was a tertiary idea in a basic-education system. Credit units
+-- describe a college course; a school running Grades 1 to 12 measures a
+-- subject in minutes on a timetable, and this system already holds that — a
+-- schedule has a start and an end, so weekly minutes are derivable and a
+-- separate hand-typed number can only disagree with them.
+--
+-- It was also never used. The column was written by the subject form, shown in
+-- one table column, and read by exactly one query that selected it and did
+-- nothing with it. No load limit, no constraint, no report, nothing in the
+-- timetable. A required field on a form that changes no behaviour is worse
+-- than no field: somebody has to decide what to type, and the decision is
+-- never consulted.
+--
+-- Dropped rather than hidden. A dead column outlives everyone who knew it was
+-- dead, and the next person to read the schema has to work out for themselves
+-- that nothing depends on it.
+--
+-- Nothing is lost that matters: the column held a default of 1.00 for every
+-- row the demo seed and the subject form ever created. Attendance, audit,
+-- security and login history remain untouched by design — this is reference
+-- data, not a record of something that happened.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE subjects DROP COLUMN units;

@@ -45,7 +45,7 @@ $__view->start('content');
             <div class="table-wrap">
                 <table class="data">
                     <thead><tr><th>Code</th><th>Name</th><th>Department</th><th>Offered to</th>
-                        <th class="numeric">Units</th><th class="numeric">Teachers</th><th>Status</th><th style="width:60px"></th></tr></thead>
+                        <th class="numeric">Teachers</th><th>Status</th><th style="width:60px"></th></tr></thead>
                     <tbody>
                     <?php foreach ($subjects as $subject): ?>
                         <tr>
@@ -58,7 +58,6 @@ $__view->start('content');
                             </td>
                             <td class="text-sm"><?= e($subject['department_name']) ?></td>
                             <td class="text-sm"><?= e($subject['grade_levels'] ?? '<span class="text-warning">none</span>') ?></td>
-                            <td class="numeric"><?= e($subject['units']) ?></td>
                             <td class="numeric"><?= e($subject['teacher_count']) ?></td>
                             <td><span class="badge <?= e(status_badge($subject['status'])) ?>"><?= e(ucfirst((string) $subject['status'])) ?></span></td>
                             <td>
@@ -69,7 +68,6 @@ $__view->start('content');
                                             'subject_name'  => $subject['subject_name'],
                                             'description'   => $subject['description'],
                                             'department_id' => (int) $subject['department_id'],
-                                            'units'         => $subject['units'],
                                             'status'        => $subject['status'],
                                         ]) ?>'><i class="fa-solid fa-pen"></i></button>
                             </td>
@@ -115,10 +113,6 @@ $__view->start('content');
                     <div class="form-group form-group--full">
                         <label for="sub-description">Description</label>
                         <textarea id="sub-description" name="description" maxlength="500"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label for="sub-units">Units</label>
-                        <input type="number" id="sub-units" name="units" step="0.5" min="0" max="20" value="1">
                     </div>
                     <div class="form-group">
                         <label for="sub-status">Status</label>
