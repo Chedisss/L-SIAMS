@@ -94,6 +94,8 @@ $__view->start('content');
                         <label for="sub-code" class="required">Subject code</label>
                         <input type="text" id="sub-code" name="subject_code" required maxlength="30"
                                placeholder="ENG12" data-uppercase style="text-transform:uppercase;font-family:var(--mono)">
+                        <span class="field-help">Can be changed later. Nothing is keyed on it, so
+                            correcting a code renames it everywhere it appears.</span>
                     </div>
                     <div class="form-group">
                         <label for="sub-department" class="required">Department</label>
@@ -204,7 +206,6 @@ function applySubjectFilters() {
             if (field && field.type !== 'checkbox') field.value = value === null ? '' : value;
         });
 
-        document.getElementById('sub-code').readOnly = true;
 
         // Load the grade levels this subject is currently offered to.
         try {
@@ -223,7 +224,6 @@ function applySubjectFilters() {
         setTimeout(() => {
             form.reset();
             document.getElementById('sub-id').value = '';
-            document.getElementById('sub-code').readOnly = false;
             document.getElementById('subject-modal-title').textContent = 'Add Subject';
         }, 200);
     });

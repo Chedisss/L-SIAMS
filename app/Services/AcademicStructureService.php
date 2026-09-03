@@ -825,8 +825,24 @@ final class AcademicStructureService
 
         $newDepartmentId = isset($data['department_id']) ? (int) $data['department_id'] : (int) $existing['department_id'];
 
-        $db->transaction(static function (Database $db) use ($subjectId, $data, $existing, $newDepartmentId): void {
+        // The subject code is editable, unlike the department code.
+        //
+        // The department rule exists because "every export, report and
+        // integration keyed on it" would be invalidated by a rename. That
+        // reasoning was copied here, and it is not true of subjects: nothing
+        // in this system keys on subject_code. Schedules, sessions and
+        // attendance records all carry subject_id, no query looks a subject up
+        // by its code, and no table snapshots the code alongside the history.
+        // It is a display label, and the subject *name* beside it has always
+        // been editable — so the code was the only field a school could not
+        // correct after a typo, for no reason that held.
+        $newCode = isset($data['subject_code']) && trim((string) $data['subject_code']) !== ''
+            ? strtoupper(trim((string) $data['subject_code']))
+            : (string) $existing['subject_code'];
+
+        $db->transaction(static function (Database $db) use ($subjectId, $data, $existing, $newDepartmentId, $newCode): void {
             $update = [
+                'subject_code'  => $newCode,
                 'subject_name'  => trim((string) ($data['subject_name'] ?? $existing['subject_name'])),
                 'description'   => self::nullIfBlank($data['description'] ?? $existing['description']),
                 'department_id' => $newDepartmentId,
@@ -834,7 +850,18 @@ final class AcademicStructureService
                 'updated_at'    => Clock::nowString(),
             ];
 
-            $db->update('subjects', $update, ['subject_id' => $subjectId]);
+            try {
+                $db->update('subjects', $update, ['subject_id' => $subjectId]);
+            } catch (PDOException $e) {
+                // Same handling as createSubject: the unique index is the
+                // authority, so a code taken between the check and the write
+                // is caught here rather than becoming a 500.
+                if (Database::isDuplicateKey($e)) {
+                    throw new ValidationException(['subject_code' => ['This subject code is already in use.']]);
+                }
+
+                throw $e;
+            }
 
             // Moving a subject between departments strands any teacher who held
             // it under the old one; clearing those keeps the Part 14.1 invariant

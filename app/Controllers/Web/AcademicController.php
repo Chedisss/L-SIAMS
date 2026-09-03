@@ -308,11 +308,18 @@ final class AcademicController extends Controller
         $id = $request->routeInt('id');
 
         $data = $this->validate($request, [
+            // Editable, and validated exactly as it is on creation. Nothing in
+            // the system keys on a subject code — schedules, sessions and
+            // attendance all carry subject_id — so a typo in one was not worth
+            // being permanent.
+            'subject_code'    => 'required|string|max:30|code',
             'subject_name'    => 'required|string|max:150|no_html',
             'description'     => 'nullable|string|max:500|no_html',
             'department_id'   => 'required|int|exists:departments,department_id',
             'grade_level_ids' => 'nullable|array',
             'status'          => 'nullable|in:active,inactive',
+        ], [
+            'subject_code' => 'Subject code',
         ]);
 
         AcademicStructureService::updateSubject($id, $data);
