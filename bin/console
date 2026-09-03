@@ -716,9 +716,18 @@ function commandDoctor(): void
         $check(extension_loaded($extension), 'Extension ' . $extension, extension_loaded($extension) ? '' : 'not loaded');
     }
 
-    foreach (['zip' => 'Excel export and device bundles', 'gd' => 'profile photo uploads'] as $extension => $used) {
+    // Named with the fix rather than only the consequence. Missing ext-zip
+    // was reported as "the Excel button shows Something went wrong" — a
+    // one-line php.ini change presented as a fault in the report module, and
+    // this line is where it should have been caught first.
+    $optional = [
+        'zip' => ['Excel export and device bundles', 'remove the semicolon from ";extension=zip" in php.ini, then restart Apache'],
+        'gd'  => ['profile photo uploads', 'remove the semicolon from ";extension=gd" in php.ini, then restart Apache'],
+    ];
+
+    foreach ($optional as $extension => [$used, $fix]) {
         if (!extension_loaded($extension)) {
-            $warn('Extension ' . $extension . ' off', 'only affects ' . $used);
+            $warn('Extension ' . $extension . ' off', $used . ' — ' . $fix);
         }
     }
 
