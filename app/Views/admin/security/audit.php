@@ -9,7 +9,6 @@ $__view->start('content');
     'breadcrumbs' => [['Dashboard', '/admin'], ['Audit Logs', null]],
     'actions'     => '<div class="dropdown"><button class="btn btn-secondary" data-dropdown="audit-export"><i class="fa-solid fa-download"></i> Export</button>'
         . '<div class="dropdown__menu" id="audit-export">'
-        . '<a class="dropdown__item" href="#" data-export="csv">CSV</a>'
         . '<a class="dropdown__item" href="#" data-export="xlsx">Excel</a>'
         . '<a class="dropdown__item" href="#" data-export="pdf">PDF</a></div></div>',
 ]); ?>

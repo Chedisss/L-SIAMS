@@ -198,7 +198,17 @@ final class AttendanceController extends Controller
 
     public function export(Request $request): Response
     {
-        $format  = $request->string('format', 'csv');
+        // 'pdf' rather than 'csv'. CSV was withdrawn, and it was the default
+        // here — so a bare /admin/attendance/export threw a validation error
+        // instead of exporting anything. PDF is the right fallback because it
+        // is the one format that needs no PHP extension, so a bare URL works
+        // on a server where Excel cannot.
+        $format  = $request->string('format', 'pdf');
+
+        if (!in_array($format, ['pdf', 'xlsx'], true)) {
+            $format = 'pdf';
+        }
+
         $filters = $this->filters($request);
 
         $report = ReportService::build('daily', $filters + [

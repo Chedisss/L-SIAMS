@@ -280,14 +280,22 @@ code, kbd, .mono { font-family: var(--mono); font-size: .875em; }
 .search {
     position: relative; flex: 1; max-width: 460px;
 }
-.search input {
+/* input[type="search"] rather than a bare `input`.
+ *
+ * The generic form-control rule below sets padding on every text-ish input,
+ * and at one class plus one type this selector matched its specificity exactly
+ * — so source order decided, the later rule won, and the 2.1rem that reserves
+ * room for the magnifier was replaced by 0.7rem. The icon then sat on top of
+ * the placeholder. Naming the type puts this at 0-2-1 so it wins on
+ * specificity and cannot be undone by moving rules around. */
+.search input[type="search"] {
     width: 100%; padding: .5rem .75rem .5rem 2.1rem;
     border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface-alt); color: var(--text);
     font-size: 13.5px; font-family: inherit;
     transition: border-color var(--transition), background var(--transition);
 }
-.search input:focus { background: var(--surface); border-color: var(--primary); outline: none; }
+.search input[type="search"]:focus { background: var(--surface); border-color: var(--primary); outline: none; }
 .search__icon { position: absolute; left: .72rem; top: 50%; transform: translateY(-50%); color: var(--text-subtle); font-size: 13px; }
 
 .search__results {

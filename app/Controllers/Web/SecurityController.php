@@ -125,7 +125,11 @@ final class SecurityController extends Controller
             'module'    => $request->string('module', ''),
         ]);
 
-        $rendered = ReportService::export($report, $request->string('format', 'csv'));
+        // See AttendanceController::export() — csv was the default here too,
+        // and defaulting to a withdrawn format turns a bare URL into an error.
+        $format = $request->string('format', 'pdf');
+
+        $rendered = ReportService::export($report, in_array($format, ['pdf', 'xlsx'], true) ? $format : 'pdf');
 
         return Response::attachment($rendered['content'], $rendered['filename'], $rendered['mime']);
     }
