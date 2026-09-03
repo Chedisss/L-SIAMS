@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Services\Export;
 
 use RuntimeException;
+use App\Core\Exceptions\HttpException;
 use ZipArchive;
 
 /**
@@ -25,14 +26,28 @@ final class XlsxWriter
     public static function build(array $headers, array $rows, string $sheetName = 'Sheet1', ?string $title = null): string
     {
         // An .xlsx file is a ZIP of XML parts, so this writer cannot work
-        // without ext-zip. Saying so beats "Class ZipArchive not found" in a
-        // log somewhere, which tells whoever clicked Export nothing at all.
-        // PDF and CSV do not need the extension and remain available.
+        // without ext-zip. PDF does not need the extension and remains
+        // available.
+        //
+        // HttpException, not RuntimeException. The message below is the whole
+        // point of the guard, and a RuntimeException never reached the person
+        // who clicked Export: the handler renders anything that is not an
+        // HttpException as "Something went wrong. An unexpected error occurred.
+        // The incident has been logged." So a missing php.ini line — a
+        // one-minute fix by whoever installed XAMPP — presented as an
+        // unexplained fault in the report module, and the careful sentence
+        // sat in a log nobody was told to read.
+        //
+        // 503 rather than 500 for the same reason the missing-APP_KEY branch
+        // in App.php uses it: the installation is not configured to do this
+        // yet, which is not the same as the code being wrong.
         if (!class_exists(ZipArchive::class)) {
-            throw new RuntimeException(
-                'Excel export needs the PHP "zip" extension, which is not enabled. '
-                . 'Enable extension=zip in php.ini and restart the web server, '
-                . 'or export as PDF or CSV instead.'
+            throw new HttpException(
+                503,
+                'EXCEL_UNAVAILABLE',
+                'Excel export needs the PHP "zip" extension, which is not enabled on this server. '
+                . 'Open php.ini, remove the semicolon from ";extension=zip", restart Apache, '
+                . 'and try again. Exporting as PDF works without it.'
             );
         }
 
@@ -266,10 +281,13 @@ final class XlsxWriter
         // found" — a 500 and an unexplained "an unexpected error occurred" on
         // the import screen, where the real answer is one line of php.ini.
         if (!class_exists(ZipArchive::class)) {
-            throw new RuntimeException(
-                'Reading .xlsx files needs the PHP "zip" extension, which is not enabled. '
-                . 'Enable extension=zip in php.ini and restart the web server, '
-                . 'or save the spreadsheet as CSV and import that instead.'
+            throw new HttpException(
+                503,
+                'EXCEL_UNAVAILABLE',
+                'Reading .xlsx files needs the PHP "zip" extension, which is not enabled on this '
+                . 'server. Open php.ini, remove the semicolon from ";extension=zip", restart '
+                . 'Apache, and try again. Saving the spreadsheet as CSV and importing that works '
+                . 'without it.'
             );
         }
 
