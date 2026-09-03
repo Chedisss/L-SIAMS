@@ -8,7 +8,6 @@ use App\Core\Clock;
 use App\Core\Config;
 use App\Core\Database;
 use App\Core\Exceptions\ValidationException;
-use App\Services\Export\CsvWriter;
 use App\Services\Export\PdfWriter;
 use App\Services\Export\XlsxWriter;
 
@@ -726,12 +725,15 @@ final class ReportService
         $slug      = self::slug((string) $report['title']);
         $timestamp = Clock::now()->format('Ymd-His');
 
+        // CSV was withdrawn deliberately. Excel carries the same rows with the
+        // column types, the title and the number formatting intact, and a CSV
+        // of an attendance register is a file that opens differently in every
+        // spreadsheet on every machine — leading zeros stripped from an
+        // employee number, a date read as American, a comma inside a section
+        // name splitting one column into two. None of that is recoverable by
+        // the person who opens it, because nothing in the file records what it
+        // was supposed to say.
         return match ($format) {
-            'csv' => [
-                'content'  => CsvWriter::build($report['headers'], $report['rows']),
-                'filename' => sprintf('%s-%s.csv', $slug, $timestamp),
-                'mime'     => 'text/csv; charset=UTF-8',
-            ],
             'xlsx' => [
                 'content'  => XlsxWriter::build($report['headers'], $report['rows'], mb_substr((string) $report['title'], 0, 31), (string) $report['title']),
                 'filename' => sprintf('%s-%s.xlsx', $slug, $timestamp),
@@ -750,7 +752,7 @@ final class ReportService
                 'filename' => sprintf('%s-%s.pdf', $slug, $timestamp),
                 'mime'     => 'application/pdf',
             ],
-            default => throw new ValidationException(['format' => ['Choose CSV, Excel or PDF.']]),
+            default => throw new ValidationException(['format' => ['Choose Excel or PDF.']]),
         };
     }
 
