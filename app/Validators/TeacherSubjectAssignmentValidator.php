@@ -206,7 +206,7 @@ final class TeacherSubjectAssignmentValidator
         $bindings['primary'] = $primaryDepartmentId;
 
         return Database::instance()->select(
-            'SELECT s.subject_id, s.subject_code, s.subject_name, s.units,
+            'SELECT s.subject_id, s.subject_code, s.subject_name,
                     s.department_id, d.department_name, d.department_code,
                     (s.department_id <> :primary) AS is_cross_department
                FROM subjects s

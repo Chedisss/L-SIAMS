@@ -778,7 +778,6 @@ final class AcademicStructureService
                     'subject_name'  => trim((string) $data['subject_name']),
                     'description'   => self::nullIfBlank($data['description'] ?? null),
                     'department_id' => (int) $data['department_id'],
-                    'units'         => (float) ($data['units'] ?? 1.0),
                     'status'        => (string) ($data['status'] ?? 'active'),
                     'created_at'    => Clock::nowString(),
                     'updated_at'    => Clock::nowString(),
@@ -831,7 +830,6 @@ final class AcademicStructureService
                 'subject_name'  => trim((string) ($data['subject_name'] ?? $existing['subject_name'])),
                 'description'   => self::nullIfBlank($data['description'] ?? $existing['description']),
                 'department_id' => $newDepartmentId,
-                'units'         => (float) ($data['units'] ?? $existing['units']),
                 'status'        => (string) ($data['status'] ?? $existing['status']),
                 'updated_at'    => Clock::nowString(),
             ];

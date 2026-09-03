@@ -224,7 +224,6 @@ final class Fixture
             'subject_code'  => self::PREFIX . 'SUB',
             'subject_name'  => self::PREFIX . 'Subject',
             'department_id' => $departmentId,
-            'units'         => 1,
             'status'        => 'active',
             'created_at'    => $now,
             'updated_at'    => $now,

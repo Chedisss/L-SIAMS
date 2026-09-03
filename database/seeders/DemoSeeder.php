@@ -142,7 +142,6 @@ return static function (Database $db): void {
             'subject_code'  => $code,
             'subject_name'  => $name,
             'department_id' => $departments[$departmentCode],
-            'units'         => 1.00,
             'status'        => 'active',
             'created_at'    => $now,
             'updated_at'    => $now,
