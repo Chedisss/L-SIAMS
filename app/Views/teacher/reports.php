@@ -20,7 +20,7 @@ $fieldsByType = [
 
 <?php $__view->include('partials.page-header', [
     'title'       => 'Reports',
-    'subtitle'    => 'Preview on screen, then export as PDF, Excel or CSV. Every report is scoped to your own classes.',
+    'subtitle'    => 'Preview on screen, then export as PDF or Excel. Every report is scoped to your own classes.',
     'breadcrumbs' => [['Dashboard', '/teacher'], ['Reports', null]],
 ]); ?>
 
