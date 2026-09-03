@@ -121,8 +121,10 @@ $__view->start('content');
                                 <?php if ($failed > 0): ?>
                                     <span class="badge badge-danger"><?= e($failed) ?> failed</span>
                                     The sensor refused <?= $failed === 1 ? 'a template' : 'these templates' ?>.
-                                    That is a sensor fault, not a teacher's finger — the terminal will not retry
-                                    on its own.
+                                    That is a sensor fault, not a teacher's finger — usually power or wiring,
+                                    and the same write normally lands on a second attempt. Use
+                                    <strong>Try again</strong>; clearing the sensor is the last resort, not
+                                    the first.
                                     <?php if ($waiting > 0): ?>
                                         <?= e($waiting) ?> more <?= $waiting === 1 ? 'is' : 'are' ?> still to copy.
                                     <?php endif; ?>
@@ -161,6 +163,21 @@ $__view->start('content');
                                 <?php endif; ?>
                             </td>
                             <td>
+                                <?php /* Offered above the wipe, and only when there is something
+                                        to retry. A refused write left the slot in 'failed', which
+                                        nothing moved out of — the poll reads 'pending' only — so
+                                        recovering one template meant erasing the four that were
+                                        already correct. This requeues the same bytes and destroys
+                                        nothing, which is why it comes first. */ ?>
+                                <?php if ($failed > 0): ?>
+                                    <button class="btn btn-secondary btn-sm mb-1"
+                                            data-retry="<?= e($terminal['device_row_id']) ?>"
+                                            data-terminal="<?= e($terminal['device_id']) ?>"
+                                            title="Queue the refused templates again — nothing is erased">
+                                        <i class="fa-solid fa-rotate-right"></i> Try again
+                                    </button>
+                                <?php endif; ?>
+
                                 <?php /* The remedy this page has been recommending since a sensor
                                         could first report its contents, and could not perform.
                                         The count of templates that exist nowhere else travels with
@@ -758,6 +775,26 @@ $__view->start('scripts');
             showSetup();
             document.getElementById('e-teacher').value = enroll.dataset.enroll;
             LS.modal.open('enroll-modal');
+        }
+
+        const retry = event.target.closest('[data-retry]');
+
+        /* No confirmation. Nothing is erased, nothing is overwritten, and the
+           worst case is that the sensor refuses the same write a second time
+           and the row comes back looking exactly as it does now. A dialog in
+           front of that would only teach people to click through dialogs. */
+        if (retry) {
+            const body = new FormData();
+            body.append('_csrf', LS.config.csrfToken);
+
+            try {
+                const response = await LS.http.post(
+                    '/admin/fingerprints/terminals/' + retry.dataset.retry + '/retry', body);
+                LS.toast.success(response.message);
+                window.setTimeout(() => window.location.reload(), 1800);
+            } catch (error) {
+                LS.toast.error(error.message || 'Those templates could not be queued again.');
+            }
         }
 
         const wipe = event.target.closest('[data-wipe]');

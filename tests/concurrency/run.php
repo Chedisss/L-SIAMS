@@ -3001,6 +3001,105 @@ try {
     }
 
     /* =====================================================================
+     * 24b. A refused write can be tried again without erasing the sensor
+     *
+     * The sensor refusing a write is a hardware event — a brown-out on a long
+     * lead, a lost serial frame — and says nothing about the template or the
+     * teacher. But the slot went to 'failed' and nothing moved it back: the
+     * poll reads 'pending' only, and reconcile() inserts missing rows without
+     * touching existing ones. So one bad poll left that teacher permanently
+     * unrecognised at that reader, and the page's only remedy was erasing the
+     * whole sensor — destroying four good templates to recover one, on
+     * hardware that had just shown it can refuse a write.
+     * ===================================================================== */
+    if ($want('sync-retry')) {
+        $runner->group('24b. A refused template write can be retried, not just wiped');
+
+        $fixture->build(1, 1, 1);
+
+        $device        = (int) $fixture->ids['devices'][0];
+        $fingerprintId = (int) $fixture->ids['fingerprint_id'];
+        $adminId       = (int) $db->scalar('SELECT user_id FROM users ORDER BY user_id LIMIT 1');
+        $bytes         = str_repeat("\x41", 512);
+
+        $db->update('fingerprint_templates', [
+            'sensor_template_id'     => 1,
+            'enrolled_device_row_id' => null,
+            'template_data'          => \App\Core\Crypto::encrypt($bytes),
+            'template_bytes'         => 512,
+            'template_captured_at'   => Clock::nowString(),
+        ], ['fingerprint_id' => $fingerprintId]);
+
+        $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id = :f', ['f' => $fingerprintId]);
+        $db->insert('fingerprint_slots', [
+            'fingerprint_id'     => $fingerprintId,
+            'device_row_id'      => $device,
+            'sensor_template_id' => 9,
+            'source'             => 'synced',
+            'status'             => 'pending',
+            'created_at'         => Clock::nowString(),
+            'updated_at'         => Clock::nowString(),
+        ]);
+
+        $queued = \App\Services\FingerprintSyncService::nextPendingFor($device);
+
+        $runner->assert('the template is offered while it is queued',
+            $queued !== null && (int) $queued['slot'] === 9, 'nothing was offered');
+
+        // The sensor refuses it.
+        \App\Services\FingerprintSyncService::markFailed($device, 9, 'Sensor refused the write.');
+
+        $runner->assertEquals('a refused write is not offered again on its own',
+            null, \App\Services\FingerprintSyncService::nextPendingFor($device));
+
+        $runner->assertEquals('and the terminal is shown as having one failure',
+            1, (int) $db->scalar(
+                "SELECT COUNT(*) FROM fingerprint_slots WHERE device_row_id = :d AND status = 'failed'",
+                ['d' => $device]));
+
+        // Try again.
+        $requeued = \App\Services\FingerprintSyncService::retryFailed($device, $adminId);
+
+        $runner->assertEquals('retrying requeues the refused write', 1, $requeued);
+
+        $again = \App\Services\FingerprintSyncService::nextPendingFor($device);
+
+        $runner->assert('and the terminal is offered it once more',
+            $again !== null && (int) $again['slot'] === 9, 'nothing was offered after the retry');
+
+        if ($again !== null) {
+            // The point of retrying rather than re-enrolling: it is the same
+            // template, not a fresh capture the teacher had to stand there for.
+            $runner->assertEquals('byte for byte the template that was refused',
+                $bytes, (string) base64_decode($again['template'], true));
+        }
+
+        $runner->assertEquals('the failure note is cleared, not left to mislead',
+            null, $db->scalar(
+                'SELECT last_error FROM fingerprint_slots WHERE device_row_id = :d AND sensor_template_id = 9',
+                ['d' => $device]));
+
+        // Nothing was destroyed to achieve it — the distinction from a wipe.
+        $runner->assertEquals('and nothing else on the sensor was disturbed',
+            1, (int) $db->scalar('SELECT COUNT(*) FROM fingerprint_slots WHERE device_row_id = :d',
+                ['d' => $device]));
+
+        // Retrying when there is nothing to retry is refused rather than
+        // silently reporting success, so the page cannot claim it did
+        // something it did not.
+        $refused = false;
+
+        try {
+            \App\Services\FingerprintSyncService::retryFailed($device, $adminId);
+        } catch (\App\Core\Exceptions\BusinessRuleException $e) {
+            $refused = $e->errorCode() === 'NOTHING_TO_RETRY';
+        }
+
+        $runner->assert('retrying with nothing failed is refused, not a silent no-op',
+            $refused, 'a second retry reported success');
+    }
+
+    /* =====================================================================
      * 25. The two panels on the Fingerprints page tell the same story
      * ===================================================================== */
     if ($want('sensor-agreement')) {

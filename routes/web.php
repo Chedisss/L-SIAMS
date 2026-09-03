@@ -175,7 +175,9 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/fingerprints/{id:\d+}/logs', FingerprintController::class . '@logs');
     $router->post('/fingerprints/{id:\d+}/status', FingerprintController::class . '@setStatus');
     $router->post('/fingerprints/{id:\d+}/delete', FingerprintController::class . '@delete');
-    // Erase a terminal's sensor. {id} is the device row, not a fingerprint.
+    // Both take the device row as {id}, not a fingerprint. Retry requeues the
+    // writes the sensor refused; wipe erases the sensor and starts over.
+    $router->post('/fingerprints/terminals/{id:\d+}/retry', FingerprintController::class . '@retrySensor');
     $router->post('/fingerprints/terminals/{id:\d+}/wipe', FingerprintController::class . '@wipeSensor');
 
     // --- Devices ---

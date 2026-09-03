@@ -156,6 +156,80 @@ final class FingerprintSyncService
         return $wouldLose;
     }
 
+    /**
+     * Put a terminal's failed template writes back in the queue.
+     *
+     * A slot that the sensor refused was a dead end. Nothing moved it out of
+     * 'failed' — not the poll, which only ever reads 'pending', and not
+     * reconcile(), which inserts rows it finds missing but leaves existing
+     * ones alone. So one refused write during one bad poll left that teacher
+     * permanently unrecognised at that reader, and the only remedy this page
+     * offered was erasing the whole sensor: five templates destroyed and
+     * rewritten to recover one, on hardware that had just demonstrated it can
+     * refuse a write.
+     *
+     * The failures are worth retrying because of what causes them. A refused
+     * write is a sensor fault — a brown-out on a long USB lead, a marginal
+     * 3V3 rail during the flash erase, a serial frame lost to interference —
+     * and none of that is a property of the template or of the teacher. The
+     * same bytes usually land on the next attempt.
+     *
+     * The retry is cheap and bounded: the templates are already in the
+     * database, the terminal collects one per poll, and a slot that fails
+     * again simply returns here. Nothing is destroyed either way, which is the
+     * difference between this and the wipe it replaces.
+     *
+     * @return int how many slots were requeued
+     */
+    public static function retryFailed(int $deviceRowId, int $userId): int
+    {
+        $db = Database::instance();
+
+        $device = $db->selectOne(
+            "SELECT id, device_id FROM devices
+              WHERE id = :id AND deleted_at IS NULL
+                AND status NOT IN ('decommissioned','disabled')",
+            ['id' => $deviceRowId]
+        );
+
+        if ($device === null) {
+            throw new BusinessRuleException(
+                'DEVICE_UNAVAILABLE',
+                'That terminal is not available.'
+            );
+        }
+
+        $requeued = $db->execute(
+            "UPDATE fingerprint_slots
+                SET status = 'pending', last_error = NULL, updated_at = :now
+              WHERE device_row_id = :device AND status = 'failed'",
+            ['now' => Clock::nowString(), 'device' => $deviceRowId]
+        );
+
+        if ($requeued === 0) {
+            throw new BusinessRuleException(
+                'NOTHING_TO_RETRY',
+                'Nothing on this terminal is in a failed state.'
+            );
+        }
+
+        AuditService::log(
+            AuditService::DEVICE_UPDATED,
+            'fingerprint_slots',
+            'device',
+            $deviceRowId,
+            ['status' => 'failed'],
+            ['status' => 'pending', 'slots' => $requeued],
+            sprintf(
+                '%d refused fingerprint template(s) requeued for %s.',
+                $requeued,
+                (string) $device['device_id']
+            )
+        );
+
+        return $requeued;
+    }
+
     public static function wipeRequestedFor(int $deviceRowId): bool
     {
         return Database::instance()->scalar(
