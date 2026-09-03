@@ -120,6 +120,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/departments/{id:\d+}', AcademicController::class . '@departmentDetail');
     $router->put('/departments/{id:\d+}', AcademicController::class . '@updateDepartment');
     $router->post('/departments/{id:\d+}/archive', AcademicController::class . '@archiveDepartment');
+    $router->post('/departments/{id:\d+}/restore', AcademicController::class . '@restoreDepartment');
 
     $router->get('/grade-levels', AcademicController::class . '@gradeLevels', [], 'admin.gradeLevels');
     $router->post('/grade-levels', AcademicController::class . '@storeGradeLevel');
@@ -129,6 +130,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/sections/{id:\d+}', AcademicController::class . '@showSection');
     $router->put('/sections/{id:\d+}', AcademicController::class . '@updateSection');
     $router->post('/sections/{id:\d+}/archive', AcademicController::class . '@archiveSection');
+    $router->post('/sections/{id:\d+}/restore', AcademicController::class . '@restoreSection');
 
     $router->get('/subjects', AcademicController::class . '@subjects', [], 'admin.subjects');
     $router->post('/subjects', AcademicController::class . '@storeSubject');

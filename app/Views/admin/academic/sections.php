@@ -107,11 +107,20 @@ $__view->start('content');
                                             'capacity'     => (int) $section['capacity'],
                                             'status'       => $section['status'],
                                         ]) ?>'><i class="fa-solid fa-pen"></i></button>
-                                <button class="btn btn-ghost btn-sm text-danger" data-archive="<?= e($section['section_id']) ?>"
-                                        data-name="<?= e($section['section_code']) ?>"
-                                        data-enrolled="<?= e($section['active_students']) ?>" title="Archive">
-                                    <i class="fa-solid fa-box-archive"></i>
-                                </button>
+                                <?php /* An archived row is reachable now that the Archived filter
+                                        returns something, so it needs the way back. */ ?>
+                                <?php if (($section['deleted_at'] ?? null) !== null): ?>
+                                    <button class="btn btn-ghost btn-sm" data-restore="<?= e($section['section_id']) ?>"
+                                            data-name="<?= e($section['section_code']) ?>" title="Restore">
+                                        <i class="fa-solid fa-rotate-left"></i> Restore
+                                    </button>
+                                <?php else: ?>
+                                    <button class="btn btn-ghost btn-sm text-danger" data-archive="<?= e($section['section_id']) ?>"
+                                            data-name="<?= e($section['section_code']) ?>"
+                                            data-enrolled="<?= e($section['active_students']) ?>" title="Archive">
+                                        <i class="fa-solid fa-box-archive"></i>
+                                    </button>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -308,6 +317,32 @@ function applyFilters() {
             if (data.strand) strandSelect.value = data.strand;
 
             LS.modal.open('section-modal');
+        }
+
+        const restore = event.target.closest('[data-restore]');
+
+        /* Confirmed, unlike the department restore, because this one has a
+           consequence worth stating before it happens rather than only in the
+           toast afterwards: the schedules do not come back with it. */
+        if (restore) {
+            const result = await LS.modal.confirm({
+                title: 'Restore section?',
+                message: restore.dataset.name + ' will come back inactive and with no timetable. '
+                    + 'Its schedules stay archived — those periods may since have been given to '
+                    + 'another section, so the timetable has to be rebuilt deliberately.',
+                confirmLabel: 'Restore',
+            });
+
+            if (result) {
+                try {
+                    const response = await LS.http.post(
+                        '/admin/sections/' + restore.dataset.restore + '/restore', {});
+                    LS.toast.success(response.message);
+                    window.setTimeout(() => window.location.reload(), 1500);
+                } catch (error) {
+                    LS.toast.error(error.message || 'That section could not be restored.');
+                }
+            }
         }
 
         const archive = event.target.closest('[data-archive]');

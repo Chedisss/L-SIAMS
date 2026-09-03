@@ -4,16 +4,46 @@ $__view->extend('layouts.app');
 $__view->start('content');
 ?>
 
+<?php
+$archived      = $archived      ?? false;
+$archivedCount = $archivedCount ?? 0;
+?>
+
 <?php $__view->include('partials.page-header', [
-    'title'       => 'Departments',
-    'subtitle'    => 'Departments group subjects and the teachers qualified to teach them. A teacher may only be assigned subjects from their own department.',
-    'breadcrumbs' => [['Dashboard', '/admin'], ['Academic Setup', null], ['Departments', null]],
-    'actions'     => '<button class="btn btn-primary" data-modal-open="department-modal"><i class="fa-solid fa-plus"></i> Add Department</button>',
+    'title'       => $archived ? 'Archived Departments' : 'Departments',
+    'subtitle'    => $archived
+        ? 'Archived departments are hidden from every list and dropdown, but nothing about them was deleted. Restoring one brings it back inactive.'
+        : 'Departments group subjects and the teachers qualified to teach them. A teacher may only be assigned subjects from their own department.',
+    'breadcrumbs' => $archived
+        ? [['Dashboard', '/admin'], ['Academic Setup', null], ['Departments', '/admin/departments'], ['Archived', null]]
+        : [['Dashboard', '/admin'], ['Academic Setup', null], ['Departments', null]],
+    'actions'     => $archived
+        ? '<a class="btn btn-secondary" href="/admin/departments"><i class="fa-solid fa-arrow-left"></i> Back to Departments</a>'
+        : '<button class="btn btn-primary" data-modal-open="department-modal"><i class="fa-solid fa-plus"></i> Add Department</button>',
 ]); ?>
+
+<?php /* Offered only when there is an archive to open. Archiving used to be a
+        one-way door — the row left every list and no filter brought it back —
+        so this link is the whole of the way in. */ ?>
+<?php if (!$archived && $archivedCount > 0): ?>
+    <div class="mb-2">
+        <a class="btn btn-ghost btn-sm" href="/admin/departments?view=archived">
+            <i class="fa-solid fa-box-archive"></i>
+            View <?= e($archivedCount) ?> archived department<?= $archivedCount === 1 ? '' : 's' ?>
+        </a>
+    </div>
+<?php endif; ?>
 
 <div class="card">
     <div class="card__body--flush">
-        <?php if ($departments === []): ?>
+        <?php if ($departments === [] && $archived): ?>
+            <?php $__view->include('partials.empty-state', [
+                'icon'   => 'fa-box-archive',
+                'title'  => 'Nothing has been archived',
+                'text'   => 'Archived departments would appear here. None have been.',
+                'action' => '<a class="btn btn-secondary" href="/admin/departments">Back to Departments</a>',
+            ]); ?>
+        <?php elseif ($departments === []): ?>
             <?php $__view->include('partials.empty-state', [
                 'icon'   => 'fa-building-columns',
                 'title'  => 'No departments configured yet',
@@ -53,10 +83,17 @@ $__view->start('content');
                                             'head_teacher_id' => $department['head_teacher_id'],
                                             'status'          => $department['status'],
                                         ]) ?>'><i class="fa-solid fa-pen"></i></button>
-                                <button class="btn btn-ghost btn-sm text-danger" data-archive="<?= e($department['department_id']) ?>"
-                                        data-name="<?= e($department['department_name']) ?>" title="Archive">
-                                    <i class="fa-solid fa-box-archive"></i>
-                                </button>
+                                <?php if ($archived ?? false): ?>
+                                    <button class="btn btn-ghost btn-sm" data-restore="<?= e($department['department_id']) ?>"
+                                            data-name="<?= e($department['department_name']) ?>" title="Restore">
+                                        <i class="fa-solid fa-rotate-left"></i> Restore
+                                    </button>
+                                <?php else: ?>
+                                    <button class="btn btn-ghost btn-sm text-danger" data-archive="<?= e($department['department_id']) ?>"
+                                            data-name="<?= e($department['department_name']) ?>" title="Archive">
+                                        <i class="fa-solid fa-box-archive"></i>
+                                    </button>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -224,6 +261,22 @@ $__view->start('scripts');
                 body.innerHTML = html;
             } catch (error) {
                 body.innerHTML = '<div class="alert alert-danger">Could not load this department.</div>';
+            }
+        }
+
+        const restore = event.target.closest('[data-restore]');
+
+        /* No confirmation: restoring destroys nothing and archiving it again
+           is one click away. The archive is the destructive direction, and
+           that one asks. */
+        if (restore) {
+            try {
+                const response = await LS.http.post(
+                    '/admin/departments/' + restore.dataset.restore + '/restore', {});
+                LS.toast.success(response.message);
+                window.setTimeout(() => window.location.reload(), 1200);
+            } catch (error) {
+                LS.toast.error(error.message || 'That department could not be restored.');
             }
         }
 

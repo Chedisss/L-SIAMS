@@ -182,6 +182,65 @@ final class AcademicStructureService
         );
     }
 
+    /**
+     * Undo an archive.
+     *
+     * Archiving a department is a soft delete, so nothing was destroyed and
+     * there is nothing to rebuild — the row is simply made visible again. It
+     * comes back inactive rather than active, because the archive set it
+     * inactive and reversing the deletion is not the same as asserting the
+     * department is once more in use; somebody has to say that separately.
+     */
+    public static function restoreDepartment(int $departmentId): void
+    {
+        $db = Database::instance();
+
+        $department = $db->selectOne(
+            'SELECT department_id, department_name, deleted_at FROM departments WHERE department_id = :id',
+            ['id' => $departmentId]
+        );
+
+        if ($department === null) {
+            throw new ValidationException(['department_id' => ['Department not found.']]);
+        }
+
+        if ($department['deleted_at'] === null) {
+            throw new ValidationException(['department_id' => ['That department is not archived.']]);
+        }
+
+        // A restored department whose code now collides with one created since
+        // it was archived would give two live rows the same code. The archive
+        // is not undone in that case; the collision is named instead.
+        $clash = $db->scalar(
+            'SELECT COUNT(*) FROM departments
+              WHERE department_code = (SELECT department_code FROM departments WHERE department_id = :id)
+                AND department_id <> :id2 AND deleted_at IS NULL',
+            ['id' => $departmentId, 'id2' => $departmentId]
+        );
+
+        if ((int) $clash > 0) {
+            throw new ValidationException(['department_code' => [
+                'Another department is already using this code. Rename that one first, or edit '
+                . 'this department\'s code before restoring it.',
+            ]]);
+        }
+
+        $db->update('departments', [
+            'deleted_at' => null,
+            'updated_at' => Clock::nowString(),
+        ], ['department_id' => $departmentId]);
+
+        AuditService::log(
+            AuditService::DEPARTMENT_UPDATED,
+            'academic_setup',
+            'department',
+            $departmentId,
+            ['deleted_at' => $department['deleted_at']],
+            ['deleted_at' => null],
+            sprintf('Department "%s" restored from the archive.', (string) $department['department_name'])
+        );
+    }
+
     /** @return array<string,mixed>|null */
     public static function department(int $departmentId): ?array
     {
@@ -191,8 +250,17 @@ final class AcademicStructureService
         );
     }
 
-    /** @return list<array<string,mixed>> */
-    public static function departments(bool $activeOnly = false): array
+    /**
+     * @param bool $archived list the archived departments instead of the live
+     *                       ones. Archiving sets deleted_at, and with no way to
+     *                       ask for those rows an archived department was gone
+     *                       from the interface for good — a mis-click was
+     *                       permanent and phpMyAdmin was the only way to see
+     *                       what had happened.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function departments(bool $activeOnly = false, bool $archived = false): array
     {
         $sql = "SELECT d.*,
                        (SELECT COUNT(*) FROM subjects s
@@ -206,7 +274,7 @@ final class AcademicStructureService
                        CONCAT(t.last_name, ', ', t.first_name) AS head_teacher_name
                   FROM departments d
                   LEFT JOIN teachers t ON t.teacher_id = d.head_teacher_id
-                 WHERE d.deleted_at IS NULL";
+                 WHERE d.deleted_at IS " . ($archived ? 'NOT NULL' : 'NULL');
 
         if ($activeOnly) {
             $sql .= " AND d.status = 'active'";
@@ -534,12 +602,96 @@ final class AcademicStructureService
     }
 
     /**
+     * Undo a section archive.
+     *
+     * The schedules are deliberately NOT brought back with it. Archiving took
+     * them down together because a section with nobody in it should not hold
+     * room and teacher slots, but time has passed: those periods may since
+     * have been given to another section, and silently reinstating them would
+     * create the double bookings the scheduler exists to prevent — discovered
+     * by two classes arriving at one room. The section returns empty and its
+     * timetable is rebuilt deliberately, which is the only version of this
+     * that cannot surprise anybody.
+     *
+     * @return int how many schedules stayed archived, so the caller can say so
+     */
+    public static function restoreSection(int $sectionId): int
+    {
+        $db = Database::instance();
+
+        $section = $db->selectOne(
+            'SELECT section_id, section_code, deleted_at FROM sections WHERE section_id = :id',
+            ['id' => $sectionId]
+        );
+
+        if ($section === null) {
+            throw new ValidationException(['section_id' => ['Section not found.']]);
+        }
+
+        if ($section['deleted_at'] === null) {
+            throw new ValidationException(['section_id' => ['That section is not archived.']]);
+        }
+
+        $clash = $db->scalar(
+            'SELECT COUNT(*) FROM sections
+              WHERE section_code = (SELECT section_code FROM sections WHERE section_id = :id)
+                AND section_id <> :id2 AND deleted_at IS NULL',
+            ['id' => $sectionId, 'id2' => $sectionId]
+        );
+
+        if ((int) $clash > 0) {
+            throw new ValidationException(['section_code' => [
+                'Another section is already using this code. Rename that one first, or edit this '
+                . 'section\'s code before restoring it.',
+            ]]);
+        }
+
+        $stillArchived = (int) $db->scalar(
+            "SELECT COUNT(*) FROM schedules WHERE section_id = :id AND status = 'archived'",
+            ['id' => $sectionId]
+        );
+
+        // 'inactive', not 'active'. Undoing a deletion is not the same as
+        // declaring the section to be running again, and it has no students
+        // and no timetable at this point — presenting it as active would put
+        // an empty section in front of every dropdown in the system.
+        $db->update('sections', [
+            'status'     => 'inactive',
+            'deleted_at' => null,
+            'updated_at' => Clock::nowString(),
+        ], ['section_id' => $sectionId]);
+
+        AuditService::log(
+            AuditService::SECTION_UPDATED,
+            'academic_setup',
+            'section',
+            $sectionId,
+            ['deleted_at' => $section['deleted_at'], 'status' => 'archived'],
+            ['deleted_at' => null, 'status' => 'inactive', 'schedules_left_archived' => $stillArchived],
+            sprintf(
+                'Section %s restored from the archive. %d schedule(s) left archived.',
+                (string) $section['section_code'],
+                $stillArchived
+            )
+        );
+
+        return $stillArchived;
+    }
+
+    /**
      * @param  array<string,mixed> $filters
      * @return list<array<string,mixed>>
      */
     public static function sections(array $filters = []): array
     {
-        $where    = ['1=1'];
+        // Archived sections are excluded unless they are what was asked for.
+        // The view used to do this itself, which meant the page's own
+        // "Archived" status option searched a set the archived rows had
+        // already been removed from and silently returned nothing. Deciding it
+        // here is what lets both lists exist.
+        $where    = [((string) ($filters['status'] ?? '')) === 'archived'
+            ? 'v.deleted_at IS NOT NULL'
+            : 'v.deleted_at IS NULL'];
         $bindings = [];
 
         foreach (['grade_level_id', 'adviser_id', 'status', 'school_year_id'] as $key) {

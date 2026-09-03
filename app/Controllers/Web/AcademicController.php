@@ -22,15 +22,21 @@ final class AcademicController extends Controller
 
     public function departments(Request $request): Response
     {
-        $departments = AcademicStructureService::departments();
+        $archived    = $request->string('view', '') === 'archived';
+        $departments = AcademicStructureService::departments(false, $archived);
 
         if ($request->wantsJson()) {
             return $this->json(['rows' => $departments]);
         }
 
         return $this->view('admin.academic.departments', [
-            'pageTitle'   => 'Departments',
+            'pageTitle'   => $archived ? 'Archived Departments' : 'Departments',
             'departments' => $departments,
+            'archived'    => $archived,
+            // Counted rather than fetched: the tab is worth showing only when
+            // there is something behind it, and an empty archive should not
+            // advertise itself on a page nobody has ever archived from.
+            'archivedCount' => count(AcademicStructureService::departments(false, true)),
             'teachers'    => TeacherService::paginate([], 1, 500)['rows'],
         ]);
     }
@@ -88,6 +94,16 @@ final class AcademicController extends Controller
         );
 
         return $this->json([], 'Department archived.');
+    }
+
+    public function restoreDepartment(Request $request): Response
+    {
+        AcademicStructureService::restoreDepartment($request->routeInt('id'));
+
+        return $this->json(
+            [],
+            'Department restored. It comes back inactive — set it active again when it is in use.'
+        );
     }
 
     // ----------------------------------------------------- grade levels --
@@ -221,6 +237,25 @@ final class AcademicController extends Controller
         AcademicStructureService::archiveSection($request->routeInt('id'));
 
         return $this->json([], 'Section archived. Attendance history is retained.');
+    }
+
+    public function restoreSection(Request $request): Response
+    {
+        $stillArchived = AcademicStructureService::restoreSection($request->routeInt('id'));
+
+        // The schedules are the part somebody will otherwise assume came back,
+        // so it is said plainly rather than left to be discovered when the
+        // timetable is empty.
+        $message = $stillArchived > 0
+            ? sprintf(
+                'Section restored, inactive and with no timetable. Its %d archived schedule(s) '
+                . 'were left alone — those periods may since have been given to another section, '
+                . 'so rebuild the timetable rather than assuming it came back.',
+                $stillArchived
+            )
+            : 'Section restored. It comes back inactive — set it active again when it is in use.';
+
+        return $this->json(['schedules_left_archived' => $stillArchived], $message);
     }
 
     // --------------------------------------------------------- subjects --
