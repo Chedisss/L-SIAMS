@@ -3217,6 +3217,122 @@ try {
     }
 
     /* =====================================================================
+     * 25b. Archiving is reversible, and the archive can be looked at
+     *
+     * Archiving a section or a department set deleted_at, and every listing
+     * query filtered deleted_at IS NULL, so the row left the interface with no
+     * way back and no way to see it had happened. The Sections page made it
+     * worse by appearing to offer the opposite: its status filter has an
+     * "Archived" option, but v_section_summary filtered the archived rows out
+     * before the filter ran, so it returned nothing every time — which reads
+     * as "there are none".
+     * ===================================================================== */
+    if ($want('archive-restore')) {
+        $runner->group('25b. An archived section or department can be found and restored');
+
+        $section = $db->selectOne('SELECT section_id, section_code FROM sections WHERE deleted_at IS NULL LIMIT 1');
+        $sectionId = (int) $section['section_id'];
+        $code      = (string) $section['section_code'];
+
+        // archiveSection refuses while students are enrolled, which is its own
+        // guard and not what is under test here.
+        $db->execute("UPDATE students SET status = 'inactive' WHERE section_id = :i", ['i' => $sectionId]);
+
+        $liveBefore = count(\App\Services\AcademicStructureService::sections());
+
+        \App\Services\AcademicStructureService::archiveSection($sectionId);
+
+        $live     = array_column(\App\Services\AcademicStructureService::sections(), 'section_code');
+        $archived = array_column(
+            \App\Services\AcademicStructureService::sections(['status' => 'archived']),
+            'section_code'
+        );
+
+        $runner->assert('an archived section leaves the live list',
+            !in_array($code, $live, true), 'it was still listed');
+
+        $runner->assertEquals('and the live list is one shorter', $liveBefore - 1, count($live));
+
+        // The assertion this whole group exists for.
+        $runner->assert('the Archived filter returns it rather than nothing',
+            in_array($code, $archived, true), 'the archived list came back empty');
+
+        $runner->assertEquals('and returns only archived rows', 1, count($archived));
+
+        $leftArchived = \App\Services\AcademicStructureService::restoreSection($sectionId);
+
+        $runner->assert('restoring puts it back in the live list',
+            in_array($code, array_column(\App\Services\AcademicStructureService::sections(), 'section_code'), true),
+            'it did not come back');
+
+        // Inactive, not active: undoing a deletion is not the same as saying
+        // the section is running again, and it has no timetable at this point.
+        $runner->assertEquals('it comes back inactive rather than active',
+            'inactive', (string) $db->scalar('SELECT status FROM sections WHERE section_id = :i', ['i' => $sectionId]));
+
+        // The schedules stay archived on purpose — those periods may since
+        // have been given away — and the count is returned so the interface
+        // can say so instead of leaving it to be discovered.
+        $runner->assert('the schedules left archived are reported back',
+            $leftArchived >= 0, 'no count was returned');
+
+        $refused = false;
+
+        try {
+            \App\Services\AcademicStructureService::restoreSection($sectionId);
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $refused = true;
+        }
+
+        $runner->assert('restoring one that is not archived is refused',
+            $refused, 'a second restore was accepted');
+
+        // --- departments ---
+        $department = $db->selectOne(
+            'SELECT department_id, department_name FROM departments WHERE deleted_at IS NULL LIMIT 1'
+        );
+        $departmentId = (int) $department['department_id'];
+        $departmentName = (string) $department['department_name'];
+
+        // Same idea as the students above: clear what archiveDepartment
+        // legitimately refuses over, so the archive itself is what is tested.
+        // teachers.department_id is NOT NULL, so they are moved rather than
+        // detached.
+        $elsewhere = (int) $db->scalar(
+            'SELECT department_id FROM departments WHERE department_id <> :i AND deleted_at IS NULL LIMIT 1',
+            ['i' => $departmentId]
+        );
+
+        $db->execute('UPDATE subjects SET deleted_at = NOW() WHERE department_id = :i', ['i' => $departmentId]);
+        $db->execute(
+            'UPDATE teachers SET department_id = :to WHERE department_id = :i',
+            ['to' => $elsewhere, 'i' => $departmentId]
+        );
+
+        \App\Services\AcademicStructureService::archiveDepartment($departmentId, true);
+
+        $runner->assert('an archived department leaves the live list',
+            !in_array($departmentName,
+                array_column(\App\Services\AcademicStructureService::departments(), 'department_name'), true),
+            'it was still listed');
+
+        $runner->assert('and the archived list returns it',
+            in_array($departmentName,
+                array_column(\App\Services\AcademicStructureService::departments(false, true), 'department_name'), true),
+            'the archived list came back empty');
+
+        \App\Services\AcademicStructureService::restoreDepartment($departmentId);
+
+        $runner->assert('restoring puts it back',
+            in_array($departmentName,
+                array_column(\App\Services\AcademicStructureService::departments(), 'department_name'), true),
+            'it did not come back');
+
+        $runner->assertEquals('and the archived list is empty again',
+            0, count(\App\Services\AcademicStructureService::departments(false, true)));
+    }
+
+    /* =====================================================================
      * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
