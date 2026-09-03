@@ -3332,6 +3332,109 @@ try {
     }
 
     /* =====================================================================
+     * 25c. A subject code can be corrected
+     *
+     * It could not be. The edit form set the field readOnly and updateSubject()
+     * simply never wrote the column, so a typo in a code was permanent with no
+     * message saying why — the field just would not take. The rule was copied
+     * from departments, where the code IS immutable because exports and
+     * integrations key on it. Nothing keys on a subject code: schedules,
+     * sessions and attendance records all carry subject_id, no query looks a
+     * subject up by code, and no table snapshots it beside the history. The
+     * subject *name* next to it was always editable.
+     * ===================================================================== */
+    if ($want('subject-rename')) {
+        $runner->group('25c. A subject code can be corrected, and history is not disturbed');
+
+        $fixture->build(1, 1, 1);
+
+        $subjectId    = (int) $fixture->ids['subject_id'];
+        $originalCode = (string) $db->scalar(
+            'SELECT subject_code FROM subjects WHERE subject_id = :i', ['i' => $subjectId]);
+        $departmentId = (int) $db->scalar(
+            'SELECT department_id FROM subjects WHERE subject_id = :i', ['i' => $subjectId]);
+
+        $historyBefore = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records WHERE subject_id = :i', ['i' => $subjectId]);
+        $schedulesBefore = (int) $db->scalar(
+            'SELECT COUNT(*) FROM schedules WHERE subject_id = :i', ['i' => $subjectId]);
+
+        \App\Services\AcademicStructureService::updateSubject($subjectId, [
+            'subject_code'  => 'lstest-ren',
+            'subject_name'  => 'Renamed Subject',
+            'department_id' => $departmentId,
+        ]);
+
+        $runner->assertEquals('the code is written, and upper-cased as it is on creation',
+            'LSTEST-REN', (string) $db->scalar(
+                'SELECT subject_code FROM subjects WHERE subject_id = :i', ['i' => $subjectId]));
+
+        // The reason this is safe: nothing joined on the code in the first
+        // place, so renaming cannot orphan a record.
+        $runner->assertEquals('attendance history is untouched', $historyBefore,
+            (int) $db->scalar('SELECT COUNT(*) FROM attendance_records WHERE subject_id = :i', ['i' => $subjectId]));
+
+        $runner->assertEquals('schedules are untouched', $schedulesBefore,
+            (int) $db->scalar('SELECT COUNT(*) FROM schedules WHERE subject_id = :i', ['i' => $subjectId]));
+
+        // A code already in use must be refused rather than written, and the
+        // unique index is what decides — not a check that could race.
+        $taken = (string) $db->scalar(
+            'SELECT subject_code FROM subjects WHERE subject_id <> :i AND deleted_at IS NULL LIMIT 1',
+            ['i' => $subjectId]
+        );
+
+        $refused = false;
+
+        try {
+            \App\Services\AcademicStructureService::updateSubject($subjectId, [
+                'subject_code'  => $taken,
+                'subject_name'  => 'Renamed Subject',
+                'department_id' => $departmentId,
+            ]);
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $refused = true;
+        }
+
+        $runner->assert('a code already in use is refused', $refused, 'the duplicate was accepted');
+
+        $runner->assertEquals('and the subject keeps its own code after the refusal',
+            'LSTEST-REN', (string) $db->scalar(
+                'SELECT subject_code FROM subjects WHERE subject_id = :i', ['i' => $subjectId]));
+
+        // Every other caller of updateSubject() omits the code. It must not be
+        // read as "blank it".
+        \App\Services\AcademicStructureService::updateSubject($subjectId, [
+            'subject_name'  => 'Renamed Again',
+            'department_id' => $departmentId,
+        ]);
+
+        $runner->assertEquals('omitting the code leaves it alone',
+            'LSTEST-REN', (string) $db->scalar(
+                'SELECT subject_code FROM subjects WHERE subject_id = :i', ['i' => $subjectId]));
+
+        // Renaming reference data has to be answerable for afterwards.
+        $audited = $db->select(
+            "SELECT old_value, new_value FROM audit_logs
+              WHERE record_type = 'subject' AND record_id = :i",
+            ['i' => $subjectId]
+        );
+
+        $rename = array_values(array_filter(
+            $audited,
+            static fn (array $r): bool => str_contains((string) $r['new_value'], 'LSTEST-REN')
+        ));
+
+        $runner->assert('the rename is in the audit log', $rename !== [], 'no audit row named the new code');
+
+        if ($rename !== []) {
+            $runner->assert('with the code it replaced',
+                str_contains((string) $rename[0]['old_value'], $originalCode),
+                (string) $rename[0]['old_value']);
+        }
+    }
+
+    /* =====================================================================
      * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
