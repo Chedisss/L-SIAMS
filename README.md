@@ -352,7 +352,13 @@ php tests/concurrency/run.php --only=race  # one group
 php tests/concurrency/run.php --load       # opt in to the 30-minute soak
 
 php tests/tls/run.php                      # certificates: chain, extensions, renewal
+php tests/spreadsheet/run.php              # the .xlsx container, both directions
 ```
+
+The spreadsheet suite needs no database. Where ext-zip is installed it checks
+the archives L-SIAMS writes against it and vice versa; where it is not, those
+cross-checks are skipped and the rest still has to pass, because a server
+without the extension is the case the writer exists for.
 
 Twenty-one groups covering session opening, the concurrent-tap race,
 cross-device taps, section mismatch, time-in/time-out sequencing, status

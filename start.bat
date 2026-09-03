@@ -98,12 +98,10 @@ if defined OPTMISSING (
     echo   [warn] PHP is missing: !OPTMISSING!
     echo.
     echo       Everything still runs, but these stay broken until you add them:
-    echo         zip  -  Excel exports, firmware downloads
     echo         gd   -  profile photo uploads
     echo.
     echo       To fix: open C:\xampp\php\php.ini, delete the ';' at the start
-    echo       of the 'extension=zip' and 'extension=gd' lines, save, then run
-    echo       this file again.
+    echo       of the 'extension=gd' line, save, then run this file again.
     echo.
 ) else (
     echo   [ok] Required PHP extensions present

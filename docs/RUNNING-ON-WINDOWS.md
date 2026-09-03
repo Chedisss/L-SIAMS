@@ -364,15 +364,18 @@ find each name it listed, and delete the `;` at the start of that line:
 
 Save, then run `start.bat` again.
 
-**"Off, and only these features need them: zip gd"**
-Not an error — the system starts and runs normally. Those two extensions power
-three things only: Excel exports, the bulk device provisioning bundle (`zip`),
-and profile photo uploads (`gd`). Attendance, PDF and CSV reports and every
-other page work without them, and each of those three features says exactly
-what to enable if you try to use it.
+**"Off, and only these features need them: gd"**
+Not an error — the system starts and runs normally. `gd` powers one thing:
+profile photo uploads. Every other page works without it, and the upload form
+says exactly what to enable if you try to use it.
 
-To switch them on, same as above: find `;extension=zip` and `;extension=gd` in
-`C:\xampp\php\php.ini`, delete the leading `;`, save, run `start.bat` again.
+To switch it on, same as above: find `;extension=gd` in `C:\xampp\php\php.ini`,
+delete the leading `;`, save, run `start.bat` again.
+
+`zip` used to be listed here as well, because Excel export, Excel import and
+the bulk device provisioning bundle were built on it. They are not any more —
+L-SIAMS writes and reads the `.xlsx` container itself — so a stock XAMPP with
+nothing enabled runs every one of those features.
 
 **"Could not find php.exe"**
 XAMPP is not installed, or not on `C:`, `D:` or `E:`. Install it, or add

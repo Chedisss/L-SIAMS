@@ -4,17 +4,19 @@ declare(strict_types=1);
 namespace App\Services\Export;
 
 use RuntimeException;
-use App\Core\Exceptions\HttpException;
-use ZipArchive;
 
 /**
- * Minimal OOXML (.xlsx) writer built on ext-zip.
+ * Minimal OOXML (.xlsx) writer.
  *
  * Written by hand rather than pulling in PhpSpreadsheet because this system is
  * deployed on an isolated LAN where `composer install` may not be possible, and
  * a school's IT staff should be able to redeploy it from a USB stick. The
  * output is a valid single-sheet workbook with a frozen, styled header row —
  * which is the whole of what the reports need.
+ *
+ * The ZIP container underneath is written by App\Services\Export\Zip rather
+ * than by ext-zip, so Excel export and import work on a stock XAMPP install
+ * with no php.ini change.
  */
 final class XlsxWriter
 {
@@ -25,60 +27,19 @@ final class XlsxWriter
      */
     public static function build(array $headers, array $rows, string $sheetName = 'Sheet1', ?string $title = null): string
     {
-        // An .xlsx file is a ZIP of XML parts, so this writer cannot work
-        // without ext-zip. PDF does not need the extension and remains
-        // available.
-        //
-        // HttpException, not RuntimeException. The message below is the whole
-        // point of the guard, and a RuntimeException never reached the person
-        // who clicked Export: the handler renders anything that is not an
-        // HttpException as "Something went wrong. An unexpected error occurred.
-        // The incident has been logged." So a missing php.ini line — a
-        // one-minute fix by whoever installed XAMPP — presented as an
-        // unexplained fault in the report module, and the careful sentence
-        // sat in a log nobody was told to read.
-        //
-        // 503 rather than 500 for the same reason the missing-APP_KEY branch
-        // in App.php uses it: the installation is not configured to do this
-        // yet, which is not the same as the code being wrong.
-        if (!class_exists(ZipArchive::class)) {
-            throw new HttpException(
-                503,
-                'EXCEL_UNAVAILABLE',
-                'Excel export needs the PHP "zip" extension, which is not enabled on this server. '
-                . 'Open php.ini, remove the semicolon from ";extension=zip", restart Apache, '
-                . 'and try again. Exporting as PDF works without it.'
-            );
-        }
-
-        $tmpFile = tempnam(sys_get_temp_dir(), 'lsiams_xlsx_');
-
-        if ($tmpFile === false) {
-            throw new RuntimeException('Could not create a temporary file for the workbook.');
-        }
-
-        $zip = new ZipArchive();
-
-        if ($zip->open($tmpFile, ZipArchive::OVERWRITE) !== true) {
-            @unlink($tmpFile);
-            throw new RuntimeException('Could not create the workbook archive.');
-        }
-
-        $zip->addFromString('[Content_Types].xml', self::contentTypes());
-        $zip->addFromString('_rels/.rels', self::rootRels());
-        $zip->addFromString('docProps/app.xml', self::appProps());
-        $zip->addFromString('docProps/core.xml', self::coreProps($title ?? $sheetName));
-        $zip->addFromString('xl/workbook.xml', self::workbook($sheetName));
-        $zip->addFromString('xl/_rels/workbook.xml.rels', self::workbookRels());
-        $zip->addFromString('xl/styles.xml', self::styles());
-        $zip->addFromString('xl/worksheets/sheet1.xml', self::sheet($headers, $rows));
-
-        $zip->close();
-
-        $content = (string) file_get_contents($tmpFile);
-        @unlink($tmpFile);
-
-        return $content;
+        // [Content_Types].xml goes in first. The OPC specification does not
+        // strictly require it, but a reader that scans rather than reads the
+        // directory expects to meet it before the parts it describes.
+        return Zip::create([
+            '[Content_Types].xml'         => self::contentTypes(),
+            '_rels/.rels'                 => self::rootRels(),
+            'docProps/app.xml'            => self::appProps(),
+            'docProps/core.xml'           => self::coreProps($title ?? $sheetName),
+            'xl/workbook.xml'             => self::workbook($sheetName),
+            'xl/_rels/workbook.xml.rels'  => self::workbookRels(),
+            'xl/styles.xml'               => self::styles(),
+            'xl/worksheets/sheet1.xml'    => self::sheet($headers, $rows),
+        ]);
     }
 
     /**
@@ -246,6 +207,11 @@ final class XlsxWriter
             . '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
             . '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
             . '</cellXfs>'
+            // The Normal style. Optional as far as Excel is concerned, but its
+            // absence makes stricter readers substitute a default and say so,
+            // and a warning on opening an attendance register is a warning
+            // somebody has to decide whether to worry about.
+            . '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
             . '</styleSheet>';
     }
 
@@ -276,47 +242,47 @@ final class XlsxWriter
      */
     public static function read(string $path): array
     {
-        // Same reason as build(): without ext-zip there is no way to open the
-        // container. Left unguarded this surfaced as "Class ZipArchive not
-        // found" — a 500 and an unexplained "an unexpected error occurred" on
-        // the import screen, where the real answer is one line of php.ini.
-        if (!class_exists(ZipArchive::class)) {
-            throw new HttpException(
-                503,
-                'EXCEL_UNAVAILABLE',
-                'Reading .xlsx files needs the PHP "zip" extension, which is not enabled on this '
-                . 'server. Open php.ini, remove the semicolon from ";extension=zip", restart '
-                . 'Apache, and try again. Saving the spreadsheet as CSV and importing that works '
-                . 'without it.'
-            );
-        }
+        $sheetPart = self::firstWorksheet($path);
 
-        $zip = new ZipArchive();
-
-        if ($zip->open($path) !== true) {
-            throw new RuntimeException('The uploaded file is not a readable workbook.');
-        }
+        $parts = Zip::extract($path, ['xl/sharedStrings.xml', $sheetPart]);
 
         $sharedStrings = [];
-        $sharedXml     = $zip->getFromName('xl/sharedStrings.xml');
+        $sharedXml     = $parts['xl/sharedStrings.xml'] ?? '';
 
-        if (is_string($sharedXml) && $sharedXml !== '') {
+        if ($sharedXml !== '') {
             $doc = @simplexml_load_string($sharedXml);
 
             if ($doc !== false) {
                 foreach ($doc->si as $item) {
-                    // <si> may hold a single <t> or a run of <r><t> fragments.
-                    $sharedStrings[] = isset($item->t) && count($item->r ?? []) === 0
-                        ? (string) $item->t
-                        : implode('', array_map(static fn ($r): string => (string) $r->t, iterator_to_array($item->r ?? [])));
+                    // A shared string is either one <t>, or a sequence of <r>
+                    // runs each holding its own <t> — which is what Excel
+                    // writes as soon as one word in a cell is formatted
+                    // differently from the rest.
+                    //
+                    // The runs are concatenated with a plain loop on purpose:
+                    // iterator_to_array() over $item->r preserves keys, and
+                    // every run is keyed "r", so all but the last were
+                    // silently dropped. "Grade 3 - Gold" arrived as "Gold",
+                    // and an import matched it against nothing.
+                    if (isset($item->t)) {
+                        $sharedStrings[] = (string) $item->t;
+                        continue;
+                    }
+
+                    $text = '';
+
+                    foreach ($item->r as $run) {
+                        $text .= (string) $run->t;
+                    }
+
+                    $sharedStrings[] = $text;
                 }
             }
         }
 
-        $sheetXml = $zip->getFromName('xl/worksheets/sheet1.xml');
-        $zip->close();
+        $sheetXml = $parts[$sheetPart] ?? '';
 
-        if (!is_string($sheetXml) || $sheetXml === '') {
+        if ($sheetXml === '') {
             return [];
         }
 
@@ -360,6 +326,62 @@ final class XlsxWriter
         }
 
         return $rows;
+    }
+
+    /**
+     * Work out which part inside the workbook holds the first sheet.
+     *
+     * Reading xl/worksheets/sheet1.xml is right for the files this class
+     * writes and for most of what Excel writes, but not for all of them: the
+     * part names are relationship targets, not positions, so a workbook whose
+     * first tab was added after the others — or one saved by Google Sheets or
+     * LibreOffice — can perfectly legitimately open on sheet3.xml. Importing
+     * the wrong tab is worse than failing, because the header row matches and
+     * nothing looks wrong until the roster is already in the database.
+     */
+    private static function firstWorksheet(string $path): string
+    {
+        $parts = Zip::extract($path, ['xl/workbook.xml', 'xl/_rels/workbook.xml.rels']);
+
+        $workbook = @simplexml_load_string($parts['xl/workbook.xml'] ?? '');
+        $rels     = @simplexml_load_string($parts['xl/_rels/workbook.xml.rels'] ?? '');
+
+        if ($workbook !== false && $rels !== false) {
+            $targets = [];
+
+            foreach ($rels->Relationship ?? [] as $relationship) {
+                $targets[(string) $relationship['Id']] = ltrim((string) $relationship['Target'], '/');
+            }
+
+            $namespaces = $workbook->getNamespaces(true);
+            $sheets     = $workbook->sheets->sheet ?? [];
+
+            foreach ($sheets as $sheet) {
+                $id = (string) ($sheet->attributes($namespaces['r'] ?? '')['id'] ?? '');
+
+                if (isset($targets[$id])) {
+                    // Targets are relative to xl/, the folder workbook.xml is in.
+                    return str_starts_with($targets[$id], 'xl/') ? $targets[$id] : 'xl/' . $targets[$id];
+                }
+            }
+        }
+
+        // A workbook we could not read the relationships of. Fall back to the
+        // conventional name, then to whichever worksheet part exists.
+        $names = Zip::names($path);
+
+        if (in_array('xl/worksheets/sheet1.xml', $names, true)) {
+            return 'xl/worksheets/sheet1.xml';
+        }
+
+        $worksheets = array_values(array_filter(
+            $names,
+            static fn (string $name): bool => str_starts_with($name, 'xl/worksheets/') && str_ends_with($name, '.xml')
+        ));
+
+        sort($worksheets, SORT_NATURAL);
+
+        return $worksheets[0] ?? 'xl/worksheets/sheet1.xml';
     }
 
     private static function columnIndex(string $reference): int

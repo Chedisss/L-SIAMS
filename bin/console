@@ -716,13 +716,15 @@ function commandDoctor(): void
         $check(extension_loaded($extension), 'Extension ' . $extension, extension_loaded($extension) ? '' : 'not loaded');
     }
 
-    // Named with the fix rather than only the consequence. Missing ext-zip
-    // was reported as "the Excel button shows Something went wrong" — a
-    // one-line php.ini change presented as a fault in the report module, and
-    // this line is where it should have been caught first.
+    // Named with the fix rather than only the consequence.
+    //
+    // ext-zip used to be listed here, because Excel export, Excel import and
+    // the device provisioning bundle all failed without it. They no longer
+    // depend on it: App\Services\Export\Zip writes and reads the container in
+    // plain PHP. An optional-extension warning is the right place to catch a
+    // php.ini line, but the better answer was not to need the line at all.
     $optional = [
-        'zip' => ['Excel export and device bundles', 'remove the semicolon from ";extension=zip" in php.ini, then restart Apache'],
-        'gd'  => ['profile photo uploads', 'remove the semicolon from ";extension=gd" in php.ini, then restart Apache'],
+        'gd' => ['profile photo uploads', 'remove the semicolon from ";extension=gd" in php.ini, then restart Apache'],
     ];
 
     foreach ($optional as $extension => [$used, $fix]) {
