@@ -3658,6 +3658,109 @@ try {
     }
 
     /* =====================================================================
+     * 25f. One subject, many grades, a syllabus for each
+     *
+     * subject_grade_levels was always a many-to-many, and grade-suffixed codes
+     * (ENG03, ENG04) reduced it to a one-to-one that needed a subject row per
+     * grade - six Englishes, six sets of teacher assignments to keep in step,
+     * and reports treating Grade 3 English and Grade 4 English as unrelated.
+     * The syllabus is the reason the suffix looked necessary, so it moved onto
+     * the pairing, which is the only place "what English covers in Grade 3" is
+     * a true statement.
+     *
+     * The regression guarded here is the write path. It used to DELETE every
+     * grade row and re-INSERT, harmless while the table held nothing but the
+     * pairing - and silently destructive the moment it held prose somebody
+     * wrote.
+     * ===================================================================== */
+    if ($want('subject-syllabus')) {
+        $runner->group('25f. One subject spans grades, each with its own syllabus');
+
+        $fixture->build(1, 1, 1);
+
+        $subjectId    = (int) $fixture->ids['subject_id'];
+        $departmentId = (int) $db->scalar('SELECT department_id FROM subjects WHERE subject_id = :i',
+            ['i' => $subjectId]);
+
+        $grades = [];
+
+        foreach ($db->select('SELECT grade_level_id, grade_level_code FROM grade_levels ORDER BY numeric_level LIMIT 6') as $row) {
+            $grades[(string) $row['grade_level_code']] = (int) $row['grade_level_id'];
+        }
+
+        $all   = array_values($grades);
+        $codes = array_keys($grades);
+        $first = $grades[$codes[0]];
+        $last  = $grades[$codes[count($codes) - 1]];
+        $mid   = $grades[$codes[2]];
+
+        $save = static function (array $extra) use ($subjectId, $departmentId): void {
+            \App\Services\AcademicStructureService::updateSubject($subjectId, $extra + [
+                'subject_name'  => 'Spanning Subject',
+                'department_id' => $departmentId,
+            ]);
+        };
+
+        $save([
+            'grade_level_ids' => $all,
+            'syllabus'        => [$first => 'Letter sounds and sight words.', $last => 'Essay structure and oral defence.'],
+        ]);
+
+        $runner->assertEquals('the subject is offered to every grade given',
+            count($all), count(\App\Services\AcademicStructureService::subjectGradeLevelIds($subjectId)));
+
+        $syllabus = \App\Services\AcademicStructureService::subjectSyllabuses($subjectId);
+
+        $runner->assertEquals('the first grade keeps its own syllabus',
+            'Letter sounds and sight words.', (string) ($syllabus[$first] ?? ''));
+
+        $runner->assertEquals('and the last grade a different one',
+            'Essay structure and oral defence.', (string) ($syllabus[$last] ?? ''));
+
+        $runner->assert('a grade nobody wrote for stays blank',
+            !isset($syllabus[$mid]), 'a syllabus appeared where none was written');
+
+        // The regression. An edit that does not carry the syllabus fields must
+        // not be read as an instruction to erase them.
+        $save(['grade_level_ids' => $all]);
+
+        $runner->assertEquals('editing the subject without touching the syllabus keeps it',
+            'Letter sounds and sight words.',
+            (string) (\App\Services\AcademicStructureService::subjectSyllabuses($subjectId)[$first] ?? ''));
+
+        // Unticking removes one pairing, not the set.
+        $without = array_values(array_diff($all, [$mid]));
+        $save(['grade_level_ids' => $without]);
+
+        $remaining = \App\Services\AcademicStructureService::subjectGradeLevelIds($subjectId);
+
+        $runner->assert('unticking a grade drops only that grade',
+            !in_array($mid, $remaining, true) && count($remaining) === count($without),
+            'left ' . count($remaining) . ' of ' . count($without));
+
+        $runner->assertEquals('and the surviving syllabuses are untouched',
+            'Letter sounds and sight words.',
+            (string) (\App\Services\AcademicStructureService::subjectSyllabuses($subjectId)[$first] ?? ''));
+
+        // Emptying one on purpose still has to work.
+        $save(['grade_level_ids' => $without, 'syllabus' => [$first => '   ']]);
+
+        $runner->assert('a syllabus emptied on purpose is cleared, not stored as blanks',
+            !isset(\App\Services\AcademicStructureService::subjectSyllabuses($subjectId)[$first]),
+            'whitespace was stored');
+
+        // The browser sends JSON, whose object keys arrive as numeric strings.
+        $save([
+            'grade_level_ids' => $without,
+            'syllabus'        => json_decode('{"' . $last . '":"Sent as JSON"}', true),
+        ]);
+
+        $runner->assertEquals('numeric-string keys from a JSON body resolve to grades',
+            'Sent as JSON',
+            (string) (\App\Services\AcademicStructureService::subjectSyllabuses($subjectId)[$last] ?? ''));
+    }
+
+    /* =====================================================================
      * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {

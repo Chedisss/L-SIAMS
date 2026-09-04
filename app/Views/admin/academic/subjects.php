@@ -135,6 +135,21 @@ $__view->start('content');
                         </div>
                         <span class="field-help">A schedule is refused if the subject is not offered to the section's grade level.</span>
                     </div>
+
+                    <?php /* One subject across six grades is not the same subject six
+                            times: Mathematics in Grade 1 and Mathematics in Grade 6
+                            share a name and nothing else. The description above says
+                            what the subject IS; these say what it covers where, which
+                            is the only level at which that statement is true.
+
+                            A box appears only for a grade that is actually ticked —
+                            an empty textarea for every grade in the school would bury
+                            the two that matter. */ ?>
+                    <div class="form-group form-group--full" id="sub-syllabus-wrap" hidden>
+                        <label>Syllabus per grade level</label>
+                        <div id="sub-syllabus-fields" style="display:grid;gap:.5rem"></div>
+                        <span class="field-help">Optional. What this subject covers at each grade — competencies, a term breakdown, learning outcomes.</span>
+                    </div>
                 </div>
             </div>
             <div class="modal__footer">
@@ -174,6 +189,14 @@ function applySubjectFilters() {
         const id = data.subject_id;
         delete data.subject_id;
 
+        /* Gathered explicitly rather than left to LS.util.formData, which
+           understands name="x[]" but not name="x[3]" — those would arrive as a
+           literal "syllabus[3]" key and be dropped by validation. */
+        data.syllabus = {};
+        form.querySelectorAll('#sub-syllabus-fields textarea[data-grade]').forEach((box) => {
+            data.syllabus[box.dataset.grade] = box.value.trim();
+        });
+
         if (!data.grade_level_ids || data.grade_level_ids.length === 0) {
             LS.toast.warning('Select at least one grade level this subject is offered to.');
             LS.util.setBusy(button, false);
@@ -192,6 +215,54 @@ function applySubjectFilters() {
         } finally {
             LS.util.setBusy(button, false);
         }
+    });
+
+    /* ---- syllabus boxes, one per ticked grade ------------------------------- */
+
+    const syllabusWrap   = document.getElementById('sub-syllabus-wrap');
+    const syllabusFields = document.getElementById('sub-syllabus-fields');
+    const gradeBoxes     = () => form.querySelectorAll('[name="grade_level_ids[]"]');
+
+    /* Keyed by grade id so text survives a grade being unticked and re-ticked
+       in the same sitting — somebody correcting a mis-click should not lose a
+       paragraph they just wrote. */
+    let syllabusText = {};
+
+    function captureSyllabus() {
+        syllabusFields.querySelectorAll('textarea[data-grade]').forEach((box) => {
+            syllabusText[box.dataset.grade] = box.value;
+        });
+    }
+
+    function renderSyllabus() {
+        captureSyllabus();
+        syllabusFields.innerHTML = '';
+
+        let shown = 0;
+
+        gradeBoxes().forEach((box) => {
+            if (!box.checked) return;
+
+            shown++;
+            const id    = box.value;
+            const label = box.parentElement.querySelector('span').textContent;
+
+            const group = document.createElement('div');
+            group.innerHTML =
+                '<label class="text-sm" for="syl-' + id + '">' + LS.util.escape(label) + '</label>'
+                + '<textarea id="syl-' + id + '" name="syllabus[' + id + ']" data-grade="' + id + '" '
+                + 'rows="2" maxlength="4000" placeholder="What ' + LS.util.escape(label)
+                + ' covers in this subject"></textarea>';
+            syllabusFields.appendChild(group);
+
+            group.querySelector('textarea').value = syllabusText[id] || '';
+        });
+
+        syllabusWrap.hidden = shown === 0;
+    }
+
+    form.addEventListener('change', (event) => {
+        if (event.target.name === 'grade_level_ids[]') renderSyllabus();
     });
 
     document.addEventListener('click', async (event) => {
@@ -215,6 +286,9 @@ function applySubjectFilters() {
             form.querySelectorAll('[name="grade_level_ids[]"]').forEach((box) => {
                 box.checked = ids.includes(parseInt(box.value, 10));
             });
+
+            syllabusText = response.data.syllabus || {};
+            renderSyllabus();
         } catch (error) { /* leave unchecked */ }
 
         LS.modal.open('subject-modal');
@@ -225,6 +299,9 @@ function applySubjectFilters() {
             form.reset();
             document.getElementById('sub-id').value = '';
             document.getElementById('subject-modal-title').textContent = 'Add Subject';
+            syllabusText = {};
+            syllabusFields.innerHTML = '';
+            syllabusWrap.hidden = true;
         }, 200);
     });
 })();
