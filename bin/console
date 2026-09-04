@@ -42,6 +42,7 @@ use App\Services\DeviceService;
 use App\Services\IdempotencyService;
 use App\Services\NotificationService;
 use App\Services\RealtimeService;
+use App\Services\ScheduleService;
 use App\Services\SessionService;
 use App\Services\TlsCertificateService;
 
@@ -106,6 +107,7 @@ try {
         'migrate:status'      => commandMigrateStatus(),
         'migrate:fresh'       => commandMigrateFresh($flags),
         'seed'                => commandSeed($flags),
+        'schedule:grade3'     => commandScheduleGradeThree($flags),
         'install'             => commandInstall($flags),
         'worker'              => commandWorker($arguments),
         'backup'              => commandBackup(),
@@ -144,6 +146,7 @@ function commandHelp(): void
     out('    migrate:fresh --force   Drop all tables and re-migrate (destructive)');
     out('    migrate:rechecksum      Accept applied migration files whose bytes changed');
     out('    seed [--demo]           Seed reference data, optionally with demo records');
+    out('    schedule:grade3         Build the Grade 3 - Gold week (--room=101 --section=G3-S1)');
     out('    user:create-admin       Create an administrator account interactively');
     out('    user:purge <id>         Erase a user and their history (destructive, last resort)');
     out('    fingerprint:reset       Erase every enrolment and every sensor, to start over');
@@ -3324,4 +3327,279 @@ function commandFingerprintReset(array $flags): void
     out('  Watch each terminal\'s serial for "erased — 0 template(s) on this sensor now",', 'grey');
     out('  then enrol the teachers again from Admin -> Fingerprints.', 'grey');
     out('');
+}
+
+/**
+ * Build the Grade 3 - Gold timetable from the school's printed class schedule.
+ *
+ *   console.bat schedule:grade3 --room=101
+ *
+ * Written as a command rather than a migration because a timetable is not
+ * schema: it belongs to one section in one school year, the room is a decision
+ * only the school can make, and it should be re-runnable while they are still
+ * settling it. Everything goes through ScheduleService::create(), so the
+ * conflict rules, the window validation and the teacher-assignment sync all
+ * apply exactly as they would if each row were typed into the form.
+ *
+ * Idempotent: a period that already exists for this section, day and time is
+ * left alone, so running it twice adds nothing and running it after hand-edits
+ * does not undo them.
+ *
+ * What is deliberately NOT created: the 7:45 Before Class Activity, the two
+ * break times, lunch and home time. None has a teacher against it on the
+ * printed schedule, and a session opens on a teacher's fingerprint — a period
+ * nobody teaches cannot open one. The 12:45 slot is HGP on Monday, Wednesday
+ * and Friday, which IS taught and is created; on Tuesday and Thursday it is
+ * BCA, which is not.
+ */
+function commandScheduleGradeThree(array $flags): void
+{
+    $db   = Database::instance();
+    $room = '101';
+    $code = 'G3-S1';
+
+    foreach ($flags as $flag) {
+        if (str_starts_with($flag, '--room=')) {
+            $room = substr($flag, 7);
+        }
+        if (str_starts_with($flag, '--section=')) {
+            $code = substr($flag, 10);
+        }
+    }
+
+    heading('Grade 3 - Gold timetable');
+
+    $section = $db->selectOne(
+        'SELECT section_id, section_code, section_name, grade_level_id
+           FROM sections WHERE section_code = :c AND deleted_at IS NULL',
+        ['c' => $code]
+    );
+
+    if ($section === null) {
+        fail(sprintf('No section "%s". Create it first, or pass --section=<code>.', $code));
+    }
+
+    $classroom = $db->selectOne(
+        'SELECT classroom_id, room_number FROM classrooms WHERE room_number = :r AND deleted_at IS NULL',
+        ['r' => $room]
+    );
+
+    if ($classroom === null) {
+        fail(sprintf('No classroom "%s". Pass --room=<number>.', $room));
+    }
+
+    $adminId = (int) $db->scalar(
+        "SELECT u.user_id FROM users u JOIN roles r ON r.role_id = u.role_id
+          WHERE r.role_name = 'administrator' AND u.deleted_at IS NULL ORDER BY u.user_id LIMIT 1"
+    );
+
+    out(sprintf('  Section  %s (%s)', $section['section_code'], $section['section_name']), 'grey');
+    out(sprintf('  Room     %s', $classroom['room_number']), 'grey');
+    out('');
+
+    // ---------------------------------------------------------------- staff --
+    // Department follows the subject each one teaches. Ms. Crizel takes both
+    // Reading and Computer, which sit in different departments; she is placed
+    // in English, the heavier half of her load, and Computer becomes a
+    // cross-department assignment that ScheduleService records as an exception.
+    $staff = [
+        'Ericka'  => ['Venida',    'ESP'],
+        'Alyssa'  => ['Bautista',  'ENG'],
+        'Darwin'  => ['Manalo',    'MATH'],
+        'Crizel'  => ['Domingo',   'ENG'],
+        'Jezza'   => ['Ramos',     'FIL'],
+        'Liemer'  => ['Aguinaldo', 'SCI'],
+        'Khaycee' => ['Salvador',  'AP'],
+    ];
+
+    // Declared here because the secondary-department pass below reads it, and
+    // it is the same list the week is built from further down.
+    $mwf = ['Monday', 'Wednesday', 'Friday'];
+    $tth = ['Tuesday', 'Thursday'];
+    $all = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+    $periods = [
+        ['VAL',  'Ericka',  '08:00', '08:45', $all],
+        ['ENG',  'Alyssa',  '08:45', '09:30', $all],
+        ['MATH', 'Darwin',  '09:50', '10:35', $all],
+        ['READ', 'Crizel',  '10:35', '11:20', $mwf],
+        ['COMP', 'Crizel',  '10:35', '11:20', $tth],
+        ['HGP',  'Khaycee', '12:45', '13:00', $mwf],
+        ['FIL',  'Jezza',   '13:00', '13:45', $all],
+        ['SCI',  'Liemer',  '13:45', '14:30', $all],
+        ['SOC',  'Khaycee', '14:50', '15:35', $all],
+    ];
+
+    $teacherIds = [];
+    $created    = 0;
+
+    foreach ($staff as $first => [$last, $departmentCode]) {
+        $existing = $db->selectOne(
+            'SELECT teacher_id FROM teachers WHERE first_name = :f AND last_name = :l AND deleted_at IS NULL',
+            ['f' => $first, 'l' => $last]
+        );
+
+        if ($existing !== null) {
+            $teacherIds[$first] = (int) $existing['teacher_id'];
+        } else {
+            $departmentId = (int) $db->scalar(
+                'SELECT department_id FROM departments WHERE department_code = :c AND deleted_at IS NULL',
+                ['c' => $departmentCode]
+            );
+
+            if ($departmentId === 0) {
+                fail(sprintf('No department "%s". Run the migrations first.', $departmentCode));
+            }
+
+            $teacherIds[$first] = (int) $db->insert('teachers', [
+                'employee_number' => 'TAPS-' . strtoupper(substr($first, 0, 3)) . '-' . str_pad((string) (count($teacherIds) + 1), 3, '0', STR_PAD_LEFT),
+                'department_id'   => $departmentId,
+                'first_name'      => $first,
+                'last_name'       => $last,
+                // Required, and a placeholder rather than a guess: inventing
+                // a plausible address for a real member of staff is how a
+                // password reset ends up somewhere it should not.
+                'email'           => strtolower($first . '.' . $last) . '@taps.invalid',
+                'position'        => 'Teacher',
+                'status'          => 'active',
+                'hired_at'        => Clock::now()->format('Y-m-d'),
+                'created_at'      => Clock::nowString(),
+                'updated_at'      => Clock::nowString(),
+            ]);
+            $created++;
+        }
+
+        // Grade 3, or ScheduleService refuses: a teacher with no grade levels
+        // cannot be given a section, and the section's grade must be among them.
+        $db->execute(
+            'INSERT IGNORE INTO teacher_grade_levels (teacher_id, grade_level_id, assigned_by, created_at)
+             VALUES (:t, :g, :u, :n)',
+            ['t' => $teacherIds[$first], 'g' => (int) $section['grade_level_id'], 'u' => $adminId, 'n' => Clock::nowString()]
+        );
+    }
+
+    // A teacher who takes subjects from more than one department needs the
+    // extra ones recorded, or every schedule for them is refused with
+    // "Cross-department assignment blocked". Ms. Crizel is the case on this
+    // timetable: Reading is English, Computer is Computer.
+    //
+    // teacher_departments rather than teacher_department_exceptions. The
+    // exception route needs a global setting turned on, a reason and a date
+    // range, and is meant for a temporary dispensation; this is not temporary,
+    // it is simply what she teaches. A secondary department says that plainly
+    // and needs nothing switched on.
+    $secondary = 0;
+
+    foreach ($periods as [$subjectCode, $teacher]) {
+        $subjectDepartment = (int) $db->scalar(
+            'SELECT department_id FROM subjects WHERE subject_code = :c AND deleted_at IS NULL',
+            ['c' => $subjectCode]
+        );
+
+        $primary = (int) $db->scalar(
+            'SELECT department_id FROM teachers WHERE teacher_id = :t',
+            ['t' => $teacherIds[$teacher]]
+        );
+
+        if ($subjectDepartment === 0 || $subjectDepartment === $primary) {
+            continue;
+        }
+
+        $secondary += $db->execute(
+            'INSERT IGNORE INTO teacher_departments (teacher_id, department_id, is_primary, assigned_by, created_at)
+             VALUES (:t, :d, 0, :u, :n)',
+            ['t' => $teacherIds[$teacher], 'd' => $subjectDepartment, 'u' => $adminId, 'n' => Clock::nowString()]
+        );
+    }
+
+    out(sprintf('  %d teacher(s) created, %d already present.', $created, count($staff) - $created), 'grey');
+
+    if ($secondary > 0) {
+        out(sprintf('  %d secondary department(s) recorded for teachers who cross one.', $secondary), 'grey');
+    }
+
+    out('');
+
+    // ------------------------------------------------------------- the week --
+    $added   = 0;
+    $skipped = 0;
+    $failed  = [];
+
+    foreach ($periods as [$subjectCode, $teacher, $start, $end, $days]) {
+        $subjectId = (int) $db->scalar(
+            'SELECT subject_id FROM subjects WHERE subject_code = :c AND deleted_at IS NULL',
+            ['c' => $subjectCode]
+        );
+
+        if ($subjectId === 0) {
+            $failed[] = sprintf('%s: no such subject', $subjectCode);
+            continue;
+        }
+
+        // A fifteen-minute period cannot carry the windows a forty-five minute
+        // one does: chk_sched_windows wants the lesson to outlast its tap-in
+        // window plus its tap-out window, so HGP gets its own tighter set.
+        $short  = (strtotime($end) - strtotime($start)) / 60 <= 20;
+        $window = $short
+            ? ['in_open' => 5, 'in_close' => 8,  'late' => 3,  'out_open' => 5,  'out_close' => 10, 'dwell' => 5]
+            : ['in_open' => 10, 'in_close' => 20, 'late' => 10, 'out_open' => 15, 'out_close' => 15, 'dwell' => 20];
+
+        foreach ($days as $day) {
+            $duplicate = (int) $db->scalar(
+                "SELECT COUNT(*) FROM schedules
+                  WHERE section_id = :s AND day_of_week = :d AND start_time = :t
+                    AND status = 'active' AND deleted_at IS NULL",
+                ['s' => (int) $section['section_id'], 'd' => $day, 't' => $start . ':00']
+            );
+
+            if ($duplicate > 0) {
+                $skipped++;
+                continue;
+            }
+
+            try {
+                ScheduleService::create([
+                    'teacher_id'   => $teacherIds[$teacher],
+                    'subject_id'   => $subjectId,
+                    'section_id'   => (int) $section['section_id'],
+                    'classroom_id' => (int) $classroom['classroom_id'],
+                    'day_of_week'  => $day,
+                    'start_time'   => $start,
+                    'end_time'     => $end,
+                    'time_in_window_open'    => $window['in_open'],
+                    'time_in_window_close'   => $window['in_close'],
+                    'late_threshold_minutes' => $window['late'],
+                    'time_out_window_open'   => $window['out_open'],
+                    'time_out_window_close'  => $window['out_close'],
+                    'minimum_dwell_minutes'  => $window['dwell'],
+                ], $adminId, true);
+
+                $added++;
+            } catch (Throwable $e) {
+                $failed[] = sprintf('%s %s %s: %s', $day, $start, $subjectCode, $e->getMessage());
+            }
+        }
+    }
+
+    out(sprintf('  %d period(s) created, %d already there.', $added, $skipped), $added > 0 ? 'green' : 'grey');
+
+    if ($failed !== []) {
+        out('');
+        out('  These were refused:', 'yellow');
+
+        foreach ($failed as $line) {
+            out('    ' . $line, 'grey');
+        }
+    }
+
+    out('');
+    out('  Not created, deliberately: the 7:45 Before Class Activity, both break', 'grey');
+    out('  times, lunch and home time. None has a teacher on the printed schedule,', 'grey');
+    out('  and a session opens on a fingerprint - a period nobody teaches cannot', 'grey');
+    out('  open one. Tuesday and Thursday 12:45 is BCA for the same reason.', 'grey');
+    out('');
+    out('  The seven teachers have no login accounts. Create those from', 'grey');
+    out('  Admin -> Teachers if they need to open sessions from the web.', 'grey');
+
+    $failed === [] ? ok('Timetable built.') : fail(sprintf('%d period(s) refused - see above.', count($failed)));
 }
