@@ -181,6 +181,7 @@ final class AcademicController extends Controller
             'section'   => $section,
             'roster'    => AcademicStructureService::sectionRoster($sectionId),
             'schedules' => ScheduleService::forSection($sectionId),
+            'week'      => ScheduleService::weekGrid($sectionId),
         ];
 
         if ($request->wantsJson()) {

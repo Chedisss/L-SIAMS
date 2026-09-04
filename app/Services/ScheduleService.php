@@ -681,6 +681,108 @@ final class ScheduleService
     }
 
     /** @return list<array<string,mixed>> */
+    /**
+     * The section's week as a grid, the way a school prints it.
+     *
+     * forSection() returns one row per period, ordered by day — which is the
+     * right shape for a list and the wrong one for a timetable. Nobody reads a
+     * timetable by scanning forty rows for the ones that say Wednesday; they
+     * look at a column. This pivots it: time down the side, days across, one
+     * cell per lesson.
+     *
+     * The gaps are the interesting part. Break, lunch and home time are not in
+     * the database — they have no teacher, so no session can open in them and
+     * they are not schedules — but they ARE on the printed sheet, and a
+     * timetable that jumps from 09:30 to 09:50 with nothing in between looks
+     * like a mistake. So the gaps between consecutive periods are rendered as
+     * bands, named by what a gap of that length in that part of the day
+     * actually is. That is inference, but it is inference from the school's
+     * own times rather than invented data, and it is never stored.
+     *
+     * @return array{days:list<string>,rows:list<array<string,mixed>>}
+     */
+    public static function weekGrid(int $sectionId): array
+    {
+        $schedules = self::forSection($sectionId);
+
+        if ($schedules === []) {
+            return ['days' => [], 'rows' => []];
+        }
+
+        $order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        $days  = [];
+        $slots = [];
+
+        foreach ($schedules as $schedule) {
+            $day = (string) $schedule['day_of_week'];
+
+            if (!in_array($day, $days, true)) {
+                $days[] = $day;
+            }
+
+            $key = substr((string) $schedule['start_time'], 0, 5) . '|' . substr((string) $schedule['end_time'], 0, 5);
+
+            $slots[$key][$day] = [
+                'subject_code' => (string) $schedule['subject_code'],
+                'subject_name' => (string) $schedule['subject_name'],
+                'teacher_name' => (string) $schedule['teacher_name'],
+                'room_number'  => (string) $schedule['room_number'],
+            ];
+        }
+
+        usort($days, static fn (string $a, string $b): int => array_search($a, $order, true) <=> array_search($b, $order, true));
+
+        uksort($slots, static function (string $a, string $b): int {
+            return strcmp(explode('|', $a)[0], explode('|', $b)[0])
+                ?: strcmp(explode('|', $a)[1], explode('|', $b)[1]);
+        });
+
+        $rows     = [];
+        $previous = null;
+
+        foreach ($slots as $key => $cells) {
+            [$start, $end] = explode('|', $key);
+
+            // A gap since the last period ended. Named rather than left blank:
+            // a timetable with a hole in it reads as an error.
+            if ($previous !== null && $previous < $start) {
+                $minutes = (int) round((strtotime($start) - strtotime($previous)) / 60);
+
+                if ($minutes > 0) {
+                    $rows[] = [
+                        'type'     => 'band',
+                        'start'    => $previous,
+                        'end'      => $start,
+                        'duration' => $minutes,
+                        // The long one over the middle of the day is lunch;
+                        // the short ones between lessons are breaks. Anything
+                        // else is left as the neutral word, because guessing
+                        // harder than the times support helps nobody.
+                        'label'    => $minutes >= 45 && $previous >= '11:00' && $previous <= '13:30'
+                            ? 'Lunch break'
+                            : ($minutes <= 30 ? 'Break time' : 'No class scheduled'),
+                    ];
+                }
+            }
+
+            $rows[] = [
+                'type'     => 'period',
+                'start'    => $start,
+                'end'      => $end,
+                'duration' => (int) round((strtotime($end) - strtotime($start)) / 60),
+                'cells'    => $cells,
+            ];
+
+            $previous = $end;
+        }
+
+        if ($previous !== null) {
+            $rows[] = ['type' => 'band', 'start' => $previous, 'end' => null, 'duration' => null, 'label' => 'Home time'];
+        }
+
+        return ['days' => $days, 'rows' => $rows];
+    }
+
     public static function forSection(int $sectionId): array
     {
         return Database::instance()->select(
