@@ -145,6 +145,8 @@ $router->group('/admin', $adminChain, static function ($router): void {
 
     $router->get('/classrooms', AcademicController::class . '@classrooms', [], 'admin.classrooms');
     $router->post('/classrooms', AcademicController::class . '@storeClassroom');
+    $router->post('/classrooms/{id:\d+}/archive', AcademicController::class . '@archiveClassroom');
+    $router->post('/classrooms/{id:\d+}/restore', AcademicController::class . '@restoreClassroom');
 
     // --- Schedules ---
     $router->get('/schedules', ScheduleController::class . '@index', [], 'admin.schedules');

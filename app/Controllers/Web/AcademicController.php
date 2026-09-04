@@ -380,15 +380,32 @@ final class AcademicController extends Controller
 
     // ------------------------------------------------------- classrooms --
 
+    public function archiveClassroom(Request $request): Response
+    {
+        AcademicStructureService::archiveClassroom($request->routeInt('id'));
+
+        return $this->json([], 'Classroom archived.');
+    }
+
+    public function restoreClassroom(Request $request): Response
+    {
+        AcademicStructureService::restoreClassroom($request->routeInt('id'));
+
+        return $this->json([], 'Classroom restored. It comes back inactive.');
+    }
+
     public function classrooms(Request $request): Response
     {
-        $classrooms = AcademicStructureService::classrooms();
+        $archived   = $request->string('view', '') === 'archived';
+        $classrooms = AcademicStructureService::classrooms(false, $archived);
 
         if ($request->wantsJson()) {
             return $this->json(['rows' => $classrooms]);
         }
 
         return $this->view('admin.academic.classrooms', [
+            'archived'      => $archived,
+            'archivedCount' => count(AcademicStructureService::classrooms(false, true)),
             'pageTitle'  => 'Classrooms',
             'classrooms' => $classrooms,
         ]);
