@@ -102,6 +102,7 @@ try {
     match ($command) {
         'key:generate'        => commandKeyGenerate($flags),
         'migrate'             => commandMigrate(),
+        'migrate:rechecksum'  => commandMigrateRechecksum($flags),
         'migrate:status'      => commandMigrateStatus(),
         'migrate:fresh'       => commandMigrateFresh($flags),
         'seed'                => commandSeed($flags),
@@ -141,6 +142,7 @@ function commandHelp(): void
     out('    migrate                 Apply pending migrations');
     out('    migrate:status          Show migration state');
     out('    migrate:fresh --force   Drop all tables and re-migrate (destructive)');
+    out('    migrate:rechecksum      Accept applied migration files whose bytes changed');
     out('    seed [--demo]           Seed reference data, optionally with demo records');
     out('    user:create-admin       Create an administrator account interactively');
     out('    user:purge <id>         Erase a user and their history (destructive, last resort)');
@@ -348,15 +350,24 @@ function commandMigrate(): void
         $applied[(string) $row['migration']] = (string) $row['checksum'];
     }
 
-    $batch   = (int) $db->scalar('SELECT COALESCE(MAX(batch), 0) + 1 FROM schema_migrations');
-    $pending = 0;
+    $batch    = (int) $db->scalar('SELECT COALESCE(MAX(batch), 0) + 1 FROM schema_migrations');
+    $pending  = 0;
+    $drifted  = [];
 
     foreach (discoverMigrations() as $migration) {
         if (isset($applied[$migration['name']])) {
-            // A changed checksum means someone edited an applied migration —
-            // dangerous, because the database no longer matches the file.
+            // A changed checksum usually means the file's newlines changed on
+            // checkout, not that anybody edited it — the checksum is over the
+            // bytes. .gitattributes pins *.sql to LF so this stops happening,
+            // but a database that recorded a checksum before that pin keeps
+            // reporting the difference for ever.
+            //
+            // So the wording says what it is and what to do. "Has changed
+            // since it was applied", alone and repeated across a screen, reads
+            // as an alarm nobody can act on — and teaches people to scroll
+            // past the one that matters.
             if ($applied[$migration['name']] !== $migration['checksum']) {
-                out('  ⚠ ' . $migration['name'] . ' has changed since it was applied.', 'yellow');
+                $drifted[] = $migration['name'];
             }
             continue;
         }
@@ -383,6 +394,83 @@ function commandMigrate(): void
 
     out('');
     $pending === 0 ? ok('Database is already up to date.') : ok($pending . ' migration(s) applied.');
+
+    // Reported once, at the end, after the thing people came here to read.
+    if ($drifted !== []) {
+        out('');
+        out(sprintf(
+            '  Note: %d already-applied migration file(s) no longer match the checksum recorded',
+            count($drifted)
+        ), 'grey');
+        out('  when they ran. Almost always this is newline translation on checkout rather than', 'grey');
+        out('  an edit, and it is harmless — those changes are already in the database. If you', 'grey');
+        out('  did edit one, write a new migration instead; editing an applied one does nothing.', 'grey');
+        out('  Clear the note with: console.bat migrate:rechecksum', 'grey');
+    }
+}
+
+/**
+ * Re-record the checksums of migrations that have already run.
+ *
+ * Needed because the checksum is over the file's bytes, so a checkout that
+ * changes newlines changes it — and every already-applied migration then
+ * reports a difference for ever, on every run, burying any real one.
+ *
+ * This deliberately cannot run anything or change the schema. It only says
+ * "the file as it stands now is the one that produced this database", which is
+ * a statement only somebody who has looked can make — so it prints what it is
+ * about to accept and asks.
+ */
+function commandMigrateRechecksum(array $flags): void
+{
+    $db      = Database::instance();
+    $applied = [];
+
+    foreach ($db->select('SELECT migration, checksum FROM schema_migrations') as $row) {
+        $applied[(string) $row['migration']] = (string) $row['checksum'];
+    }
+
+    $drifted = [];
+
+    foreach (discoverMigrations() as $migration) {
+        if (isset($applied[$migration['name']]) && $applied[$migration['name']] !== $migration['checksum']) {
+            $drifted[] = $migration;
+        }
+    }
+
+    heading('Re-record migration checksums');
+
+    if ($drifted === []) {
+        ok('Every applied migration already matches its file. Nothing to do.');
+
+        return;
+    }
+
+    out('  These files differ from the checksum recorded when they ran:', 'yellow');
+    out('');
+
+    foreach ($drifted as $migration) {
+        out('    ' . $migration['name'], 'grey');
+    }
+
+    out('');
+    out('  Re-recording accepts each file as it stands now. It runs nothing and', 'grey');
+    out('  changes no table — if one of these was genuinely edited, the edit is', 'grey');
+    out('  still not in the database and still needs its own migration.', 'grey');
+    out('');
+
+    if (!in_array('--force', $flags, true)) {
+        fail('Re-run with --force to accept them.');
+    }
+
+    foreach ($drifted as $migration) {
+        $db->execute(
+            'UPDATE schema_migrations SET checksum = :checksum WHERE migration = :migration',
+            ['checksum' => $migration['checksum'], 'migration' => $migration['name']]
+        );
+    }
+
+    ok(sprintf('%d checksum(s) re-recorded.', count($drifted)));
 }
 
 /**
