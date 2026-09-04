@@ -18,6 +18,7 @@ declare(strict_types=1);
  *   php bin/console db:import <file>     Import a .sql file or phpMyAdmin export
  *   php bin/console time:shift "+2 hours" Move the clock for schedule testing
  *   php bin/console user:create-admin    Create an administrator interactively
+ *   php bin/console user:create-teachers Issue logins to teachers who have none
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -120,6 +121,7 @@ try {
         'time:shift'          => commandTimeShift($arguments, $flags),
         'schema:dump'         => commandSchemaDump(),
         'user:create-admin'   => commandCreateAdmin(),
+        'user:create-teachers' => commandCreateTeacherAccounts($flags),
         'user:purge'          => commandUserPurge($arguments, $flags),
         'session:why'         => commandSessionWhy($arguments),
         'fingerprint:reset'   => commandFingerprintReset($flags),
@@ -148,6 +150,7 @@ function commandHelp(): void
     out('    seed [--demo]           Seed reference data, optionally with demo records');
     out('    schedule:grade3         Build the Grade 3 - Gold week (--room=101 --section=G3-S1)');
     out('    user:create-admin       Create an administrator account interactively');
+    out('    user:create-teachers    Give every teacher without a login one (--yes to skip asking)');
     out('    user:purge <id>         Erase a user and their history (destructive, last resort)');
     out('    fingerprint:reset       Erase every enrolment and every sensor, to start over');
     out('');
@@ -1801,6 +1804,205 @@ function commandCreateAdmin(): void
     }
 
     out('');
+}
+
+/**
+ * Give every teacher who has no login one, with their first name as username.
+ *
+ *   console.bat user:create-teachers
+ *   console.bat user:create-teachers --yes
+ *
+ * A teacher record and a user account are separate rows, and a teacher can
+ * exist without one: schedule:grade3 creates the staff a timetable names, and
+ * so does any bulk load. Those teachers appear correctly on the timetable, own
+ * their sections and can have their fingerprints enrolled — and cannot sign
+ * in, because nothing ever issued them a password. Before this command the
+ * only route was to delete the teacher and re-create them through the
+ * registration form, which would have taken their schedules with them.
+ *
+ * The password is generated, printed once, and never recoverable afterwards —
+ * the same rule the registration form follows. Each teacher is committed on
+ * their own, so a name that collides does not cost the others their accounts.
+ *
+ * @param list<string> $flags
+ */
+function commandCreateTeacherAccounts(array $flags): void
+{
+    $db = Database::instance();
+
+    heading('Teacher login accounts');
+
+    $teachers = $db->select(
+        "SELECT teacher_id, first_name, last_name, email
+           FROM teachers
+          WHERE user_id IS NULL AND status = 'active' AND deleted_at IS NULL
+          ORDER BY last_name, first_name"
+    );
+
+    if ($teachers === []) {
+        ok('Every active teacher already has an account. Nothing to do.');
+        out('');
+
+        return;
+    }
+
+    // Chosen before anything is written, so the confirmation below shows the
+    // usernames that will actually be created rather than the ones asked for.
+    $taken   = [];
+    $planned = [];
+
+    foreach ($teachers as $teacher) {
+        $username = teacherUsername(
+            (string) $teacher['first_name'],
+            (string) $teacher['last_name'],
+            $taken
+        );
+
+        $taken[]   = $username;
+        $planned[] = $teacher + ['username' => $username];
+    }
+
+    out(sprintf('  %d teacher(s) have no account:', count($planned)), 'grey');
+    out('');
+
+    foreach ($planned as $row) {
+        out(sprintf(
+            '    %-28s -> %s',
+            $row['first_name'] . ' ' . $row['last_name'],
+            $row['username']
+        ));
+    }
+
+    out('');
+
+    if (!in_array('--yes', $flags, true)) {
+        out('  Each gets a generated password, shown once and never again.', 'yellow');
+
+        if (strtolower(prompt('  Create these accounts? (yes/no)')) !== 'yes') {
+            out('');
+            out('  Nothing was created.', 'grey');
+            out('');
+
+            return;
+        }
+    }
+
+    $adminId = (int) $db->scalar(
+        "SELECT u.user_id FROM users u JOIN roles r ON r.role_id = u.role_id
+          WHERE r.role_slug = 'administrator' AND u.deleted_at IS NULL
+          ORDER BY u.user_id LIMIT 1"
+    );
+
+    $issued = [];
+    $failed = [];
+
+    foreach ($planned as $row) {
+        try {
+            $issued[] = App\Services\UserRegistrationService::issueAccountToTeacher(
+                (int) $row['teacher_id'],
+                (string) $row['username'],
+                $adminId
+            ) + ['name' => $row['first_name'] . ' ' . $row['last_name']];
+        } catch (Throwable $e) {
+            $failed[] = $row['first_name'] . ' ' . $row['last_name'] . ': ' . $e->getMessage();
+        }
+    }
+
+    out('');
+    ok(sprintf('%d account(s) created.', count($issued)));
+    out('');
+
+    if ($issued !== []) {
+        $width = max(array_map(static fn (array $r): int => strlen((string) $r['name']), $issued));
+
+        out('  ' . str_pad('Teacher', $width) . '  ' . str_pad('Username', 16) . '  Password', 'bold');
+        out('  ' . str_repeat('─', $width + 18 + 20), 'grey');
+
+        foreach ($issued as $row) {
+            out(sprintf(
+                '  %s  %s  %s',
+                str_pad((string) $row['name'], $width),
+                str_pad((string) $row['username'], 16),
+                (string) $row['password']
+            ), 'cyan');
+        }
+
+        out('');
+        out('  This is the only time these passwords are shown. Write them down or', 'yellow');
+        out('  print this screen now — there is no way to read them back, only to', 'yellow');
+        out('  reset them. Each teacher must change theirs at first sign-in.', 'yellow');
+    }
+
+    foreach ($failed as $message) {
+        out('  ✗ ' . $message, 'red');
+    }
+
+    out('');
+}
+
+/**
+ * The username for a teacher: their first name, lowercased.
+ *
+ * Two things force the fallbacks. The users table requires 4–32 characters of
+ * [a-z0-9._-], so a two-letter first name has to borrow from the surname; and
+ * usernames are unique across archived accounts as well as live ones, so a
+ * second Ericka cannot simply be "ericka". Uniqueness is checked against the
+ * database AND against the names already chosen in this run, because none of
+ * those exist yet.
+ *
+ * @param list<string> $reserved
+ */
+function teacherUsername(string $first, string $last, array $reserved): string
+{
+    $clean = static fn (string $value): string => (string) preg_replace(
+        '/[^a-z0-9]/',
+        '',
+        mb_strtolower(trim($value))
+    );
+
+    $base = $clean($first);
+    $tail = $clean($last);
+
+    if ($base === '') {
+        $base = $tail !== '' ? $tail : 'teacher';
+    }
+
+    // Too short for the column's rule: take enough of the surname to reach the
+    // minimum rather than padding with something meaningless.
+    if (strlen($base) < 4) {
+        $base = substr($base . $tail, 0, 4) ?: 'user';
+    }
+
+    $base = substr($base, 0, 30);
+
+    $free = static function (string $candidate) use ($reserved): bool {
+        if (in_array($candidate, $reserved, true)) {
+            return false;
+        }
+
+        return Database::instance()->scalar(
+            'SELECT 1 FROM users WHERE username = :u LIMIT 1',
+            ['u' => $candidate]
+        ) === null;
+    };
+
+    if ($free($base)) {
+        return $base;
+    }
+
+    // A surname initial reads better than a number, and is what a person
+    // would have picked: ericka, then erickav.
+    if ($tail !== '' && $free($base . $tail[0])) {
+        return $base . $tail[0];
+    }
+
+    for ($n = 2; $n < 100; $n++) {
+        if ($free($base . $n)) {
+            return $base . $n;
+        }
+    }
+
+    fail('Could not find a free username for ' . $first . ' ' . $last . '.');
 }
 
 /**
@@ -3597,9 +3799,28 @@ function commandScheduleGradeThree(array $flags): void
     out('  times, lunch and home time. None has a teacher on the printed schedule,', 'grey');
     out('  and a session opens on a fingerprint - a period nobody teaches cannot', 'grey');
     out('  open one. Tuesday and Thursday 12:45 is BCA for the same reason.', 'grey');
-    out('');
-    out('  The seven teachers have no login accounts. Create those from', 'grey');
-    out('  Admin -> Teachers if they need to open sessions from the web.', 'grey');
+    // Admin -> Teachers is what this used to say, and it was wrong: that form
+    // edits a staff record, it does not issue a password to one that already
+    // exists. A teacher who is on the timetable and cannot sign in is a fault
+    // nobody reports as a fault, so the fix is named here rather than left to
+    // be found — and only while it is still outstanding, so a second run of
+    // this command does not send anybody off to fix something already done.
+    $withoutLogin = (int) $db->scalar(sprintf(
+        'SELECT COUNT(*) FROM teachers WHERE user_id IS NULL AND deleted_at IS NULL AND teacher_id IN (%s)',
+        implode(',', array_map('intval', $teacherIds))
+    ));
+
+    if ($withoutLogin > 0) {
+        out('');
+        out($withoutLogin === 1
+            ? '  One of these teachers has a staff record but no password. Run:'
+            : sprintf('  %d of these teachers have staff records but no passwords. Run:', $withoutLogin), 'yellow');
+        out('');
+        out('      console.bat user:create-teachers', 'cyan');
+        out('');
+        out('  It gives each of them their first name as a username and prints a', 'grey');
+        out('  password once, which they change at their first sign-in.', 'grey');
+    }
 
     $failed === [] ? ok('Timetable built.') : fail(sprintf('%d period(s) refused - see above.', count($failed)));
 }

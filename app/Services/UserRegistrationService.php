@@ -199,6 +199,125 @@ final class UserRegistrationService
         });
     }
 
+    /**
+     * Issue a login account to a teacher who is already in the database.
+     *
+     * register() above cannot do this: it creates the teacher row itself, so
+     * calling it for somebody who already exists would either duplicate them
+     * or fail on the employee-number key. Teachers arrive without an account
+     * whenever the staff record came from somewhere other than the
+     * registration form — a timetable import, an earlier bulk load — and until
+     * now the only route to a password for them was to delete and re-create
+     * the teacher, which would have taken their schedules with them.
+     *
+     * The account is active. The inactive-until-enrolled rule in register()
+     * governs the registration form, where the fingerprint step is on the
+     * screen the administrator is looking at and skipping it is a choice; it
+     * is not a claim that a teacher may not read their own attendance until a
+     * sensor has seen them. What the fingerprint actually gates is opening a
+     * session at a terminal, and FingerprintService enforces that on its own.
+     *
+     * @return array{user_id:int,username:string,password:string}
+     */
+    public static function issueAccountToTeacher(int $teacherId, string $username, int $createdBy): array
+    {
+        $db      = Database::instance();
+        $teacher = $db->selectOne(
+            'SELECT teacher_id, user_id, first_name, middle_name, last_name, suffix, email
+               FROM teachers WHERE teacher_id = :id AND deleted_at IS NULL',
+            ['id' => $teacherId]
+        );
+
+        if ($teacher === null) {
+            throw new ValidationException(['teacher_id' => ['Teacher not found.']]);
+        }
+
+        if ($teacher['user_id'] !== null) {
+            throw new ValidationException(['teacher_id' => ['This teacher already has an account.']]);
+        }
+
+        $role = $db->selectOne("SELECT role_id FROM roles WHERE role_slug = 'teacher'");
+
+        if ($role === null) {
+            throw new ValidationException(['role' => ['The teacher role is not configured. Run the seeder.']]);
+        }
+
+        $username = self::normaliseUsername($username);
+        $email    = mb_strtolower(trim((string) $teacher['email']));
+
+        self::assertUsernameAvailable($username);
+        self::assertEmailAvailable($email);
+
+        $fullName = trim(implode(' ', array_filter([
+            (string) $teacher['first_name'],
+            (string) ($teacher['middle_name'] ?? ''),
+            (string) $teacher['last_name'],
+            (string) ($teacher['suffix'] ?? ''),
+        ], static fn (string $part): bool => trim($part) !== '')));
+
+        $password = PasswordPolicyService::generate();
+
+        return $db->transaction(static function (Database $db) use (
+            $teacher, $role, $username, $email, $fullName, $password, $createdBy
+        ): array {
+            $hash = Hash::make($password);
+
+            $userId = (int) $db->insert('users', [
+                'role_id'              => (int) $role['role_id'],
+                'username'             => $username,
+                'email'                => $email,
+                'password_hash'        => $hash,
+                'full_name'            => $fullName !== '' ? $fullName : $username,
+                'status'               => 'active',
+                // Always: this password has been printed to a terminal, and
+                // whatever it was printed into is not a place a live credential
+                // may stay.
+                'must_change_password' => 1,
+                'password_changed_at'  => Clock::nowString(),
+                'created_by'           => $createdBy > 0 ? $createdBy : null,
+                'created_at'           => Clock::nowString(),
+                'updated_at'           => Clock::nowString(),
+            ]);
+
+            $db->insert('password_history', [
+                'user_id'       => $userId,
+                'password_hash' => $hash,
+                'created_at'    => Clock::nowString(),
+            ]);
+
+            $db->update('teachers', [
+                'user_id'    => $userId,
+                'updated_at' => Clock::nowString(),
+            ], ['teacher_id' => (int) $teacher['teacher_id']]);
+
+            AuditService::log(
+                AuditService::USER_REGISTERED,
+                'user_management',
+                'user',
+                $userId,
+                null,
+                // Everything but the password, as Part 19.2 requires.
+                [
+                    'username'   => $username,
+                    'email'      => $email,
+                    'role'       => 'teacher',
+                    'full_name'  => $fullName,
+                    'status'     => 'active',
+                    'teacher_id' => (int) $teacher['teacher_id'],
+                    'force_password_change' => true,
+                ],
+                sprintf('Teacher account "%s" issued to an existing staff record.', $username)
+            );
+
+            return [
+                'user_id'  => $userId,
+                'username' => $username,
+                // Returned once for the credential slip, then discarded.
+                'password' => $password,
+            ];
+        });
+    }
+
     /** @param array<string,mixed> $data */
     public static function updateUser(int $userId, array $data, int $actorId): void
     {
