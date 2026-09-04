@@ -37,6 +37,7 @@ use App\Core\Hash;
 use App\Services\ApiKeyService;
 use App\Services\AttendanceSessionService;
 use App\Services\BackupService;
+use App\Services\SettingsService;
 use App\Services\DeviceService;
 use App\Services\IdempotencyService;
 use App\Services\NotificationService;
@@ -602,6 +603,52 @@ function commandWorker(array $arguments): void
             $graced = ApiKeyService::expireGracePeriods();
             if ($graced > 0) {
                 out(sprintf('[%s] auto-revoked %d rotated key(s)', date('H:i:s'), $graced), 'yellow');
+            }
+
+            // The scheduled backup.
+            //
+            // backup.schedule_enabled, backup.schedule_time and
+            // backup.retain_count were written by the seeder and read by
+            // nothing at all — the Settings panel offered "Automatic daily
+            // backup", a time and a retention count, and no code anywhere
+            // acted on any of it. A backup setting that silently does nothing
+            // is worse than not offering one, because somebody stops taking
+            // manual backups.
+            //
+            // Checked every tick, acted on once a day: the guard is whether a
+            // scheduled backup already exists for today, which survives the
+            // worker being restarted, the machine being off at 01:00, and two
+            // workers running at once.
+            if (SettingsService::bool('backup.schedule_enabled', false)) {
+                $due = substr((string) SettingsService::get('backup.schedule_time', '01:00'), 0, 5);
+
+                $alreadyToday = (int) Database::instance()->scalar(
+                    "SELECT COUNT(*) FROM backups
+                      WHERE trigger_type = 'scheduled' AND DATE(created_at) = CURDATE()"
+                );
+
+                if ($alreadyToday === 0 && date('H:i') >= $due) {
+                    try {
+                        $backup = BackupService::create('scheduled');
+                        out(sprintf('[%s] scheduled backup written: %s (%s)',
+                            date('H:i:s'), $backup['filename'] ?? '?',
+                            BackupService::humanSize((int) ($backup['size'] ?? 0))), 'green');
+
+                        $keep    = max(1, (int) SettingsService::get('backup.retain_count', 30));
+                        $pruned  = BackupService::pruneOld($keep);
+
+                        if ($pruned > 0) {
+                            out(sprintf('[%s] pruned %d backup(s) beyond the %d most recent',
+                                date('H:i:s'), $pruned, $keep), 'grey');
+                        }
+                    } catch (Throwable $e) {
+                        // Never fatal to the worker: the sessions it closes
+                        // matter more than tonight's backup, and tomorrow's
+                        // tick will try again.
+                        out(sprintf('[%s] scheduled backup FAILED: %s', date('H:i:s'), $e->getMessage()), 'red');
+                        App\Core\Logger::exception($e);
+                    }
+                }
             }
 
             // Retention sweeps run hourly rather than every tick.

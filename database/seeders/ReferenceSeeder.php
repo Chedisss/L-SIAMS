@@ -222,7 +222,7 @@ return static function (Database $db): void {
         ['academic',   'academic.allow_cross_department_exceptions', '0', 'bool', 'Allow cross-department exceptions', 'When off, a teacher can only ever be assigned subjects from their own department. Leave off for hard enforcement.', 1, null, null],
 
         ['backup',     'backup.schedule_enabled', '1',    'bool',   'Automatic daily backup', null, 0, null, null],
-        ['backup',     'backup.schedule_time',    '01:00', 'string', 'Daily backup time', 'Run the worker with cron for this to take effect.', 0, null, null],
+        ['backup',     'backup.schedule_time',    '01:00', 'string', 'Daily backup time', 'Needs the background worker running - run install-worker.bat once, or keep worker.bat open.', 0, null, null],
         ['backup',     'backup.retain_count',     '30',   'int',    'Backups to retain', null, 0, '1', '365'],
 
         ['appearance', 'appearance.default_theme', 'light', 'string', 'Default theme', 'Users can override this individually.', 0, null, null],
