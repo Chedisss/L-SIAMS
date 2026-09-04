@@ -9,6 +9,18 @@
 # Stored as LF in the repository, checked out as CRLF everywhere.
 *.bat text eol=crlf
 
+# Migrations are checksummed byte for byte, so their newlines must not change
+# between machines.
+#
+# bin/console records sha256(file) when a migration is applied and compares it
+# on every later run. Left to git's own detection, a Windows checkout rewrites
+# LF to CRLF, every already-applied migration changes checksum at once, and
+# `update.bat` prints a screen of "has changed since it was applied" warnings
+# that mean nothing. The cost is not the noise: it is that a real warning —
+# somebody genuinely editing an applied migration — becomes invisible among
+# them.
+*.sql text eol=lf
+
 # The rest is left to git's own detection, except where a byte-exact file
 # would be corrupted by newline translation.
 *.png binary
