@@ -330,7 +330,6 @@ final class AcademicController extends Controller
             'description'     => 'nullable|string|max:500|no_html',
             'department_id'   => 'required|int|exists:departments,department_id',
             'grade_level_ids' => 'required|array|min:1',
-            'syllabus'        => 'nullable|array',
             'status'          => 'nullable|in:active,inactive',
         ], [
             'subject_code'    => 'Subject code',
@@ -357,7 +356,6 @@ final class AcademicController extends Controller
             'description'     => 'nullable|string|max:500|no_html',
             'department_id'   => 'required|int|exists:departments,department_id',
             'grade_level_ids' => 'nullable|array',
-            'syllabus'        => 'nullable|array',
             'status'          => 'nullable|in:active,inactive',
         ], [
             'subject_code' => 'Subject code',
@@ -374,7 +372,6 @@ final class AcademicController extends Controller
 
         return $this->json([
             'grade_level_ids' => AcademicStructureService::subjectGradeLevelIds($id),
-            'syllabus'        => AcademicStructureService::subjectSyllabuses($id),
         ]);
     }
 

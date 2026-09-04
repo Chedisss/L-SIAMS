@@ -267,7 +267,7 @@ if (!function_exists('status_badge')) {
             'present', 'active', 'online', 'verified', 'accepted', 'success', 'completed', 'timed_out' => 'badge-success',
             'late', 'warning', 'pending', 'left early', 'left_early', 'incomplete', 'no_time_out'      => 'badge-warning',
             'absent', 'inactive', 'offline', 'failed', 'rejected', 'blocked', 'revoked', 'disabled'    => 'badge-danger',
-            'excused', 'official business', 'official_business', 'archived', 'suspended'               => 'badge-info',
+            'excused', 'official business', 'official_business', 'archived', 'suspended', 'pruned'     => 'badge-info',
             default                                                                                    => 'badge-neutral',
         };
     }
@@ -343,5 +343,54 @@ if (!function_exists('array_get')) {
         }
 
         return $cursor;
+    }
+}
+
+if (!function_exists('grade_span')) {
+    /**
+     * "G1, G2, G3, G4, G5, G6" becomes "G1-G6".
+     *
+     * A subject offered to every elementary grade printed six labels in a
+     * table cell, which pushed the Subjects table past the width of the screen
+     * and cut the last column off. Six labels also say less than one range
+     * does: the reader wants to know the span, and only cares about the
+     * individual grades when there is a gap in it.
+     *
+     * So consecutive runs collapse and gaps survive: 1,2,3,5,6 reads
+     * "G1-G3, G5-G6", which is both shorter and more informative than the
+     * list it replaces.
+     *
+     * @param string $codes   comma-separated grade codes, ordered by level
+     * @param string $numbers the matching numeric levels, same order
+     */
+    function grade_span(?string $codes, ?string $numbers): string
+    {
+        $codeList = array_values(array_filter(array_map('trim', explode(',', (string) $codes))));
+        $levels   = array_values(array_filter(array_map('trim', explode(',', (string) $numbers)), 'strlen'));
+
+        // Without the numbers there is no way to know what is consecutive, and
+        // guessing from the codes would break the moment one is not "G" plus a
+        // number. The list is still correct, just longer.
+        if ($codeList === [] || count($codeList) !== count($levels)) {
+            return implode(', ', $codeList);
+        }
+
+        $runs  = [];
+        $start = 0;
+
+        for ($i = 1; $i <= count($levels); $i++) {
+            $ends = $i === count($levels) || (int) $levels[$i] !== (int) $levels[$i - 1] + 1;
+
+            if (!$ends) {
+                continue;
+            }
+
+            $runs[] = $start === $i - 1
+                ? $codeList[$start]
+                : $codeList[$start] . '-' . $codeList[$i - 1];
+            $start  = $i;
+        }
+
+        return implode(', ', $runs);
     }
 }

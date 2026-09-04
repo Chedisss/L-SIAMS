@@ -583,9 +583,14 @@ final class BackupService
                 $removed++;
             }
 
+            // 'pruned', not 'failed'. This backup did not fail — it did
+            // exactly what the retention policy asked of it. Filing a
+            // successful backup under failures makes a working policy look
+            // like a run of failures on the Backups page, which is the fastest
+            // way to stop somebody trusting their backups.
             Database::instance()->update(
                 'backups',
-                ['status' => 'failed', 'error_message' => 'Archive pruned by the retention policy.'],
+                ['status' => 'pruned', 'error_message' => 'Archive removed by the retention policy.'],
                 ['backup_id' => (int) $backup['backup_id']]
             );
         }

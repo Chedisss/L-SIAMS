@@ -790,12 +790,7 @@ final class AcademicStructureService
                 throw $e;
             }
 
-            self::writeSubjectGradeLevels(
-                $db,
-                (int) $id,
-                (array) ($data['grade_level_ids'] ?? []),
-                (array) ($data['syllabus'] ?? [])
-            );
+            self::writeSubjectGradeLevels($db, (int) $id, (array) ($data['grade_level_ids'] ?? []));
 
             return $id;
         });
@@ -876,12 +871,7 @@ final class AcademicStructureService
             }
 
             if (isset($data['grade_level_ids'])) {
-                self::writeSubjectGradeLevels(
-                    $db,
-                    $subjectId,
-                    (array) $data['grade_level_ids'],
-                    (array) ($data['syllabus'] ?? [])
-                );
+                self::writeSubjectGradeLevels($db, $subjectId, (array) $data['grade_level_ids']);
             }
 
             AuditService::logChange(
@@ -1156,6 +1146,13 @@ final class AcademicStructureService
                        FROM subject_grade_levels sgl
                        JOIN grade_levels gl ON gl.grade_level_id = sgl.grade_level_id
                       WHERE sgl.subject_id = s.subject_id) AS grade_levels,
+                    -- The numbers as well as the codes, so the view can collapse
+                    -- a run into "G1-G6" instead of printing six labels that
+                    -- push the table past the width of the screen.
+                    (SELECT GROUP_CONCAT(gl.numeric_level ORDER BY gl.numeric_level)
+                       FROM subject_grade_levels sgl
+                       JOIN grade_levels gl ON gl.grade_level_id = sgl.grade_level_id
+                      WHERE sgl.subject_id = s.subject_id) AS grade_level_numbers,
                     (SELECT COUNT(*) FROM teacher_subjects ts WHERE ts.subject_id = s.subject_id) AS teacher_count
                FROM subjects s
                JOIN departments d ON d.department_id = s.department_id
@@ -1177,55 +1174,17 @@ final class AcademicStructureService
     }
 
     /**
-     * The syllabus written for this subject at each grade it is offered to.
+     * Write the grades a subject is offered to.
      *
-     * One subject taught across six grades is not six syllabuses' worth of the
-     * same text — Mathematics in Grade 1 and Mathematics in Grade 6 share a
-     * name and nothing else. The subject's own description says what the
-     * subject is; this says what it covers where.
+     * Not a DELETE followed by re-INSERT, which is what this used to be.
+     * Rewriting the whole set on every edit churned rows that had done nothing
+     * wrong and, while the table briefly carried a syllabus, would have
+     * destroyed it. Remove only what was unticked, add only what is new.
      *
-     * @return array<int,string> grade_level_id => syllabus, blank ones omitted
+     * @param list<int> $gradeLevelIds
      */
-    public static function subjectSyllabuses(int $subjectId): array
+    private static function writeSubjectGradeLevels(Database $db, int $subjectId, array $gradeLevelIds): void
     {
-        $rows = Database::instance()->select(
-            "SELECT grade_level_id, syllabus
-               FROM subject_grade_levels
-              WHERE subject_id = :id AND syllabus IS NOT NULL AND syllabus <> ''",
-            ['id' => $subjectId]
-        );
-
-        $out = [];
-
-        foreach ($rows as $row) {
-            $out[(int) $row['grade_level_id']] = (string) $row['syllabus'];
-        }
-
-        return $out;
-    }
-
-    /**
-     * Write the grades a subject is offered to, and the syllabus for each.
-     *
-     * Not a DELETE followed by re-INSERT, which is what this used to be. That
-     * was harmless while the table held nothing but the pairing; now it holds
-     * the syllabus, and rewriting the set on every edit would silently destroy
-     * a term's worth of somebody's writing every time the subject's name was
-     * corrected.
-     *
-     * So: remove only what was actually unticked, add only what is actually
-     * new, and update the syllabus in place. A grade that stays ticked keeps
-     * its text untouched unless the caller sent a new one for it.
-     *
-     * @param list<int>          $gradeLevelIds
-     * @param array<int,string>  $syllabuses grade_level_id => text
-     */
-    private static function writeSubjectGradeLevels(
-        Database $db,
-        int $subjectId,
-        array $gradeLevelIds,
-        array $syllabuses
-    ): void {
         $wanted = array_values(array_unique(array_map('intval', $gradeLevelIds)));
 
         if ($wanted === []) {
@@ -1238,8 +1197,8 @@ final class AcademicStructureService
         $bindings     = ['s' => $subjectId];
 
         foreach ($wanted as $index => $gradeLevelId) {
-            $placeholders[]            = ':g' . $index;
-            $bindings['g' . $index]    = $gradeLevelId;
+            $placeholders[]         = ':g' . $index;
+            $bindings['g' . $index] = $gradeLevelId;
         }
 
         $db->execute(
@@ -1252,21 +1211,6 @@ final class AcademicStructureService
             $db->execute(
                 'INSERT IGNORE INTO subject_grade_levels (subject_id, grade_level_id) VALUES (:s, :g)',
                 ['s' => $subjectId, 'g' => $gradeLevelId]
-            );
-
-            // Only when the caller actually sent something for this grade.
-            // An edit form that does not carry the syllabus fields must not be
-            // read as an instruction to clear them.
-            if (!array_key_exists($gradeLevelId, $syllabuses)) {
-                continue;
-            }
-
-            $text = trim((string) $syllabuses[$gradeLevelId]);
-
-            $db->execute(
-                'UPDATE subject_grade_levels SET syllabus = :t
-                  WHERE subject_id = :s AND grade_level_id = :g',
-                ['t' => $text === '' ? null : $text, 's' => $subjectId, 'g' => $gradeLevelId]
             );
         }
     }
