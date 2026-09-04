@@ -3548,6 +3548,116 @@ try {
     }
 
     /* =====================================================================
+     * 25e. A refusal names who the finger was taken to be
+     *
+     * "You are not the assigned teacher for the current class in this room" is
+     * true and useless. It does not say who the finger resolved to, and that
+     * is the thing most likely to be wrong: a slot number identifies a person
+     * only together with the sensor that allocated it, so a sensor holding a
+     * template this server has no record of can match a finger to a slot that
+     * resolves to somebody else. The refusal then lands on a teacher who IS
+     * assigned, at the right terminal, in the right room, being told they are
+     * not who they are.
+     *
+     * The per-teacher verification log cannot show it either - it filters on
+     * the resolved teacher_id, so the attempt is filed under the wrong person
+     * and the real teacher's log looks empty. This message is the only place
+     * the mismatch surfaces.
+     * ===================================================================== */
+    if ($want('wrong-teacher-named')) {
+        $runner->group('25e. A refused scan names both teachers, not just "not you"');
+
+        $fixture->build(1, 1, 1);
+
+        $assignedId = (int) $fixture->ids['teacher_id'];
+        $deviceId   = (int) $fixture->ids['devices'][0];
+        $device     = $db->selectOne('SELECT * FROM devices WHERE id = :i', ['i' => $deviceId]);
+
+        $assigned = $db->selectOne(
+            'SELECT first_name, last_name FROM teachers WHERE teacher_id = :i', ['i' => $assignedId]);
+        $assignedName = trim($assigned['first_name'] . ' ' . $assigned['last_name']);
+
+        // Put the fixture's lesson under way, so a class IS openable here and
+        // the refusal is about identity rather than about timing.
+        $db->execute(
+            'UPDATE schedules SET day_of_week = :d, start_time = :s, end_time = :e WHERE teacher_id = :t',
+            [
+                'd' => Clock::now()->format('l'),
+                's' => Clock::now()->modify('-10 minutes')->format('H:i:s'),
+                'e' => Clock::now()->modify('+110 minutes')->format('H:i:s'),
+                't' => $assignedId,
+            ]
+        );
+
+        // Another teacher's template, sitting in a slot on this terminal - the
+        // "sensor holds a template we have no record of" case, made explicit.
+        $other = $db->selectOne(
+            'SELECT teacher_id, first_name, last_name FROM teachers
+              WHERE teacher_id <> :i AND deleted_at IS NULL LIMIT 1',
+            ['i' => $assignedId]
+        );
+        $otherId   = (int) $other['teacher_id'];
+        $otherName = trim($other['first_name'] . ' ' . $other['last_name']);
+
+        $db->execute('DELETE FROM fingerprint_templates WHERE teacher_id = :t', ['t' => $otherId]);
+        $strayFp = (int) $db->insert('fingerprint_templates', [
+            'teacher_id'         => $otherId,
+            'sensor_template_id' => 7,
+            'status'             => 'active',
+            'enrollment_date'    => Clock::nowString(),
+            'created_at'         => Clock::nowString(),
+            'updated_at'         => Clock::nowString(),
+        ]);
+        $db->execute(
+            'INSERT INTO fingerprint_slots (fingerprint_id, device_row_id, sensor_template_id, source, status, created_at, updated_at)
+             VALUES (:f, :d, 7, \'synced\', \'present\', :n, :n2)',
+            ['f' => $strayFp, 'd' => $deviceId, 'n' => Clock::nowString(), 'n2' => Clock::nowString()]
+        );
+
+        $message = '';
+
+        try {
+            \App\Services\FingerprintService::verifyAndOpenSession($device, 7, 180);
+        } catch (\App\Core\Exceptions\BusinessRuleException $e) {
+            $message = $e->getMessage();
+        }
+
+        $runner->assert('the scan is refused', $message !== '', 'the session opened');
+
+        $runner->assert('the message names who the finger resolved to',
+            str_contains($message, $otherName), $message);
+
+        $runner->assert('and who the class actually belongs to',
+            str_contains($message, $assignedName), $message);
+
+        $runner->assert('and points at clearing the sensor as the remedy',
+            str_contains($message, 'clear this terminal'), $message);
+
+        // The old wording, which said neither name, must not come back.
+        $runner->assert('it no longer says only "you are not the assigned teacher"',
+            !str_contains($message, 'You are not the assigned teacher'), $message);
+
+        // An empty room is a different problem and keeps its own wording.
+        $db->execute(
+            // Still >90 minutes long, or chk_sched_windows rejects it; just
+            // nowhere near now, so no class is openable here.
+            'UPDATE schedules SET start_time = \'20:00:00\', end_time = \'23:59:00\' WHERE teacher_id = :t',
+            ['t' => $assignedId]
+        );
+
+        $noClass = '';
+
+        try {
+            \App\Services\FingerprintService::verifyAndOpenSession($device, 7, 180);
+        } catch (\App\Core\Exceptions\BusinessRuleException $e) {
+            $noClass = $e->getMessage();
+        }
+
+        $runner->assert('a room with no class running still says exactly that',
+            str_contains($noClass, 'No class is scheduled in this room'), $noClass);
+    }
+
+    /* =====================================================================
      * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {

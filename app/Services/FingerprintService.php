@@ -239,9 +239,47 @@ final class FingerprintService
         }
 
         if ($schedule === null) {
+            // Name both sides. "You are not the assigned teacher for the
+            // current class in this room" is true and useless: it does not say
+            // who the finger was taken to be, and that is the thing most likely
+            // to be wrong.
+            //
+            // A slot number identifies a person only together with the sensor
+            // that allocated it, so a sensor holding a template this server has
+            // no record of — the "holding 5, we have 4" case on the Fingerprints
+            // page — can match a finger to a slot that resolves to somebody
+            // else entirely. The refusal then lands on a teacher who IS
+            // assigned, standing at the right terminal in the right room,
+            // being told they are not who they are.
+            //
+            // The per-teacher verification log cannot show this either: it
+            // filters on the resolved teacher_id, so the attempt is filed under
+            // the wrong person and JB's log looks empty. This message is the
+            // only place the mismatch can surface, so it says both names.
+            $scanned  = trim((string) $fingerprint['first_name'] . ' ' . (string) $fingerprint['last_name']);
+            $assigned = [];
+
+            foreach ($candidates as $candidate) {
+                $name = trim((string) ($candidate['teacher_name'] ?? ''));
+
+                if ($name !== '' && !in_array($name, $assigned, true)) {
+                    $assigned[] = $name;
+                }
+            }
+
             $reason = $candidates === []
                 ? 'No class is scheduled in this room at this time.'
-                : 'You are not the assigned teacher for the current class in this room.';
+                : sprintf(
+                    'This fingerprint is registered to %s, and the class in this room now is %s. '
+                    . 'If you are not %s, the sensor matched your finger to the wrong stored '
+                    . 'template — an administrator should clear this terminal\'s sensor from the '
+                    . 'Fingerprints page and let it be rewritten.',
+                    $scanned,
+                    $assigned === []
+                        ? 'assigned to somebody else'
+                        : implode(' / ', $assigned) . '\'s',
+                    $scanned
+                );
 
             self::logAttempt($teacherId, $deviceRowId, $sensorTemplateId, 'no_schedule', $confidence, $reason);
 
