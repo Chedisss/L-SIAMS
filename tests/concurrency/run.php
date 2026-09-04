@@ -3930,6 +3930,37 @@ try {
         }
 
         $runner->assert('restoring one that is not archived is refused', $twice, 'a second restore was accepted');
+
+        // Who teaches this. The Subjects page showed a count and nothing else,
+        // so "3" meant going to Teachers, filtering, and reading down a list.
+        $db->execute(
+            'INSERT IGNORE INTO teacher_subjects (teacher_id, subject_id, is_exception) VALUES (:t, :s, 1)',
+            ['t' => (int) $fixture->ids['teacher_id'], 's' => $scheduled]
+        );
+
+        $who = \App\Services\AcademicStructureService::subjectTeachers($scheduled);
+
+        $runner->assertEquals('the subject names its teachers, not just how many', 1, count($who));
+
+        $runner->assertEquals('with the employee number',
+            (string) $db->scalar('SELECT employee_number FROM teachers WHERE teacher_id = :i',
+                ['i' => (int) $fixture->ids['teacher_id']]),
+            (string) ($who[0]['employee_number'] ?? ''));
+
+        // The interesting half: qualified through their own department is
+        // unremarkable, qualified across one was somebody's decision.
+        $runner->assertEquals('and whether the qualification is a cross-department exception',
+            1, (int) ($who[0]['is_exception'] ?? 0));
+
+        $runner->assert('and how many classes they actually take in it',
+            array_key_exists('schedule_count', $who[0]), 'no class count returned');
+
+        // An archived teacher is not somebody to go and ask.
+        $db->execute('UPDATE teachers SET deleted_at = NOW() WHERE teacher_id = :i',
+            ['i' => (int) $fixture->ids['teacher_id']]);
+
+        $runner->assertEquals('an archived teacher drops off the list',
+            0, count(\App\Services\AcademicStructureService::subjectTeachers($scheduled)));
     }
 
     /* =====================================================================

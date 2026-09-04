@@ -78,7 +78,20 @@ $archivedCount = $archivedCount ?? 0;
                             </td>
                             <td class="text-sm"><?= e($subject['department_name']) ?></td>
                             <td class="text-sm"><?= e($subject['grade_levels'] ?? '<span class="text-warning">none</span>') ?></td>
-                            <td class="numeric"><?= e($subject['teacher_count']) ?></td>
+                            <td class="numeric">
+                                <?php /* The count was the whole answer, so "3" meant going to
+                                        Teachers, filtering, and reading down a list to find out
+                                        who. It is now the way to ask. */ ?>
+                                <?php if ((int) $subject['teacher_count'] > 0): ?>
+                                    <button class="btn-link" data-teachers="<?= e($subject['subject_id']) ?>"
+                                            data-name="<?= e($subject['subject_code']) ?> · <?= e($subject['subject_name']) ?>"
+                                            title="See who teaches this">
+                                        <?= e($subject['teacher_count']) ?>
+                                    </button>
+                                <?php else: ?>
+                                    <span class="text-muted">0</span>
+                                <?php endif; ?>
+                            </td>
                             <td><span class="badge <?= e(status_badge($subject['status'])) ?>"><?= e(ucfirst((string) $subject['status'])) ?></span></td>
                             <td>
                                 <button class="btn btn-ghost btn-sm" title="Edit"
@@ -108,6 +121,19 @@ $archivedCount = $archivedCount ?? 0;
                 </table>
             </div>
         <?php endif; ?>
+    </div>
+</div>
+
+<div class="modal-backdrop" id="teachers-modal">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal__header">
+            <h3 class="modal__title" id="teachers-modal-title">Teachers</h3>
+            <button class="modal__close" type="button" data-modal-close>&times;</button>
+        </div>
+        <div class="modal__body" id="teachers-modal-body"></div>
+        <div class="modal__footer">
+            <button type="button" class="btn btn-secondary" data-modal-close>Close</button>
+        </div>
     </div>
 </div>
 
@@ -299,6 +325,49 @@ function applySubjectFilters() {
     /* ---- archive and restore ------------------------------------------------ */
 
     document.addEventListener('click', async (event) => {
+        const teachers = event.target.closest('[data-teachers]');
+
+        if (teachers) {
+            document.getElementById('teachers-modal-title').textContent = teachers.dataset.name;
+            const body = document.getElementById('teachers-modal-body');
+            body.innerHTML = '<div class="skeleton skeleton--row"></div>';
+            LS.modal.open('teachers-modal');
+
+            try {
+                const response = await LS.http.get('/admin/subjects/' + teachers.dataset.teachers + '/teachers');
+                const rows = response.data.teachers || [];
+
+                if (rows.length === 0) {
+                    body.innerHTML = '<p class="text-muted">Nobody is assigned to teach this subject yet.</p>';
+                    return;
+                }
+
+                body.innerHTML =
+                    '<table class="data"><thead><tr>'
+                    + '<th>Teacher</th><th>Employee no.</th><th>Department</th>'
+                    + '<th class="numeric">Classes</th><th>Status</th>'
+                    + '</tr></thead><tbody>'
+                    + rows.map((t) =>
+                        '<tr><td class="cell-stack"><span class="cell-primary">'
+                        + LS.util.escape(t.last_name + ', ' + t.first_name) + '</span>'
+                        /* The interesting half: qualified through their own department is
+                           unremarkable, qualified across one was somebody's decision. */
+                        + (Number(t.is_exception)
+                            ? '<span class="cell-muted">Cross-department exception</span>' : '')
+                        + '</td>'
+                        + '<td class="mono text-sm">' + LS.util.escape(t.employee_number || '—') + '</td>'
+                        + '<td class="text-sm">' + LS.util.escape(t.department_name || '—') + '</td>'
+                        + '<td class="numeric">' + Number(t.schedule_count || 0) + '</td>'
+                        + '<td><span class="badge badge-' + (t.status === 'active' ? 'success' : 'neutral')
+                        + '">' + LS.util.escape(t.status) + '</span></td></tr>').join('')
+                    + '</tbody></table>';
+            } catch (error) {
+                body.innerHTML = '<div class="alert alert-danger">Could not load the teachers for this subject.</div>';
+            }
+
+            return;
+        }
+
         const archive = event.target.closest('[data-archive]');
 
         if (archive) {

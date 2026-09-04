@@ -896,6 +896,38 @@ final class AcademicStructureService
     }
 
     /**
+     * The teachers qualified to teach a subject.
+     *
+     * The Subjects page shows a count and nothing else, so "3" means going to
+     * Teachers, filtering, and reading down a list to find out who. This is
+     * the answer to the question the count raises.
+     *
+     * is_exception is carried through because it is the interesting half: a
+     * teacher qualified through their own department is unremarkable, and one
+     * qualified across departments was a deliberate decision somebody made,
+     * which is worth being able to see without opening the teacher.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function subjectTeachers(int $subjectId): array
+    {
+        return Database::instance()->select(
+            "SELECT t.teacher_id, t.employee_number, t.first_name, t.last_name,
+                    t.status, ts.is_exception, d.department_name,
+                    (SELECT COUNT(*) FROM schedules sch
+                      WHERE sch.teacher_id = t.teacher_id
+                        AND sch.subject_id = :subject2
+                        AND sch.status = 'active' AND sch.deleted_at IS NULL) AS schedule_count
+               FROM teacher_subjects ts
+               JOIN teachers t    ON t.teacher_id = ts.teacher_id
+               JOIN departments d ON d.department_id = t.department_id
+              WHERE ts.subject_id = :subject AND t.deleted_at IS NULL
+              ORDER BY t.last_name, t.first_name",
+            ['subject' => $subjectId, 'subject2' => $subjectId]
+        );
+    }
+
+    /**
      * What archiving a subject would affect.
      *
      * Subjects were the only thing in Academic Setup with no way to remove

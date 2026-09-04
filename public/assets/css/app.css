@@ -608,6 +608,19 @@ input.is-invalid, select.is-invalid, textarea.is-invalid { border-color: var(--d
 .btn-ghost     { background: transparent; color: var(--text-muted); }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-alt); color: var(--text); }
 
+/* A number or a word that is also the way to ask about it — used where a count
+ * in a table is the question rather than the answer. Deliberately not a .btn:
+ * it sits inline in a cell and should read as data you can press, not as a
+ * control competing with the row's real actions. */
+.btn-link {
+    background: none; border: 0; padding: 0; font: inherit;
+    color: var(--primary); cursor: pointer;
+    text-decoration: underline; text-underline-offset: 2px;
+    text-decoration-color: color-mix(in srgb, var(--primary) 40%, transparent);
+}
+.btn-link:hover { text-decoration-color: var(--primary); }
+.btn-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 2px; }
+
 .btn-sm { padding: .3rem .6rem; font-size: 12px; }
 .btn-lg { padding: .68rem 1.3rem; font-size: 15px; }
 .btn-block { width: 100%; }
