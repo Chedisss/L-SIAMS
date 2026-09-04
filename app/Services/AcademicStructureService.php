@@ -895,10 +895,191 @@ final class AcademicStructureService
         });
     }
 
+    /**
+     * What archiving a subject would affect.
+     *
+     * Subjects were the only thing in Academic Setup with no way to remove
+     * them at all — departments and sections both archive, subjects had
+     * nothing, so a duplicate created by a typo or left behind by a change of
+     * naming stayed in every dropdown for good. This is the list an
+     * administrator sees before deciding, the same shape departmentArchiveImpact
+     * returns.
+     *
+     * @return array<string,mixed>
+     */
+    public static function subjectArchiveImpact(int $subjectId): array
+    {
+        $db = Database::instance();
+
+        return [
+            'teachers' => $db->select(
+                "SELECT t.teacher_id, t.employee_number, t.first_name, t.last_name
+                   FROM teacher_subjects ts
+                   JOIN teachers t ON t.teacher_id = ts.teacher_id
+                  WHERE ts.subject_id = :id AND t.deleted_at IS NULL",
+                ['id' => $subjectId]
+            ),
+            'schedules' => $db->select(
+                "SELECT sch.schedule_id, sch.day_of_week, sch.start_time,
+                        sec.section_code, c.room_number
+                   FROM schedules sch
+                   JOIN sections sec  ON sec.section_id = sch.section_id
+                   JOIN classrooms c  ON c.classroom_id = sch.classroom_id
+                  WHERE sch.subject_id = :id
+                    AND sch.status = 'active' AND sch.deleted_at IS NULL",
+                ['id' => $subjectId]
+            ),
+            // Named but never a blocker. Attendance is permanent, and it keeps
+            // resolving through subject_id whatever happens to the subject row
+            // — archiving does not touch a single record. Saying the number out
+            // loud is what stops somebody assuming it does.
+            'attendance_records' => (int) $db->scalar(
+                'SELECT COUNT(*) FROM attendance_records WHERE subject_id = :id',
+                ['id' => $subjectId]
+            ),
+        ];
+    }
+
+    /**
+     * Archive a subject.
+     *
+     * A soft delete, like every other archive here: the row stays, attendance
+     * keeps resolving through it, and restoreSubject() undoes it.
+     *
+     * Active schedules are a hard stop rather than a confirmable warning.
+     * ScheduleService does not check a subject's status when it decides what a
+     * terminal may open, so a schedule whose subject has been archived goes on
+     * running — a class that opens every day for a subject the school believes
+     * it has removed. Archiving with the schedules still in place would create
+     * exactly that, silently. Teacher assignments are different: they grant
+     * nothing on their own and are cleared here.
+     */
+    public static function archiveSubject(int $subjectId, bool $confirmed): void
+    {
+        $db      = Database::instance();
+        $subject = $db->selectOne(
+            'SELECT subject_id, subject_code, subject_name FROM subjects
+              WHERE subject_id = :id AND deleted_at IS NULL',
+            ['id' => $subjectId]
+        );
+
+        if ($subject === null) {
+            throw new ValidationException(['subject_id' => ['Subject not found, or already archived.']]);
+        }
+
+        $impact = self::subjectArchiveImpact($subjectId);
+
+        if ($impact['schedules'] !== []) {
+            throw new ValidationException(['subject_id' => [sprintf(
+                'This subject is on %d active schedule(s). A schedule keeps running even after its '
+                . 'subject is archived, so those classes would still open every day for a subject '
+                . 'you believe you have removed. Archive or repoint the schedule(s) first.',
+                count($impact['schedules'])
+            )]]);
+        }
+
+        if (!$confirmed && $impact['teachers'] !== []) {
+            throw new ValidationException(
+                ['subject_id' => [sprintf(
+                    'Archiving this subject removes it from %d teacher(s) qualified to teach it. '
+                    . 'Confirm to continue.',
+                    count($impact['teachers'])
+                )]],
+                'Subject archive requires confirmation.',
+                'SUBJECT_ARCHIVE_CASCADE'
+            );
+        }
+
+        $db->transaction(static function (Database $db) use ($subjectId): void {
+            $db->update('subjects', [
+                'status'     => 'inactive',
+                'deleted_at' => Clock::nowString(),
+                'updated_at' => Clock::nowString(),
+            ], ['subject_id' => $subjectId]);
+
+            // The qualification goes with it. Leaving it would let the subject
+            // reappear in a teacher's list the moment it was restored, with
+            // nobody having decided that.
+            $db->execute('DELETE FROM teacher_subjects WHERE subject_id = :s', ['s' => $subjectId]);
+        });
+
+        AuditService::log(
+            AuditService::SUBJECT_ARCHIVED,
+            'academic_setup',
+            'subject',
+            $subjectId,
+            null,
+            [
+                'teachers_unassigned' => count($impact['teachers']),
+                'attendance_records'  => $impact['attendance_records'],
+            ],
+            sprintf(
+                'Subject %s (%s) archived. %d teacher assignment(s) removed; %d attendance record(s) untouched.',
+                (string) $subject['subject_code'],
+                (string) $subject['subject_name'],
+                count($impact['teachers']),
+                $impact['attendance_records']
+            )
+        );
+    }
+
+    /** Undo a subject archive. Teacher assignments are not restored with it. */
+    public static function restoreSubject(int $subjectId): void
+    {
+        $db      = Database::instance();
+        $subject = $db->selectOne(
+            'SELECT subject_id, subject_code, deleted_at FROM subjects WHERE subject_id = :id',
+            ['id' => $subjectId]
+        );
+
+        if ($subject === null) {
+            throw new ValidationException(['subject_id' => ['Subject not found.']]);
+        }
+
+        if ($subject['deleted_at'] === null) {
+            throw new ValidationException(['subject_id' => ['That subject is not archived.']]);
+        }
+
+        $clash = $db->scalar(
+            'SELECT COUNT(*) FROM subjects
+              WHERE subject_code = (SELECT subject_code FROM subjects WHERE subject_id = :id)
+                AND subject_id <> :id2 AND deleted_at IS NULL',
+            ['id' => $subjectId, 'id2' => $subjectId]
+        );
+
+        if ((int) $clash > 0) {
+            throw new ValidationException(['subject_code' => [
+                'Another subject is already using this code. Rename that one first, or change this '
+                . 'subject\'s code before restoring it.',
+            ]]);
+        }
+
+        $db->update('subjects', [
+            'deleted_at' => null,
+            'updated_at' => Clock::nowString(),
+        ], ['subject_id' => $subjectId]);
+
+        AuditService::log(
+            AuditService::SUBJECT_UPDATED,
+            'academic_setup',
+            'subject',
+            $subjectId,
+            ['deleted_at' => $subject['deleted_at']],
+            ['deleted_at' => null],
+            sprintf(
+                'Subject %s restored from the archive. It comes back inactive and with no teachers assigned.',
+                (string) $subject['subject_code']
+            )
+        );
+    }
+
     /** @return list<array<string,mixed>> */
     public static function subjects(array $filters = []): array
     {
-        $where    = ['s.deleted_at IS NULL'];
+        // Archived subjects are excluded unless they are what was asked for —
+        // the same shape sections() uses, so both archives are reachable the
+        // same way.
+        $where    = [!empty($filters['archived']) ? 's.deleted_at IS NOT NULL' : 's.deleted_at IS NULL'];
         $bindings = [];
 
         if (!empty($filters['department_id'])) {

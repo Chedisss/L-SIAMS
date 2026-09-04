@@ -3804,6 +3804,117 @@ try {
     }
 
     /* =====================================================================
+     * 25g. A subject can be removed, and refuses when it should
+     *
+     * Subjects were the only thing in Academic Setup with no way to remove
+     * them at all - departments archive, sections archive, subjects had
+     * nothing. A duplicate created by a typo or left behind by a change of
+     * naming stayed in every dropdown for good.
+     *
+     * The guard that matters is the schedule one, and it is a hard stop rather
+     * than a confirmable warning: ScheduleService does not check a subject
+     * status when deciding what a terminal may open, so a schedule whose
+     * subject has been archived goes on opening classes every day for a
+     * subject the school believes it removed.
+     * ===================================================================== */
+    if ($want('subject-archive')) {
+        $runner->group('25g. A subject archives, unless a live schedule needs it');
+
+        $fixture->build(1, 1, 1);
+
+        $scheduled = (int) $fixture->ids['subject_id'];
+
+        // On a live schedule: refused outright, whatever the caller confirms.
+        $refusal = '';
+
+        try {
+            \App\Services\AcademicStructureService::archiveSubject($scheduled, true);
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $refusal = json_encode($e->errors());
+        }
+
+        $runner->assert('a subject on a live schedule is refused even when confirmed',
+            $refusal !== '', 'it archived anyway');
+
+        $runner->assert('and the refusal explains that the schedule would keep running',
+            str_contains($refusal, 'keeps running'), $refusal);
+
+        $runner->assertEquals('and the subject is untouched',
+            null, $db->scalar('SELECT deleted_at FROM subjects WHERE subject_id = :i', ['i' => $scheduled]));
+
+        // Take the schedule out of the way, and make sure a qualification
+        // exists so the confirmation branch is actually exercised — the
+        // fixture does not create one.
+        $db->execute("UPDATE schedules SET status = 'archived', deleted_at = NOW() WHERE subject_id = :i",
+            ['i' => $scheduled]);
+        $db->execute(
+            'INSERT IGNORE INTO teacher_subjects (teacher_id, subject_id, is_exception) VALUES (:t, :s, 1)',
+            ['t' => (int) $fixture->ids['teacher_id'], 's' => $scheduled]
+        );
+
+        $impact = \App\Services\AcademicStructureService::subjectArchiveImpact($scheduled);
+
+        $runner->assert('the impact lists the teachers it would unassign',
+            $impact['teachers'] !== [], 'no teachers reported');
+
+        $runner->assert('and reports the attendance it will not touch',
+            array_key_exists('attendance_records', $impact), 'attendance was not counted');
+
+        $needsConfirming = false;
+
+        try {
+            \App\Services\AcademicStructureService::archiveSubject($scheduled, false);
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $needsConfirming = true;
+        }
+
+        $runner->assert('unconfirmed archiving with teachers attached is refused',
+            $needsConfirming, 'it archived without confirmation');
+
+        $attendanceBefore = (int) $db->scalar(
+            'SELECT COUNT(*) FROM attendance_records WHERE subject_id = :i', ['i' => $scheduled]);
+
+        \App\Services\AcademicStructureService::archiveSubject($scheduled, true);
+
+        $runner->assert('confirmed, it archives',
+            $db->scalar('SELECT deleted_at FROM subjects WHERE subject_id = :i', ['i' => $scheduled]) !== null,
+            'it did not archive');
+
+        $runner->assertEquals('the teacher qualifications go with it',
+            0, (int) $db->scalar('SELECT COUNT(*) FROM teacher_subjects WHERE subject_id = :i', ['i' => $scheduled]));
+
+        // The promise the confirmation dialog makes.
+        $runner->assertEquals('and not one attendance record is altered',
+            $attendanceBefore,
+            (int) $db->scalar('SELECT COUNT(*) FROM attendance_records WHERE subject_id = :i', ['i' => $scheduled]));
+
+        $runner->assert('it leaves the live list',
+            !in_array($scheduled, array_column(\App\Services\AcademicStructureService::subjects(), 'subject_id'), true),
+            'still listed');
+
+        $runner->assert('and is reachable in the archived list',
+            in_array($scheduled, array_column(
+                \App\Services\AcademicStructureService::subjects(['archived' => true]), 'subject_id'), true),
+            'not in the archive');
+
+        \App\Services\AcademicStructureService::restoreSubject($scheduled);
+
+        $runner->assert('restoring brings it back',
+            in_array($scheduled, array_column(\App\Services\AcademicStructureService::subjects(), 'subject_id'), true),
+            'it did not come back');
+
+        $twice = false;
+
+        try {
+            \App\Services\AcademicStructureService::restoreSubject($scheduled);
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $twice = true;
+        }
+
+        $runner->assert('restoring one that is not archived is refused', $twice, 'a second restore was accepted');
+    }
+
+    /* =====================================================================
      * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
