@@ -136,6 +136,11 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->post('/subjects', AcademicController::class . '@storeSubject');
     $router->get('/subjects/{id:\d+}', AcademicController::class . '@subjectDetail');
     $router->put('/subjects/{id:\d+}', AcademicController::class . '@updateSubject');
+    // Subjects were the only thing in Academic Setup with no way to remove
+    // them. Same shape as departments: impact first, then archive, then restore.
+    $router->get('/subjects/{id:\d+}/impact', AcademicController::class . '@subjectArchiveImpact');
+    $router->post('/subjects/{id:\d+}/archive', AcademicController::class . '@archiveSubject');
+    $router->post('/subjects/{id:\d+}/restore', AcademicController::class . '@restoreSubject');
 
     $router->get('/classrooms', AcademicController::class . '@classrooms', [], 'admin.classrooms');
     $router->post('/classrooms', AcademicController::class . '@storeClassroom');

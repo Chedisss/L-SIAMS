@@ -4,12 +4,32 @@ $__view->extend('layouts.app');
 $__view->start('content');
 ?>
 
+<?php
+$archived      = $archived      ?? false;
+$archivedCount = $archivedCount ?? 0;
+?>
+
 <?php $__view->include('partials.page-header', [
-    'title'       => 'Subjects',
-    'subtitle'    => 'Every subject belongs to exactly one department — this is what makes the cross-department assignment rule enforceable.',
-    'breadcrumbs' => [['Dashboard', '/admin'], ['Academic Setup', null], ['Subjects', null]],
-    'actions'     => '<button class="btn btn-primary" data-modal-open="subject-modal"><i class="fa-solid fa-plus"></i> Add Subject</button>',
+    'title'       => $archived ? 'Archived Subjects' : 'Subjects',
+    'subtitle'    => $archived
+        ? 'Archived subjects are hidden from every dropdown and cannot be scheduled. Attendance already recorded against them is untouched and still resolves.'
+        : 'Every subject belongs to exactly one department — this is what makes the cross-department assignment rule enforceable.',
+    'breadcrumbs' => $archived
+        ? [['Dashboard', '/admin'], ['Academic Setup', null], ['Subjects', '/admin/subjects'], ['Archived', null]]
+        : [['Dashboard', '/admin'], ['Academic Setup', null], ['Subjects', null]],
+    'actions'     => $archived
+        ? '<a class="btn btn-secondary" href="/admin/subjects"><i class="fa-solid fa-arrow-left"></i> Back to Subjects</a>'
+        : '<button class="btn btn-primary" data-modal-open="subject-modal"><i class="fa-solid fa-plus"></i> Add Subject</button>',
 ]); ?>
+
+<?php if (!$archived && $archivedCount > 0): ?>
+    <div class="mb-2">
+        <a class="btn btn-ghost btn-sm" href="/admin/subjects?view=archived">
+            <i class="fa-solid fa-box-archive"></i>
+            View <?= e($archivedCount) ?> archived subject<?= $archivedCount === 1 ? '' : 's' ?>
+        </a>
+    </div>
+<?php endif; ?>
 
 <form class="filter-bar" data-no-submit>
     <div class="form-group">
@@ -45,7 +65,7 @@ $__view->start('content');
             <div class="table-wrap">
                 <table class="data">
                     <thead><tr><th>Code</th><th>Name</th><th>Department</th><th>Offered to</th>
-                        <th class="numeric">Teachers</th><th>Status</th><th style="width:60px"></th></tr></thead>
+                        <th class="numeric">Teachers</th><th>Status</th><th style="width:96px"></th></tr></thead>
                     <tbody>
                     <?php foreach ($subjects as $subject): ?>
                         <tr>
@@ -70,6 +90,17 @@ $__view->start('content');
                                             'department_id' => (int) $subject['department_id'],
                                             'status'        => $subject['status'],
                                         ]) ?>'><i class="fa-solid fa-pen"></i></button>
+                                <?php if ($archived): ?>
+                                    <button class="btn btn-ghost btn-sm" data-restore="<?= e($subject['subject_id']) ?>"
+                                            data-name="<?= e($subject['subject_code']) ?>" title="Restore">
+                                        <i class="fa-solid fa-rotate-left"></i>
+                                    </button>
+                                <?php else: ?>
+                                    <button class="btn btn-ghost btn-sm text-danger" data-archive="<?= e($subject['subject_id']) ?>"
+                                            data-name="<?= e($subject['subject_code']) ?>" title="Archive">
+                                        <i class="fa-solid fa-box-archive"></i>
+                                    </button>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -265,7 +296,76 @@ function applySubjectFilters() {
         if (event.target.name === 'grade_level_ids[]') renderSyllabus();
     });
 
+    /* ---- archive and restore ------------------------------------------------ */
+
     document.addEventListener('click', async (event) => {
+        const archive = event.target.closest('[data-archive]');
+
+        if (archive) {
+            /* The impact is fetched and shown before the decision, the same way
+               a department archive works. Active schedules are refused by the
+               server outright rather than confirmed: ScheduleService does not
+               check a subject's status, so an archived subject on a live
+               schedule would go on opening classes every day. */
+            try {
+                const detail = await LS.http.get('/admin/subjects/' + archive.dataset.archive + '/impact');
+                const impact = detail.data.impact;
+
+                let message = archive.dataset.name + ' will be archived and hidden from every dropdown.';
+
+                if (impact.teachers.length > 0) {
+                    message += '\n\nIt is removed from ' + impact.teachers.length
+                        + ' teacher(s) qualified to teach it.';
+                }
+
+                if (impact.attendance_records > 0) {
+                    message += '\n\n' + impact.attendance_records
+                        + ' attendance record(s) reference it. Those are untouched and keep resolving —'
+                        + ' archiving a subject never alters attendance.';
+                }
+
+                const result = await LS.modal.confirm({
+                    title: 'Archive subject?',
+                    message: message,
+                    confirmLabel: 'Archive',
+                    danger: true,
+                });
+
+                if (!result) return;
+
+                const body = new FormData();
+                body.append('_csrf', LS.config.csrfToken);
+                body.append('confirmed', '1');
+
+                const response = await LS.http.post(
+                    '/admin/subjects/' + archive.dataset.archive + '/archive', body);
+                LS.toast.success(response.message);
+                window.setTimeout(() => window.location.reload(), 1200);
+            } catch (error) {
+                LS.toast.fromError(error);
+            }
+
+            return;
+        }
+
+        const restore = event.target.closest('[data-restore]');
+
+        if (restore) {
+            try {
+                const body = new FormData();
+                body.append('_csrf', LS.config.csrfToken);
+
+                const response = await LS.http.post(
+                    '/admin/subjects/' + restore.dataset.restore + '/restore', body);
+                LS.toast.success(response.message);
+                window.setTimeout(() => window.location.reload(), 1200);
+            } catch (error) {
+                LS.toast.fromError(error);
+            }
+
+            return;
+        }
+
         const edit = event.target.closest('[data-edit]');
         if (!edit) return;
 

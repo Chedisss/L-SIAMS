@@ -262,10 +262,13 @@ final class AcademicController extends Controller
 
     public function subjects(Request $request): Response
     {
+        $archived = $request->string('view', '') === 'archived';
+
         $filters = [
             'department_id' => $request->int('department_id', 0) ?: null,
             'status'        => $request->string('status', ''),
             'search'        => $request->string('search', ''),
+            'archived'      => $archived,
         ];
 
         $subjects = AcademicStructureService::subjects($filters);
@@ -275,12 +278,41 @@ final class AcademicController extends Controller
         }
 
         return $this->view('admin.academic.subjects', [
-            'pageTitle'   => 'Subjects',
+            'pageTitle'   => $archived ? 'Archived Subjects' : 'Subjects',
             'subjects'    => $subjects,
             'filters'     => $filters,
+            'archived'    => $archived,
+            'archivedCount' => count(AcademicStructureService::subjects(['archived' => true])),
             'departments' => AcademicStructureService::departments(true),
             'gradeLevels' => AcademicStructureService::gradeLevels(),
         ]);
+    }
+
+    public function subjectArchiveImpact(Request $request): Response
+    {
+        return $this->json([
+            'impact' => AcademicStructureService::subjectArchiveImpact($request->routeInt('id')),
+        ]);
+    }
+
+    public function archiveSubject(Request $request): Response
+    {
+        AcademicStructureService::archiveSubject(
+            $request->routeInt('id'),
+            $request->bool('confirmed', false)
+        );
+
+        return $this->json([], 'Subject archived. Attendance recorded against it is untouched.');
+    }
+
+    public function restoreSubject(Request $request): Response
+    {
+        AcademicStructureService::restoreSubject($request->routeInt('id'));
+
+        return $this->json(
+            [],
+            'Subject restored. It comes back inactive and with no teachers assigned to it.'
+        );
     }
 
     public function storeSubject(Request $request): Response
