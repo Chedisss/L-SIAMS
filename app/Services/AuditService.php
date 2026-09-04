@@ -56,6 +56,7 @@ final class AuditService
     public const SUBJECT_ARCHIVED            = 'SUBJECT_ARCHIVED';
     public const CLASSROOM_CREATED           = 'CLASSROOM_CREATED';
     public const CLASSROOM_UPDATED           = 'CLASSROOM_UPDATED';
+    public const CLASSROOM_ARCHIVED          = 'CLASSROOM_ARCHIVED';
     public const RFID_ASSIGNED               = 'RFID_ASSIGNED';
     public const RFID_REPLACED               = 'RFID_REPLACED';
     public const RFID_DEACTIVATED            = 'RFID_DEACTIVATED';

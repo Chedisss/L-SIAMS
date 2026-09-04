@@ -3964,6 +3964,98 @@ try {
     }
 
     /* =====================================================================
+     * 25h. A classroom can be removed, and refuses when it cannot
+     *
+     * Classrooms could be created and listed and nothing else - no edit, no
+     * removal - so a room added by mistake stayed in the list and in every
+     * schedule dropdown for good.
+     *
+     * Both guards are about things that would go on working invisibly. A
+     * terminal resolves its classroom from this record rather than the other
+     * way round, so archiving the room out from under a live terminal leaves
+     * it opening sessions in a room the school believes it removed; and
+     * ScheduleService does not check a classroom status when deciding what may
+     * open, the same argument as subjects.
+     * ===================================================================== */
+    if ($want('classroom-archive')) {
+        $runner->group('25h. A classroom archives, unless a terminal or schedule needs it');
+
+        $fixture->build(1, 1, 1);
+
+        $roomId   = (int) $db->scalar('SELECT classroom_id FROM schedules WHERE teacher_id = :t LIMIT 1',
+            ['t' => (int) $fixture->ids['teacher_id']]);
+        $deviceId = (int) $fixture->ids['devices'][0];
+
+        // A terminal is registered here, and that alone is a refusal.
+        $db->execute("UPDATE devices SET classroom_id = :c, status = 'active' WHERE id = :i",
+            ['c' => $roomId, 'i' => $deviceId]);
+
+        $refusal = '';
+
+        try {
+            \App\Services\AcademicStructureService::archiveClassroom($roomId);
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $refusal = json_encode($e->errors());
+        }
+
+        $runner->assert('a room holding a registered terminal is refused', $refusal !== '', 'it archived anyway');
+
+        $runner->assert('and the refusal names the terminal',
+            str_contains($refusal, (string) $db->scalar('SELECT device_id FROM devices WHERE id = :i', ['i' => $deviceId])),
+            $refusal);
+
+        // Move the terminal away; the schedule is now what blocks it.
+        $db->execute('UPDATE devices SET classroom_id = NULL WHERE id = :i', ['i' => $deviceId]);
+
+        $refusal = '';
+
+        try {
+            \App\Services\AcademicStructureService::archiveClassroom($roomId);
+        } catch (\App\Core\Exceptions\ValidationException $e) {
+            $refusal = json_encode($e->errors());
+        }
+
+        $runner->assert('a room on a live schedule is refused', $refusal !== '', 'it archived anyway');
+
+        $runner->assert('and the schedules are named, not just counted',
+            str_contains($refusal, 'Monday') || str_contains($refusal, 'Tuesday')
+            || str_contains($refusal, 'Wednesday') || str_contains($refusal, 'Thursday')
+            || str_contains($refusal, 'Friday') || str_contains($refusal, 'Saturday')
+            || str_contains($refusal, 'Sunday'),
+            $refusal);
+
+        // Clear the schedule and it goes.
+        $db->execute("UPDATE schedules SET status = 'archived', deleted_at = NOW() WHERE classroom_id = :c",
+            ['c' => $roomId]);
+
+        $attendanceBefore = (int) $db->scalar('SELECT COUNT(*) FROM attendance_records');
+
+        \App\Services\AcademicStructureService::archiveClassroom($roomId);
+
+        $runner->assert('with nothing holding it, the room archives',
+            $db->scalar('SELECT deleted_at FROM classrooms WHERE classroom_id = :i', ['i' => $roomId]) !== null,
+            'it did not archive');
+
+        $runner->assertEquals('and no attendance is touched',
+            $attendanceBefore, (int) $db->scalar('SELECT COUNT(*) FROM attendance_records'));
+
+        $runner->assert('it leaves the live list',
+            !in_array($roomId, array_column(\App\Services\AcademicStructureService::classrooms(), 'classroom_id'), true),
+            'still listed');
+
+        $runner->assert('and is reachable in the archived list',
+            in_array($roomId, array_column(
+                \App\Services\AcademicStructureService::classrooms(false, true), 'classroom_id'), true),
+            'not in the archive');
+
+        \App\Services\AcademicStructureService::restoreClassroom($roomId);
+
+        $runner->assert('restoring brings it back',
+            in_array($roomId, array_column(\App\Services\AcademicStructureService::classrooms(), 'classroom_id'), true),
+            'it did not come back');
+    }
+
+    /* =====================================================================
      * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {

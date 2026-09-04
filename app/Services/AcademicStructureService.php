@@ -1309,7 +1309,140 @@ final class AcademicStructureService
     }
 
     /** @return list<array<string,mixed>> */
-    public static function classrooms(bool $activeOnly = false): array
+    /**
+     * Archive a classroom.
+     *
+     * Classrooms could be created and listed and nothing else — no edit, no
+     * removal — so a room added by mistake, or one the school simply does not
+     * use, stayed in the list and in every schedule dropdown for good.
+     *
+     * Two hard stops, both about things that would go on working invisibly:
+     *
+     * A registered terminal is bound to its classroom, and DeviceApi resolves
+     * the room from the device rather than the other way round. Archiving the
+     * room out from under a live terminal would leave it opening sessions in a
+     * classroom the school believes it has removed.
+     *
+     * Active schedules are the same argument as subjects — ScheduleService
+     * does not check a classroom's status when deciding what may open.
+     */
+    public static function archiveClassroom(int $classroomId): void
+    {
+        $db        = Database::instance();
+        $classroom = $db->selectOne(
+            'SELECT classroom_id, room_number, building FROM classrooms
+              WHERE classroom_id = :id AND deleted_at IS NULL',
+            ['id' => $classroomId]
+        );
+
+        if ($classroom === null) {
+            throw new ValidationException(['classroom_id' => ['Classroom not found, or already archived.']]);
+        }
+
+        $device = $db->selectOne(
+            "SELECT device_id FROM devices
+              WHERE classroom_id = :id AND deleted_at IS NULL
+                AND status NOT IN ('decommissioned')",
+            ['id' => $classroomId]
+        );
+
+        if ($device !== null) {
+            throw new ValidationException(['classroom_id' => [sprintf(
+                'Terminal %s is registered to this room. A terminal resolves its classroom from '
+                . 'this record, so it would go on opening sessions in a room you believe you have '
+                . 'removed. Move the terminal to another classroom or decommission it first.',
+                (string) $device['device_id']
+            )]]);
+        }
+
+        $schedules = $db->select(
+            "SELECT sch.day_of_week, sch.start_time, sub.subject_code, sec.section_code
+               FROM schedules sch
+               JOIN subjects sub ON sub.subject_id = sch.subject_id
+               JOIN sections sec ON sec.section_id = sch.section_id
+              WHERE sch.classroom_id = :id AND sch.status = 'active' AND sch.deleted_at IS NULL",
+            ['id' => $classroomId]
+        );
+
+        if ($schedules !== []) {
+            $listed = array_slice($schedules, 0, 6);
+            $lines  = [];
+
+            foreach ($listed as $schedule) {
+                $lines[] = sprintf(
+                    '%s %s · %s · %s',
+                    (string) $schedule['day_of_week'],
+                    substr((string) $schedule['start_time'], 0, 5),
+                    (string) $schedule['subject_code'],
+                    (string) $schedule['section_code']
+                );
+            }
+
+            $remaining = count($schedules) - count($listed);
+
+            throw new ValidationException(['classroom_id' => [sprintf(
+                'This room is on %d active schedule(s): %s%s. Move or archive them first.',
+                count($schedules),
+                implode('; ', $lines),
+                $remaining > 0 ? sprintf(' and %d more', $remaining) : ''
+            )]]);
+        }
+
+        $db->update('classrooms', [
+            'status'     => 'inactive',
+            'deleted_at' => Clock::nowString(),
+            'updated_at' => Clock::nowString(),
+        ], ['classroom_id' => $classroomId]);
+
+        AuditService::log(
+            AuditService::CLASSROOM_ARCHIVED,
+            'academic_setup',
+            'classroom',
+            $classroomId,
+            null,
+            null,
+            sprintf(
+                'Classroom %s (%s) archived.',
+                (string) $classroom['room_number'],
+                (string) $classroom['building']
+            )
+        );
+    }
+
+    /** Undo a classroom archive. It comes back inactive. */
+    public static function restoreClassroom(int $classroomId): void
+    {
+        $db        = Database::instance();
+        $classroom = $db->selectOne(
+            'SELECT classroom_id, room_number, deleted_at FROM classrooms WHERE classroom_id = :id',
+            ['id' => $classroomId]
+        );
+
+        if ($classroom === null) {
+            throw new ValidationException(['classroom_id' => ['Classroom not found.']]);
+        }
+
+        if ($classroom['deleted_at'] === null) {
+            throw new ValidationException(['classroom_id' => ['That classroom is not archived.']]);
+        }
+
+        $db->update('classrooms', [
+            'deleted_at' => null,
+            'updated_at' => Clock::nowString(),
+        ], ['classroom_id' => $classroomId]);
+
+        AuditService::log(
+            AuditService::CLASSROOM_UPDATED,
+            'academic_setup',
+            'classroom',
+            $classroomId,
+            ['deleted_at' => $classroom['deleted_at']],
+            ['deleted_at' => null],
+            sprintf('Classroom %s restored from the archive.', (string) $classroom['room_number'])
+        );
+    }
+
+    public static function classrooms(bool $activeOnly = false, bool $archived = false): array
     {
         $sql = "SELECT c.*,
                        d.device_id, d.device_name, d.status AS device_status, d.device_role,
@@ -1320,7 +1453,7 @@ final class AcademicStructureService
                   LEFT JOIN devices d ON d.classroom_id = c.classroom_id
                        AND d.deleted_at IS NULL
                        AND d.status IN ('pending','active','offline')
-                 WHERE c.deleted_at IS NULL";
+                 WHERE c.deleted_at IS " . ($archived ? 'NOT NULL' : 'NULL') . "";
 
         if ($activeOnly) {
             $sql .= " AND c.status = 'active'";

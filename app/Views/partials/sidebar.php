@@ -23,7 +23,25 @@ $adminMenu = [
         ['/admin/users',    'fa-users-gear',    'User Accounts'],
     ],
     'Academic Setup' => [
-        ['/admin/departments',  'fa-building-columns', 'Departments'],
+        /* Departments is deliberately not listed.
+         *
+         * The rule it exists for is still enforced everywhere — a teacher may
+         * only be assigned subjects from their own department, and the
+         * cross-department exception is still recorded and shown. But a
+         * primary school with one teacher per department has no day-to-day
+         * reason to open the page, and it sat at the top of Academic Setup
+         * inviting people into a screen whose only real use is a decision
+         * taken once at setup.
+         *
+         * Hidden rather than removed: /admin/departments still routes, still
+         * authorises, and is still linked from the department name on the
+         * Subjects page. Removing the concept would mean rewriting the
+         * assignment validator, the constraint API, teacher registration,
+         * reports and analytics — twenty files and two NOT NULL foreign keys —
+         * and would put the system out of step with the manuscript that
+         * specifies it. Who teaches a subject is now answerable from the
+         * Subjects page, which is the question people were opening this for.
+         */
         ['/admin/grade-levels', 'fa-layer-group',      'Grade Levels'],
         ['/admin/sections',     'fa-people-group',     'Sections'],
         ['/admin/subjects',     'fa-book',             'Subjects'],
