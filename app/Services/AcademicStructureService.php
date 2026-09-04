@@ -790,12 +790,12 @@ final class AcademicStructureService
                 throw $e;
             }
 
-            foreach (array_map('intval', (array) ($data['grade_level_ids'] ?? [])) as $gradeLevelId) {
-                $db->execute(
-                    'INSERT IGNORE INTO subject_grade_levels (subject_id, grade_level_id) VALUES (:s, :g)',
-                    ['s' => (int) $id, 'g' => $gradeLevelId]
-                );
-            }
+            self::writeSubjectGradeLevels(
+                $db,
+                (int) $id,
+                (array) ($data['grade_level_ids'] ?? []),
+                (array) ($data['syllabus'] ?? [])
+            );
 
             return $id;
         });
@@ -876,14 +876,12 @@ final class AcademicStructureService
             }
 
             if (isset($data['grade_level_ids'])) {
-                $db->execute('DELETE FROM subject_grade_levels WHERE subject_id = :s', ['s' => $subjectId]);
-
-                foreach (array_map('intval', (array) $data['grade_level_ids']) as $gradeLevelId) {
-                    $db->execute(
-                        'INSERT IGNORE INTO subject_grade_levels (subject_id, grade_level_id) VALUES (:s, :g)',
-                        ['s' => $subjectId, 'g' => $gradeLevelId]
-                    );
-                }
+                self::writeSubjectGradeLevels(
+                    $db,
+                    $subjectId,
+                    (array) $data['grade_level_ids'],
+                    (array) ($data['syllabus'] ?? [])
+                );
             }
 
             AuditService::logChange(
@@ -940,6 +938,101 @@ final class AcademicStructureService
         );
 
         return array_map(static fn (array $r): int => (int) $r['grade_level_id'], $rows);
+    }
+
+    /**
+     * The syllabus written for this subject at each grade it is offered to.
+     *
+     * One subject taught across six grades is not six syllabuses' worth of the
+     * same text — Mathematics in Grade 1 and Mathematics in Grade 6 share a
+     * name and nothing else. The subject's own description says what the
+     * subject is; this says what it covers where.
+     *
+     * @return array<int,string> grade_level_id => syllabus, blank ones omitted
+     */
+    public static function subjectSyllabuses(int $subjectId): array
+    {
+        $rows = Database::instance()->select(
+            "SELECT grade_level_id, syllabus
+               FROM subject_grade_levels
+              WHERE subject_id = :id AND syllabus IS NOT NULL AND syllabus <> ''",
+            ['id' => $subjectId]
+        );
+
+        $out = [];
+
+        foreach ($rows as $row) {
+            $out[(int) $row['grade_level_id']] = (string) $row['syllabus'];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Write the grades a subject is offered to, and the syllabus for each.
+     *
+     * Not a DELETE followed by re-INSERT, which is what this used to be. That
+     * was harmless while the table held nothing but the pairing; now it holds
+     * the syllabus, and rewriting the set on every edit would silently destroy
+     * a term's worth of somebody's writing every time the subject's name was
+     * corrected.
+     *
+     * So: remove only what was actually unticked, add only what is actually
+     * new, and update the syllabus in place. A grade that stays ticked keeps
+     * its text untouched unless the caller sent a new one for it.
+     *
+     * @param list<int>          $gradeLevelIds
+     * @param array<int,string>  $syllabuses grade_level_id => text
+     */
+    private static function writeSubjectGradeLevels(
+        Database $db,
+        int $subjectId,
+        array $gradeLevelIds,
+        array $syllabuses
+    ): void {
+        $wanted = array_values(array_unique(array_map('intval', $gradeLevelIds)));
+
+        if ($wanted === []) {
+            $db->execute('DELETE FROM subject_grade_levels WHERE subject_id = :s', ['s' => $subjectId]);
+
+            return;
+        }
+
+        $placeholders = [];
+        $bindings     = ['s' => $subjectId];
+
+        foreach ($wanted as $index => $gradeLevelId) {
+            $placeholders[]            = ':g' . $index;
+            $bindings['g' . $index]    = $gradeLevelId;
+        }
+
+        $db->execute(
+            'DELETE FROM subject_grade_levels
+              WHERE subject_id = :s AND grade_level_id NOT IN (' . implode(',', $placeholders) . ')',
+            $bindings
+        );
+
+        foreach ($wanted as $gradeLevelId) {
+            $db->execute(
+                'INSERT IGNORE INTO subject_grade_levels (subject_id, grade_level_id) VALUES (:s, :g)',
+                ['s' => $subjectId, 'g' => $gradeLevelId]
+            );
+
+            // Only when the caller actually sent something for this grade.
+            // An edit form that does not carry the syllabus fields must not be
+            // read as an instruction to clear them.
+            if (!array_key_exists($gradeLevelId, $syllabuses)) {
+                continue;
+            }
+
+            $text = trim((string) $syllabuses[$gradeLevelId]);
+
+            $db->execute(
+                'UPDATE subject_grade_levels SET syllabus = :t
+                  WHERE subject_id = :s AND grade_level_id = :g',
+                ['t' => $text === '' ? null : $text, 's' => $subjectId, 'g' => $gradeLevelId]
+            );
+        }
     }
 
     // ------------------------------------------------------- classrooms --
