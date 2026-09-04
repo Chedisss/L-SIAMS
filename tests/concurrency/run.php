@@ -3435,6 +3435,119 @@ try {
     }
 
     /* =====================================================================
+     * 25d. A reader that cannot answer says so
+     *
+     * The teacher panel polled sessionStartState() and, with no attempt
+     * logged, reported "Waiting for your fingerprint - place your finger on
+     * the terminal now" forever. That is indistinguishable from every way this
+     * actually fails, because the two likeliest failures never reach the
+     * server: the firmware posts to /api/attendance/start only after its
+     * sensor matches a print, so a sensor that did not initialise returns at
+     * the first line of handleFingerprint(), and a sensor with no copy of the
+     * teacher's template answers NOTFOUND and returns. Neither writes a
+     * fingerprint_logs row. The reason was already in the database - the
+     * heartbeat carries the sensor's health, and fingerprint_slots records
+     * what the terminal holds - and none of it was shown to the person
+     * standing at the reader.
+     * ===================================================================== */
+    if ($want('reader-silent')) {
+        $runner->group('25d. A silent reader explains itself instead of spinning');
+
+        $fixture->build(1, 1, 1);
+
+        $teacherId = (int) $fixture->ids['teacher_id'];
+        $deviceId  = (int) $fixture->ids['devices'][0];
+        $deviceCode = (string) $db->scalar('SELECT device_id FROM devices WHERE id = :i', ['i' => $deviceId]);
+        $fingerprintId = (int) $fixture->ids['fingerprint_id'];
+
+        // Put the fixture's schedule under way now, so a scan is expected.
+        $db->execute(
+            'UPDATE schedules SET day_of_week = :d, start_time = :s, end_time = :e
+              WHERE teacher_id = :t',
+            [
+                'd' => Clock::now()->format('l'),
+                's' => Clock::now()->modify('-5 minutes')->format('H:i:s'),
+                // chk_sched_windows wants duration - time_out_window_open >
+                // time_in_window_close, and the fixture uses 30 and 60, so the
+                // period has to run longer than 90 minutes to be legal.
+                'e' => Clock::now()->modify('+120 minutes')->format('H:i:s'),
+                't' => $teacherId,
+            ]
+        );
+
+        $db->execute(
+            "UPDATE devices SET fingerprint_ok = 1, last_heartbeat_at = :n, heartbeat_interval_sec = 30
+              WHERE id = :i",
+            ['n' => Clock::nowString(), 'i' => $deviceId]
+        );
+
+        $slot = static function (string $status) use ($db, $fingerprintId, $deviceId): void {
+            $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id = :f AND device_row_id = :d',
+                ['f' => $fingerprintId, 'd' => $deviceId]);
+            $db->execute(
+                'INSERT INTO fingerprint_slots (fingerprint_id, device_row_id, sensor_template_id, source, status, created_at, updated_at)
+                 VALUES (:f, :d, 77, \'synced\', :s, :n, :n2)',
+                ['f' => $fingerprintId, 'd' => $deviceId, 's' => $status,
+                 'n' => Clock::nowString(), 'n2' => Clock::nowString()]
+            );
+        };
+
+        $state = static fn (): array => \App\Services\TeacherService::sessionStartState($teacherId, null);
+
+        // Healthy: a plain wait, and no invented problem.
+        $slot('present');
+        $healthy = $state();
+
+        $runner->assert('a healthy reader leaves an ordinary wait',
+            !isset($healthy['blocked']), (string) ($healthy['blocked'] ?? ''));
+
+        $runner->assertEquals('and the terminal is still named', $deviceCode, (string) ($healthy['terminal'] ?? ''));
+
+        // The case that reads as "not recognised" at the terminal and as
+        // nothing at all here, because a search that found nothing is not
+        // posted.
+        $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id = :f AND device_row_id = :d',
+            ['f' => $fingerprintId, 'd' => $deviceId]);
+        $missing = $state();
+
+        $runner->assertEquals('a template the terminal does not hold is named',
+            'template_missing', (string) ($missing['blocked'] ?? ''));
+
+        $runner->assert('and the message names the terminal',
+            str_contains((string) $missing['blocked_message'], $deviceCode), 'the terminal was not named');
+
+        $slot('pending');
+        $runner->assert('a template still copying is distinguished from one that never will',
+            str_contains((string) ($state()['blocked_message'] ?? ''), 'not finished copying'),
+            (string) ($state()['blocked_message'] ?? ''));
+
+        $slot('failed');
+        $runner->assert('a refused write points at the retry an administrator can run',
+            str_contains((string) ($state()['blocked_message'] ?? ''), 'refused'),
+            (string) ($state()['blocked_message'] ?? ''));
+
+        // A dead sensor outranks the template state: a sensor that never
+        // started cannot be missing a template.
+        $slot('present');
+        $db->execute('UPDATE devices SET fingerprint_ok = 0 WHERE id = :i', ['i' => $deviceId]);
+        $down = $state();
+
+        $runner->assertEquals('a sensor reporting itself dead is named as a hardware fault',
+            'sensor_down', (string) ($down['blocked'] ?? ''));
+
+        $runner->assert('and says plainly that scanning again cannot help',
+            str_contains((string) $down['blocked_message'], 'will not help'), (string) $down['blocked_message']);
+
+        // Offline outranks both: a dead terminal cannot report a dead sensor,
+        // so reporting the stale flag would describe a symptom.
+        $db->execute('UPDATE devices SET last_heartbeat_at = :n WHERE id = :i',
+            ['n' => Clock::now()->modify('-30 minutes')->format('Y-m-d H:i:s'), 'i' => $deviceId]);
+
+        $runner->assertEquals('an offline terminal outranks its own stale sensor flag',
+            'terminal_offline', (string) ($state()['blocked'] ?? ''));
+    }
+
+    /* =====================================================================
      * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {

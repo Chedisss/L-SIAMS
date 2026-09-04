@@ -693,6 +693,148 @@ final class TeacherService
      *
      * @return array<string,mixed>
      */
+    /**
+     * Why a scan that should be happening is not reaching the server.
+     *
+     * Everything here is already known: the terminal reports its sensor's
+     * health on every heartbeat, and fingerprint_slots records which templates
+     * that terminal actually holds. None of it was being shown to the one
+     * person standing in front of the reader.
+     *
+     * Ordered by what stops a scan first. A dead terminal cannot report a dead
+     * sensor, and a sensor that never started cannot be missing a template, so
+     * a lower check firing while a higher one is true would be describing a
+     * symptom rather than the cause.
+     *
+     * @return array{blocked?:string,blocked_message?:string,terminal?:string}
+     */
+    private static function whyTheReaderIsSilent(int $teacherId): array
+    {
+        $db = Database::instance();
+
+        // The terminal for the class whose scan window is open. No open
+        // window means nothing is expected to happen, so there is nothing to
+        // explain — the panel is not being shown either.
+        $terminal = $db->selectOne(
+            "SELECT d.id AS device_row_id, d.device_id, d.status, d.fingerprint_ok,
+                    d.last_heartbeat_at, d.heartbeat_interval_sec, c.room_number
+               FROM schedules sch
+               JOIN classrooms c   ON c.classroom_id = sch.classroom_id
+          LEFT JOIN devices d      ON d.classroom_id = c.classroom_id
+                                  AND d.deleted_at IS NULL
+                                  AND d.status = 'active'
+              WHERE sch.teacher_id = :teacher
+                AND sch.status = 'active'
+                AND sch.deleted_at IS NULL
+                AND sch.day_of_week = :dow
+                AND :now BETWEEN SUBTIME(sch.start_time, '00:10:00') AND sch.end_time
+              ORDER BY sch.start_time
+              LIMIT 1",
+            [
+                'teacher' => $teacherId,
+                'dow'     => Clock::now()->format('l'),
+                'now'     => Clock::now()->format('H:i:s'),
+            ]
+        );
+
+        if ($terminal === null || $terminal['device_row_id'] === null) {
+            return $terminal === null
+                ? []
+                : [
+                    'blocked'         => 'no_terminal',
+                    'blocked_message' => sprintf(
+                        'No active terminal is registered for Room %s, so there is no reader to '
+                        . 'scan at. Open the class with your password instead.',
+                        (string) $terminal['room_number']
+                    ),
+                ];
+        }
+
+        $deviceCode = (string) $terminal['device_id'];
+
+        // Offline. Two missed heartbeats rather than one, so a single late
+        // poll on a busy network is not reported as a fault.
+        $interval = max(10, (int) $terminal['heartbeat_interval_sec']);
+        $silentFor = $terminal['last_heartbeat_at'] === null
+            ? null
+            : Clock::now()->getTimestamp() - Clock::parse((string) $terminal['last_heartbeat_at'])->getTimestamp();
+
+        if ($silentFor === null || $silentFor > $interval * 3) {
+            return [
+                'blocked'         => 'terminal_offline',
+                'blocked_message' => sprintf(
+                    'Terminal %s in Room %s is not reporting in%s, so nothing you do at the reader '
+                    . 'reaches this system. Check its power and Wi-Fi, or open the class with your '
+                    . 'password.',
+                    $deviceCode,
+                    (string) $terminal['room_number'],
+                    $silentFor === null ? ' at all' : sprintf(' (last heard %d seconds ago)', $silentFor)
+                ),
+                'terminal' => $deviceCode,
+            ];
+        }
+
+        // The terminal is alive and telling us its sensor is not.
+        if ($terminal['fingerprint_ok'] !== null && (int) $terminal['fingerprint_ok'] === 0) {
+            return [
+                'blocked'         => 'sensor_down',
+                'blocked_message' => sprintf(
+                    'The fingerprint reader on terminal %s is not responding — the terminal is '
+                    . 'online but its sensor did not answer. That is a hardware fault, not your '
+                    . 'finger, and scanning again will not help. Open the class with your password '
+                    . 'and have the sensor checked.',
+                    $deviceCode
+                ),
+                'terminal' => $deviceCode,
+            ];
+        }
+
+        // The sensor works, but cannot match a print it does not hold. This is
+        // the case that reads as "not recognised" at the terminal and as
+        // nothing at all here, because the firmware does not post a search
+        // that found nothing.
+        $slot = $db->selectOne(
+            "SELECT s.status
+               FROM fingerprint_slots s
+               JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
+              WHERE fp.teacher_id = :teacher AND s.device_row_id = :device
+              ORDER BY FIELD(s.status, 'present', 'pending', 'failed'), s.slot_row_id
+              LIMIT 1",
+            ['teacher' => $teacherId, 'device' => (int) $terminal['device_row_id']]
+        );
+
+        $status = $slot === null ? null : (string) $slot['status'];
+
+        if ($status === 'present') {
+            return ['terminal' => $deviceCode];
+        }
+
+        return [
+            'blocked'         => 'template_missing',
+            'blocked_message' => match ($status) {
+                'pending' => sprintf(
+                    'Your fingerprint has not finished copying to terminal %s yet, so its sensor '
+                    . 'cannot match you. It collects one per poll — give it a few minutes, or open '
+                    . 'the class with your password.',
+                    $deviceCode
+                ),
+                'failed' => sprintf(
+                    'Terminal %s refused to store your fingerprint, so its sensor has no copy to '
+                    . 'match against. An administrator can retry it from Fingerprints. Open the '
+                    . 'class with your password in the meantime.',
+                    $deviceCode
+                ),
+                default => sprintf(
+                    'Your fingerprint is not on terminal %s, so its sensor cannot recognise you '
+                    . 'however many times you scan. Ask an administrator to check the Fingerprints '
+                    . 'page, and open the class with your password for now.',
+                    $deviceCode
+                ),
+            },
+            'terminal' => $deviceCode,
+        ];
+    }
+
     public static function sessionStartState(int $teacherId, ?string $since = null): array
     {
         $db = Database::instance();
@@ -739,7 +881,20 @@ final class TeacherService
         );
 
         if ($attempt === null) {
-            return ['state' => 'waiting', 'message' => null];
+            // 'waiting' used to be the end of it, and it was indistinguishable
+            // from every way this can actually fail — because the two most
+            // likely failures never reach the server at all.
+            //
+            // The terminal posts to /api/attendance/start only after its sensor
+            // matches a print. A sensor that did not initialise makes
+            // handleFingerprint() return at its first line; a sensor that has
+            // no copy of this teacher's template answers NOTFOUND and returns.
+            // Neither writes a fingerprint_logs row, so the panel sat on
+            // "Waiting for your fingerprint… place your finger on the terminal
+            // now" for as long as the teacher was willing to keep placing it,
+            // while the reason was already in the database.
+            return ['state' => 'waiting', 'message' => null]
+                + self::whyTheReaderIsSilent($teacherId);
         }
 
         // 'verified' with no open session means the scan was accepted and the

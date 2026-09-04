@@ -510,7 +510,26 @@ $__view->start('scripts');
                 return;
             }
 
+            /* Still waiting — but the server may already know that waiting is
+               pointless. A sensor that never started, and a sensor with no
+               copy of this teacher's template, both fail without the terminal
+               posting anything, so this panel would otherwise ask somebody to
+               keep placing a finger on a reader that can never answer. */
+            if (data.blocked) {
+                icon.className = 'enrol-scan__icon is-error';
+                stage.textContent = data.blocked === 'template_missing'
+                    ? 'This reader cannot recognise you'
+                    : 'The reader is not answering';
+                detail.textContent = '';
+                warnText.textContent = data.blocked_message;
+                warning.classList.remove('hidden');
+                step('scan');
+                return;
+            }
+
             stage.textContent = 'Waiting for your fingerprint…';
+            detail.textContent = 'Place your finger on the terminal now.';
+            warning.classList.add('hidden');
             step('scan');
         } catch (error) {
             /* A failed poll is not worth a toast; the next one is a second away. */
