@@ -727,13 +727,23 @@ final class TeacherService
                 AND sch.status = 'active'
                 AND sch.deleted_at IS NULL
                 AND sch.day_of_week = :dow
-                AND :now BETWEEN SUBTIME(sch.start_time, '00:10:00') AND sch.end_time
+                -- The same window ScheduleService::activeForDevice() uses, and
+                -- for the same reason: this panel must explain a silent reader
+                -- over exactly the period the reader is expected to answer in.
+                -- A hardcoded ten minutes was wrong at both ends — it ignored
+                -- time_in_window_open, which a school may set to anything, and
+                -- it stopped at end_time, so a teacher scanning during the
+                -- tap-out tail got no diagnosis at all while the terminal was
+                -- still perfectly willing to be scanned at.
+                AND TIME(:now) >= SUBTIME(sch.start_time, SEC_TO_TIME(sch.time_in_window_open * 60))
+                AND TIME(:now2) <= ADDTIME(sch.end_time, SEC_TO_TIME(sch.time_out_window_close * 60))
               ORDER BY sch.start_time
               LIMIT 1",
             [
                 'teacher' => $teacherId,
                 'dow'     => Clock::now()->format('l'),
                 'now'     => Clock::now()->format('H:i:s'),
+                'now2'    => Clock::now()->format('H:i:s'),
             ]
         );
 

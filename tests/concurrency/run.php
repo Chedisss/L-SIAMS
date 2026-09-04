@@ -3545,6 +3545,49 @@ try {
 
         $runner->assertEquals('an offline terminal outranks its own stale sensor flag',
             'terminal_offline', (string) ($state()['blocked'] ?? ''));
+
+        // The window this panel explains over must be the window the reader is
+        // actually open for. It was hardcoded to "ten minutes before the start
+        // until the end time", which was wrong at both ends: it ignored
+        // time_in_window_open, which a school may set to anything, and it
+        // stopped at end_time, so a teacher scanning during the tap-out tail
+        // got no diagnosis while the terminal was still willing to be scanned
+        // at. It now uses the same expression as activeForDevice().
+        $db->execute(
+            "UPDATE devices SET fingerprint_ok = 0, last_heartbeat_at = :n WHERE id = :i",
+            ['n' => Clock::nowString(), 'i' => $deviceId]
+        );
+
+        // A lesson that ended five minutes ago, with twenty minutes of tap-out
+        // window still to run.
+        $db->execute(
+            'UPDATE schedules SET start_time = :s, end_time = :e,
+                    time_in_window_open = 10, time_in_window_close = 60,
+                    time_out_window_open = 30, time_out_window_close = 20
+              WHERE teacher_id = :t',
+            [
+                's' => Clock::now()->modify('-125 minutes')->format('H:i:s'),
+                'e' => Clock::now()->modify('-5 minutes')->format('H:i:s'),
+                't' => $teacherId,
+            ]
+        );
+
+        $runner->assert('the tap-out tail is still explained, not silent',
+            isset($state()['blocked']), 'no diagnosis during the tap-out window');
+
+        // A pre-window wider than the ten minutes that used to be assumed.
+        $db->execute(
+            'UPDATE schedules SET start_time = :s, end_time = :e, time_in_window_open = 25
+              WHERE teacher_id = :t',
+            [
+                's' => Clock::now()->modify('+20 minutes')->format('H:i:s'),
+                'e' => Clock::now()->modify('+140 minutes')->format('H:i:s'),
+                't' => $teacherId,
+            ]
+        );
+
+        $runner->assert('a pre-window wider than ten minutes is honoured',
+            isset($state()['blocked']), 'time_in_window_open was ignored');
     }
 
     /* =====================================================================
