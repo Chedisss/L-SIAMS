@@ -288,6 +288,13 @@ final class AcademicController extends Controller
         ]);
     }
 
+    public function subjectTeachers(Request $request): Response
+    {
+        return $this->json([
+            'teachers' => AcademicStructureService::subjectTeachers($request->routeInt('id')),
+        ]);
+    }
+
     public function subjectArchiveImpact(Request $request): Response
     {
         return $this->json([
