@@ -3839,6 +3839,24 @@ try {
         $runner->assert('and the refusal explains that the schedule would keep running',
             str_contains($refusal, 'keeps running'), $refusal);
 
+        // Named, not counted. The Schedules list has no subject filter, so a
+        // bare count leaves somebody scrolling a week's timetable looking for
+        // rows they cannot identify.
+        $blocking = $db->selectOne(
+            "SELECT sch.day_of_week, sec.section_code
+               FROM schedules sch
+               JOIN sections sec ON sec.section_id = sch.section_id
+              WHERE sch.subject_id = :i AND sch.status = 'active' AND sch.deleted_at IS NULL
+              LIMIT 1",
+            ['i' => $scheduled]
+        );
+
+        $runner->assert('and names the day of a schedule that is blocking it',
+            str_contains($refusal, (string) $blocking['day_of_week']), $refusal);
+
+        $runner->assert('and the section, so it can be found on sight',
+            str_contains($refusal, (string) $blocking['section_code']), $refusal);
+
         $runner->assertEquals('and the subject is untouched',
             null, $db->scalar('SELECT deleted_at FROM subjects WHERE subject_id = :i', ['i' => $scheduled]));
 

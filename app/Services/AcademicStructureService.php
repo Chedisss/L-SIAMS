@@ -970,11 +970,34 @@ final class AcademicStructureService
         $impact = self::subjectArchiveImpact($subjectId);
 
         if ($impact['schedules'] !== []) {
+            // Named, not counted. "This subject is on 3 active schedules" tells
+            // somebody they are blocked without telling them by what, and the
+            // Schedules list has no subject filter to go and find them with —
+            // so a count alone leaves them scrolling a week's timetable looking
+            // for three rows. Each one is identified well enough to be found on
+            // sight.
+            $listed = array_slice($impact['schedules'], 0, 6);
+            $lines  = [];
+
+            foreach ($listed as $schedule) {
+                $lines[] = sprintf(
+                    '%s %s · %s · Room %s',
+                    (string) $schedule['day_of_week'],
+                    substr((string) $schedule['start_time'], 0, 5),
+                    (string) $schedule['section_code'],
+                    (string) $schedule['room_number']
+                );
+            }
+
+            $remaining = count($impact['schedules']) - count($listed);
+
             throw new ValidationException(['subject_id' => [sprintf(
-                'This subject is on %d active schedule(s). A schedule keeps running even after its '
-                . 'subject is archived, so those classes would still open every day for a subject '
-                . 'you believe you have removed. Archive or repoint the schedule(s) first.',
-                count($impact['schedules'])
+                'This subject is on %d active schedule(s): %s%s. A schedule keeps running even '
+                . 'after its subject is archived, so those classes would still open every day for '
+                . 'a subject you believe you have removed. Archive or repoint them first.',
+                count($impact['schedules']),
+                implode('; ', $lines),
+                $remaining > 0 ? sprintf(' and %d more', $remaining) : ''
             )]]);
         }
 
