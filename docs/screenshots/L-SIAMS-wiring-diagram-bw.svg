@@ -58,10 +58,17 @@
 <text x="1200.0" y="168" text-anchor="middle" font-size="27" font-weight="bold">AS608</text>
 <text x="1200.0" y="196" text-anchor="middle" font-size="19">Optical Fingerprint Module</text>
 <text x="1200.0" y="220" text-anchor="middle" font-size="19">UART · 57600 baud</text>
-<circle cx="1200.0" cy="290" r="44" fill="none" stroke="#111111" stroke-width="2"/>
-<circle cx="1200.0" cy="290" r="30" fill="none" stroke="#111111" stroke-width="2"/>
-<circle cx="1200.0" cy="290" r="16" fill="none" stroke="#111111" stroke-width="2"/>
-<text x="1200.0" y="358" text-anchor="middle" font-size="19">sensor window</text>
+<rect x="1124.0" y="238" width="100" height="100" rx="5" fill="#FFFFFF" stroke="#111111" stroke-width="2.4"/>
+<rect x="1139.0" y="253" width="70" height="70" rx="4" fill="#FFFFFF" stroke="#111111" stroke-width="1.8"/>
+<rect x="1148.0" y="262" width="52" height="52" rx="3" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<rect x="1224.0" y="254" width="56" height="68" rx="3" fill="#FFFFFF" stroke="#111111" stroke-width="2"/>
+<rect x="1254.0" y="266" width="18" height="44" rx="2" fill="#FFFFFF" stroke="#111111" stroke-width="1.6"/>
+<line x1="1258.0" y1="272.0" x2="1268.0" y2="272.0" stroke="#111111" stroke-width="1.2"/>
+<line x1="1258.0" y1="282.6666666666667" x2="1268.0" y2="282.6666666666667" stroke="#111111" stroke-width="1.2"/>
+<line x1="1258.0" y1="293.3333333333333" x2="1268.0" y2="293.3333333333333" stroke="#111111" stroke-width="1.2"/>
+<line x1="1258.0" y1="304.0" x2="1268.0" y2="304.0" stroke="#111111" stroke-width="1.2"/>
+<line x1="1224.0" y1="246" x2="1224.0" y2="330" stroke="#111111" stroke-width="2.4"/>
+<text x="1202.0" y="366" text-anchor="middle" font-size="17">optical housing and PCB</text>
 <rect x="1038" y="394" width="16" height="16" fill="#FFFFFF" stroke="#111111" stroke-width="2"/>
 <text x="1070" y="409" text-anchor="start" font-size="22">VCC</text>
 <rect x="1038" y="436" width="16" height="16" fill="#FFFFFF" stroke="#111111" stroke-width="2"/>
