@@ -57,6 +57,7 @@ $__view->start('content');
             <option value="">All</option>
             <option value="active" <?= $filters['status'] === 'active' ? 'selected' : '' ?>>Active</option>
             <option value="inactive" <?= $filters['status'] === 'inactive' ? 'selected' : '' ?>>Inactive</option>
+            <option value="archived" <?= $filters['status'] === 'archived' ? 'selected' : '' ?>>Archived</option>
         </select>
     </div>
     <div class="filter-bar__actions">
@@ -122,6 +123,24 @@ $__view->start('content');
                             <td class="nowrap">
                                 <a class="btn btn-ghost btn-sm" href="/admin/teachers/<?= e($teacher['teacher_id']) ?>" title="View"><i class="fa-solid fa-eye"></i></a>
                                 <a class="btn btn-ghost btn-sm" href="/admin/teachers/<?= e($teacher['teacher_id']) ?>/edit" title="Edit"><i class="fa-solid fa-pen"></i></a>
+                                <?php /* Archiving a teacher had a route, a service with every guard
+                                        it needed and no way to reach it from anywhere in the
+                                        interface. What people did instead was archive the user
+                                        account, which is a different thing — it stops them signing
+                                        in and leaves the staff record, the schedules and the
+                                        timetable exactly where they were. */ ?>
+                                <?php if ((string) $teacher['status'] === 'archived'): ?>
+                                    <button class="btn btn-ghost btn-sm text-success"
+                                            data-restore="<?= e($teacher['teacher_id']) ?>"
+                                            data-name="<?= e($teacher['last_name'] . ', ' . $teacher['first_name']) ?>"
+                                            title="Restore this teacher"><i class="fa-solid fa-rotate-left"></i></button>
+                                <?php else: ?>
+                                    <button class="btn btn-ghost btn-sm text-danger"
+                                            data-archive="<?= e($teacher['teacher_id']) ?>"
+                                            data-name="<?= e($teacher['last_name'] . ', ' . $teacher['first_name']) ?>"
+                                            data-schedules="<?= e($teacher['schedule_count']) ?>"
+                                            title="Archive this teacher"><i class="fa-solid fa-box-archive"></i></button>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -160,5 +179,66 @@ document.getElementById('f-search').addEventListener('input',
 // The filter controls announce changes rather than calling this directly:
 // an inline onchange= attribute cannot be authorised by a CSP nonce.
 document.addEventListener('ls:filter-change', applyTeacherFilters);
+
+document.addEventListener('click', async function (event) {
+    const button = event.target.closest('[data-archive]');
+
+    if (!button) return;
+
+    const LS = window.LSIAMS;
+    const schedules = Number(button.dataset.schedules || 0);
+
+    const result = await LS.modal.confirm({
+        title: 'Archive ' + button.dataset.name + '?',
+        message: 'They stop appearing in enrolment lists, pickers and search, and their account is '
+               + 'disabled so they cannot sign in.'
+               + (schedules > 0
+                    ? ' Their ' + schedules + ' active schedule(s) are archived too — attendance already '
+                      + 'recorded against them is kept, permanently.'
+                    : '')
+               + ' A teacher with a session open right now cannot be archived; close it first.',
+        confirmLabel: 'Archive teacher',
+        requirePassword: true,
+    });
+
+    if (!result) return;
+
+    try {
+        const response = await LS.http.post('/admin/teachers/' + button.dataset.archive + '/archive', {
+            confirm_password: result.password,
+        });
+
+        LS.toast.success(response.message);
+        setTimeout(() => window.location.reload(), 700);
+    } catch (error) {
+        LS.toast.fromError(error);
+    }
+});
+
+document.addEventListener('click', async function (event) {
+    const button = event.target.closest('[data-restore]');
+
+    if (!button) return;
+
+    const LS = window.LSIAMS;
+
+    const confirmed = await LS.modal.confirm({
+        title: 'Restore ' + button.dataset.name + '?',
+        message: 'They become assignable again and their account is re-enabled. Schedules archived '
+               + 'when they left are NOT reinstated — somebody is likely teaching those periods now, '
+               + 'so the timetable is rebuilt deliberately rather than silently.',
+        confirmLabel: 'Restore teacher',
+    });
+
+    if (!confirmed) return;
+
+    try {
+        const response = await LS.http.post('/admin/teachers/' + button.dataset.restore + '/restore', {});
+        LS.toast.success(response.message);
+        setTimeout(() => window.location.reload(), 700);
+    } catch (error) {
+        LS.toast.fromError(error);
+    }
+});
 </script>
 <?php $__view->stop(); ?>

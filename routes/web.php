@@ -112,6 +112,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->put('/teachers/{id:\d+}', TeacherManagementController::class . '@update');
     $router->post('/teachers/{id:\d+}/change-impact', TeacherManagementController::class . '@changeImpact');
     $router->post('/teachers/{id:\d+}/archive', TeacherManagementController::class . '@archive');
+    $router->post('/teachers/{id:\d+}/restore', TeacherManagementController::class . '@restore');
     $router->post('/teachers/{id:\d+}/reset-password', TeacherManagementController::class . '@resetPassword');
 
     // --- Academic setup (Part 13) ---
