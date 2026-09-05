@@ -186,7 +186,7 @@ final class DashboardApiController extends Controller
                         t.employee_number, d.department_code
                    FROM teachers t
                    JOIN departments d ON d.department_id = t.department_id
-                  WHERE t.deleted_at IS NULL
+                  WHERE t.deleted_at IS NULL AND t.status = 'active'
                     AND (t.employee_number LIKE :q OR CONCAT(t.first_name, ' ', t.last_name) LIKE :q)
                   LIMIT 5",
                 ['q' => $like]

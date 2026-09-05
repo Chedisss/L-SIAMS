@@ -720,7 +720,13 @@ final class FingerprintService
                JOIN departments d  ON d.department_id = t.department_id
                LEFT JOIN devices dev ON dev.id = fp.enrolled_device_row_id
                LEFT JOIN classrooms c ON c.classroom_id = dev.classroom_id
-              WHERE t.deleted_at IS NULL
+              -- Archived and inactive staff are excluded, not merely soft-deleted
+              -- ones. deleted_at alone was not enough: the Edit Teacher form
+              -- writes teachers.status straight from the dropdown without ever
+              -- touching deleted_at, so a teacher set to Inactive there stayed
+              -- on this page indefinitely. Somebody who cannot open a session
+              -- has no business in a list of who can.
+              WHERE t.deleted_at IS NULL AND t.status = 'active'
               ORDER BY t.last_name, t.first_name"
         );
     }
