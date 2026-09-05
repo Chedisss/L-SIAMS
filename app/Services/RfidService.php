@@ -334,6 +334,11 @@ final class RfidService
 
         $db->update('rfid_cards', [
             'student_id' => null,
+            // Remembered rather than erased. Clearing student_id and keeping
+            // nothing left the card showing "unassigned" with no way to find
+            // out whose it had been from anywhere a person actually looks.
+            'released_student_id' => (int) $card['student_id'],
+            'released_at'         => Clock::nowString(),
             'status'     => 'inactive',
             'notes'      => $reason ?? $card['notes'],
             'updated_at' => Clock::nowString(),
@@ -465,6 +470,7 @@ final class RfidService
         $base = "FROM rfid_cards rc
                  LEFT JOIN students s ON s.student_id = rc.student_id
                  LEFT JOIN sections sec ON sec.section_id = s.section_id
+                 LEFT JOIN students prev ON prev.student_id = rc.released_student_id
                 WHERE {$whereSql}";
 
         $total = (int) $db->scalar("SELECT COUNT(*) {$base}", $bindings);
@@ -476,10 +482,23 @@ final class RfidService
             // that is null on almost every row.
             // student_status drives the Release action: a card is only
             // releasable once its holder has left.
+            //
+            // The tap counts are scoped to the student who actually holds the
+            // card, not to the card itself. Counting per UID meant a card
+            // re-issued after a term credited its new owner with every tap the
+            // previous one had made — fifteen against a pupil who had not yet
+            // used it once. The card's whole history is still readable in the
+            // tap history view, which is per-UID on purpose: there the question
+            // is what the plastic has done, not what the pupil has.
             "SELECT rc.*, s.student_number, s.first_name, s.last_name, s.photo_path,
                     s.status AS student_status, sec.section_code,
-                    (SELECT COUNT(*) FROM rfid_logs rl WHERE rl.card_uid = rc.card_uid) AS tap_count,
-                    (SELECT MAX(rl2.created_at) FROM rfid_logs rl2 WHERE rl2.card_uid = rc.card_uid) AS last_tap_at
+                    prev.student_number AS released_student_number,
+                    prev.first_name     AS released_first_name,
+                    prev.last_name      AS released_last_name,
+                    (SELECT COUNT(*) FROM rfid_logs rl
+                      WHERE rl.card_uid = rc.card_uid AND rl.student_id = rc.student_id) AS tap_count,
+                    (SELECT MAX(rl2.created_at) FROM rfid_logs rl2
+                      WHERE rl2.card_uid = rc.card_uid AND rl2.student_id = rc.student_id) AS last_tap_at
              {$base}
              ORDER BY rc.status = 'active' DESC, rc.updated_at DESC
              LIMIT " . max(1, $perPage) . ' OFFSET ' . max(0, ($page - 1) * $perPage),

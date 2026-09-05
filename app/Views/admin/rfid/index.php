@@ -165,6 +165,21 @@ $__view->start('content');
                                 <?php else: ?>
                                     <span class="text-subtle">unassigned</span>
                                 <?php endif; ?>
+                                <?php /* Who held it before. Releasing used to erase this, which left a
+                                        row reading "unassigned" and no way to find out whose card it
+                                        had been without opening the audit log. It stays visible after
+                                        the card is re-issued too: "this used to be Ocampo's" remains
+                                        true, and it is the question somebody asks when a card turns up
+                                        in a drawer. */ ?>
+                                <?php if ($card['released_student_id']): ?>
+                                    <div class="text-xs text-subtle">
+                                        was
+                                        <a href="/admin/students/<?= e($card['released_student_id']) ?>">
+                                            <?= e($card['released_last_name']) ?>, <?= e($card['released_first_name']) ?>
+                                        </a>
+                                        · released <?= e(format_date($card['released_at'])) ?>
+                                    </div>
+                                <?php endif; ?>
                             </td>
                             <td><?= $card['section_code'] ? '<span class="badge badge-primary">' . e($card['section_code']) . '</span>' : '—' ?></td>
                             <td class="text-sm nowrap"><?= e(format_date($card['issue_date'])) ?></td>
