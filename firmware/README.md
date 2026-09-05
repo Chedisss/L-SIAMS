@@ -42,16 +42,18 @@ explains why with the current figures.
 
 | MFRC522 | ESP32 | | Fingerprint | ESP32 |
 |---|---|---|---|---|
-| SDA / SS | GPIO 5 | | TX | GPIO 16 (RX2) |
-| SCK | GPIO 18 | | RX | GPIO 17 (TX2) |
+| SDA / SS | GPIO 5 | | TX | GPIO 17 (ESP32 receives) |
+| SCK | GPIO 18 | | RX | GPIO 16 (ESP32 transmits) |
 | MOSI | GPIO 23 | | VCC | 3V3 for a bare AS608, **VIN for an R307** |
 | MISO | GPIO 19 | | GND | GND |
 | RST | GPIO 22 | | | |
 | 3.3V | 3V3 | | | |
 | GND | GND | | | |
 
-> The sensor's TX goes to the pin the ESP32 *receives* on. Wired straight
-> through, both talk and neither listens — and it fails silently.
+> The sensor's TX goes to the pin the ESP32 *receives* on, which is GPIO 17
+> (`PIN_FINGER_RX` in the sketch). This is the reverse of the silkscreen and it
+> is deliberate. Wired straight through, both ends transmit, neither listens,
+> the sensor never answers, and nothing is logged anywhere.
 
 > 5 V on a bare AS608 destroys it. An R307 is the same sensor in a 5 V housing
 > with its own regulator, and that one wants VIN.

@@ -62,6 +62,13 @@ server, and sign in with the demo credentials the seeder prints.
 | `teacher-05-sections.png` | My sections |
 | `teacher-06-reports.png` | Reports |
 
+## Hardware
+
+| File | Contents |
+|---|---|
+| `L-SIAMS-wiring-diagram.png` | Wiring and connectivity of the classroom terminal: ESP32 on the expansion board, MFRC522 over SPI, AS608 over UART2, and the shared 3V3 and GND rails on the universal PCB. Pin assignments taken from `firmware/L_SIAMS_Bench/L_SIAMS_Bench.ino`. |
+| `L-SIAMS-wiring-diagram.svg` | Vector source for the same diagram, for editing or scaling. |
+
 ## Security test evidence
 
 | File | Contents |
