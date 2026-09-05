@@ -659,28 +659,28 @@ final class AttendanceSessionService
             return $none('Carry-over is switched off for this installation.');
         }
 
-        // The afternoon starts from zero. A session opening at or after the
-        // reset time never inherits a register, whatever preceded it and
-        // however small the gap.
+        // The lunch boundary is worked out here and applied further down, once
+        // the previous period is known. It cannot be decided from this session
+        // alone, and deciding it here was wrong.
         //
-        // This is deliberately not expressed as a gap. A morning class ending
-        // at 11:50 and an afternoon class opening at 12:10 is twenty minutes
-        // apart — well inside the limit — and carrying that register forward
-        // would mark present every student who went home at lunch. The break
-        // that matters is a fixed point in the school day, not a duration.
-        $resetAt = trim((string) Config::get('attendance.carry_over.reset_at', '12:00'));
+        // The rule is that a morning register must not cross lunch: a class
+        // ending at 11:50 and one opening at 12:10 is twenty minutes apart —
+        // inside the gap limit — and carrying it would mark present every
+        // student who went home to eat. That is a fixed point in the day, not
+        // a duration, which is why it is not expressed as a gap.
+        //
+        // What it is not is a rule that nothing carries in the afternoon. This
+        // used to return here whenever the new session started at or after the
+        // reset, which blocked every afternoon handover in the timetable: a
+        // 13:00 class handing over to a 13:45 one in the same room, with the
+        // same children in the same chairs, was refused because lunch had
+        // happened two hours earlier. Only a pair that STRADDLES the boundary
+        // is a lunch break.
+        $resetAt  = trim((string) Config::get('attendance.carry_over.reset_at', '12:00'));
+        $boundary = null;
 
         if ($resetAt !== '' && preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/', $resetAt, $clock) === 1) {
             $boundary = $start->setTime((int) $clock[1], (int) $clock[2], 0);
-
-            if ($start >= $boundary) {
-                return $none(sprintf(
-                    'This class starts at %s, at or after the %s reset, so the afternoon begins '
-                    . 'from an empty register.',
-                    $start->format('H:i'),
-                    $resetAt
-                ));
-            }
         }
 
         $maxGap = max(0, (int) Config::get('attendance.carry_over.max_gap_minutes', 30));
@@ -715,6 +715,21 @@ final class AttendanceSessionService
 
         if ($previous === null) {
             return $none(self::whyNoHandover($db, $session, $start, $maxGap));
+        }
+
+        // Now the pair is known, the lunch rule can be applied to the pair.
+        // Straddling the reset means the period before was on the other side
+        // of the break, and its register describes a room that has since
+        // emptied and refilled.
+        if ($boundary !== null
+            && $start >= $boundary
+            && new DateTimeImmutable((string) $previous['scheduled_end']) < $boundary) {
+            return $none(sprintf(
+                'The period before this one ended at %s, before the %s reset, so the afternoon '
+                . 'begins from an empty register rather than carrying the morning across lunch.',
+                (new DateTimeImmutable((string) $previous['scheduled_end']))->format('H:i'),
+                $resetAt
+            ));
         }
 
         $carried = $db->execute(
