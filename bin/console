@@ -111,6 +111,7 @@ try {
         'migrate:fresh'       => commandMigrateFresh($flags),
         'seed'                => commandSeed($flags),
         'schedule:grade3'     => commandScheduleGradeThree($flags),
+        'schedule:mirror'     => commandScheduleMirror($flags),
         'install'             => commandInstall($flags),
         'worker'              => commandWorker($arguments),
         'backup'              => commandBackup(),
@@ -152,6 +153,7 @@ function commandHelp(): void
     out('    migrate:rechecksum      Accept applied migration files whose bytes changed');
     out('    seed [--demo]           Seed reference data, optionally with demo records');
     out('    schedule:grade3         Build the Grade 3 - Gold week (--room=101 --section=G3-S1)');
+    out('    schedule:mirror         Copy a section\'s week to another, rotated (--from= --to= --room=)');
     out('    user:create-admin       Create an administrator account interactively');
     out('    user:create-teachers    Give every teacher without a login one (--yes to skip asking)');
     out('    user:purge <id>         Erase a user and their history (destructive, last resort)');
@@ -3792,6 +3794,296 @@ function commandFingerprintReset(array $flags): void
     out('  Watch each terminal\'s serial for "erased — 0 template(s) on this sensor now",', 'grey');
     out('  then enrol the teachers again from Admin -> Fingerprints.', 'grey');
     out('');
+}
+
+/**
+ * Give a second section the same week as an existing one, rotated so that no
+ * teacher is in two rooms at once.
+ *
+ *   console.bat schedule:mirror --from=G3-S1 --to=G3-S2 --room=102
+ *   console.bat schedule:mirror --from=G3-S1 --to=G3-S2 --room=102 --rotate=2
+ *
+ * Two sections taught by the same seven people cannot simply share a timetable:
+ * copying it verbatim puts every teacher in two classrooms at eight o'clock.
+ * Shifting the whole day later would work and would also mean the second
+ * section finishes at twenty past four, which is not a school day anyone wants
+ * for eight-year-olds.
+ *
+ * So the times stay exactly as they are — same start, same breaks, same lunch,
+ * same finish — and the subjects rotate between the slots. Everyone teaches the
+ * same lessons for the same minutes; they just teach them in a different order.
+ *
+ * The rotation happens within groups of equal duration, which is what keeps a
+ * forty-five minute lesson out of the fifteen-minute Homeroom Guidance slot. A
+ * duration that appears only once cannot rotate — there is nothing to swap it
+ * with — so that period is moved instead, to the first free time after the one
+ * before it. In the Grade 3 week that puts Homeroom Guidance at the top of
+ * lunch rather than in the middle of it, which is where the other section's
+ * already is.
+ *
+ * Everything goes through ScheduleService::create(), so the seventeen
+ * validation rules run exactly as they would if each row were typed into the
+ * form. Nothing here trusts the arithmetic above: if a rotation still collides,
+ * the validator says so and that period is reported rather than written.
+ *
+ * @param list<string> $flags
+ */
+function commandScheduleMirror(array $flags): void
+{
+    $db     = Database::instance();
+    $from   = '';
+    $to     = '';
+    $room   = '';
+    $rotate = 3;
+
+    foreach ($flags as $flag) {
+        if (str_starts_with($flag, '--from='))   { $from   = substr($flag, 7); }
+        if (str_starts_with($flag, '--to='))     { $to     = substr($flag, 5); }
+        if (str_starts_with($flag, '--room='))   { $room   = substr($flag, 7); }
+        if (str_starts_with($flag, '--rotate=')) { $rotate = max(1, (int) substr($flag, 9)); }
+    }
+
+    heading('Mirror a section\'s week');
+
+    if ($from === '' || $to === '') {
+        fail('Give both sections: schedule:mirror --from=G3-S1 --to=G3-S2 --room=102');
+    }
+
+    $section = static function (string $code) use ($db): array {
+        // Accepted by code or by name, because "Diamond" is what the school
+        // calls it and G3-S2 is what the database does.
+        $row = $db->selectOne(
+            'SELECT section_id, section_code, section_name, grade_level_id
+               FROM sections
+              WHERE (section_code = :c OR section_name LIKE :n)
+                AND status = \'active\' AND deleted_at IS NULL
+              ORDER BY section_code LIMIT 1',
+            ['c' => $code, 'n' => '%' . $code . '%']
+        );
+
+        if ($row === null) {
+            fail(sprintf('No active section matching "%s". Check Admin -> Sections.', $code));
+        }
+
+        return $row;
+    };
+
+    $source = $section($from);
+    $target = $section($to);
+
+    if ((int) $source['section_id'] === (int) $target['section_id']) {
+        fail('--from and --to resolved to the same section.');
+    }
+
+    $sourceRows = ScheduleService::forSection((int) $source['section_id']);
+
+    if ($sourceRows === []) {
+        fail(sprintf('%s has no schedule to copy.', $source['section_code']));
+    }
+
+    // The room. Defaulting to the target's own is right far more often than
+    // defaulting to the source's, which would put both sections in one room.
+    if ($room === '') {
+        $room = (string) $db->scalar(
+            'SELECT c.room_number FROM sections s
+               JOIN classrooms c ON c.classroom_id = s.default_classroom_id
+              WHERE s.section_id = :s',
+            ['s' => (int) $target['section_id']]
+        );
+    }
+
+    if ($room === '') {
+        fail('No room given and the target section has no default classroom. Pass --room=102.');
+    }
+
+    $classroom = $db->selectOne(
+        'SELECT classroom_id, room_number FROM classrooms WHERE room_number = :r AND deleted_at IS NULL',
+        ['r' => $room]
+    );
+
+    if ($classroom === null) {
+        fail(sprintf('No classroom "%s".', $room));
+    }
+
+    $adminId = (int) $db->scalar(
+        "SELECT u.user_id FROM users u JOIN roles r ON r.role_id = u.role_id
+          WHERE r.role_slug = 'administrator' AND u.deleted_at IS NULL ORDER BY u.user_id LIMIT 1"
+    );
+
+    out(sprintf('  From   %s (%s)', $source['section_code'], $source['section_name']), 'grey');
+    out(sprintf('  To     %s (%s)', $target['section_code'], $target['section_name']), 'grey');
+    out(sprintf('  Room   %s', $classroom['room_number']), 'grey');
+    out('');
+
+    // --------------------------------------------------------------- slots --
+    // One entry per distinct time slot, carrying whatever is taught in it and
+    // on which days. A slot is the unit that rotates; the days ride along with
+    // the subject, so Reading stays Monday/Wednesday/Friday and Computer stays
+    // Tuesday/Thursday wherever the pair lands.
+    $slots = [];
+
+    foreach ($sourceRows as $row) {
+        $start = substr((string) $row['start_time'], 0, 5);
+        $end   = substr((string) $row['end_time'], 0, 5);
+        $key   = $start . '|' . $end;
+
+        $slots[$key]['start']    = $start;
+        $slots[$key]['end']      = $end;
+        $slots[$key]['duration'] = (int) round((strtotime($end) - strtotime($start)) / 60);
+        $slots[$key]['lessons'][(int) $row['subject_id'] . ':' . (int) $row['teacher_id']]['subject_id'] = (int) $row['subject_id'];
+        $slots[$key]['lessons'][(int) $row['subject_id'] . ':' . (int) $row['teacher_id']]['teacher_id'] = (int) $row['teacher_id'];
+        $slots[$key]['lessons'][(int) $row['subject_id'] . ':' . (int) $row['teacher_id']]['code']       = (string) $row['subject_code'];
+        $slots[$key]['lessons'][(int) $row['subject_id'] . ':' . (int) $row['teacher_id']]['days'][]     = (string) $row['day_of_week'];
+        $slots[$key]['lessons'][(int) $row['subject_id'] . ':' . (int) $row['teacher_id']]['windows']    = [
+            'in_open'   => (int) $row['time_in_window_open'],
+            'in_close'  => (int) $row['time_in_window_close'],
+            'late'      => (int) $row['late_threshold_minutes'],
+            'out_open'  => (int) $row['time_out_window_open'],
+            'out_close' => (int) $row['time_out_window_close'],
+            'dwell'     => (int) $row['minimum_dwell_minutes'],
+        ];
+    }
+
+    ksort($slots);
+    $slots = array_values($slots);
+
+    // ------------------------------------------------------------ rotation --
+    // Grouped by duration so a forty-five minute lesson can only land in a
+    // forty-five minute slot.
+    $byDuration = [];
+
+    foreach ($slots as $i => $slot) {
+        $byDuration[$slot['duration']][] = $i;
+    }
+
+    $assigned = [];
+    $orphans  = [];
+
+    foreach ($byDuration as $duration => $indexes) {
+        $size = count($indexes);
+
+        if ($size < 2) {
+            // Nothing to swap with. Its content stays put for now and the slot
+            // itself is moved below.
+            $orphans[] = $indexes[0];
+            $assigned[$indexes[0]] = $slots[$indexes[0]]['lessons'];
+            continue;
+        }
+
+        foreach ($indexes as $position => $index) {
+            $source = $indexes[($position + $rotate) % $size];
+            $assigned[$index] = $slots[$source]['lessons'];
+        }
+    }
+
+    // A slot whose duration was unique keeps its lessons, so its time has to
+    // change instead: it goes immediately after the period before it, which in
+    // a school day means the front of the break that follows that period.
+    $moved = [];
+
+    foreach ($orphans as $index) {
+        if ($index === 0) {
+            continue;   // nothing before it to sit behind
+        }
+
+        $previousEnd = $slots[$index - 1]['end'];
+        $newStart    = $previousEnd;
+        $newEnd      = date('H:i', strtotime($newStart) + $slots[$index]['duration'] * 60);
+
+        // Only if it actually fits before whatever comes next.
+        if (isset($slots[$index + 1]) && $newEnd > $slots[$index + 1]['start']) {
+            continue;
+        }
+
+        $moved[$index] = [$slots[$index]['start'] . '–' . $slots[$index]['end'], $newStart . '–' . $newEnd];
+
+        $slots[$index]['start'] = $newStart;
+        $slots[$index]['end']   = $newEnd;
+    }
+
+    // ------------------------------------------------------------- preview --
+    out('  New order:', 'cyan');
+
+    foreach ($slots as $index => $slot) {
+        $codes = implode(' / ', array_map(static fn (array $l): string => $l['code'], $assigned[$index]));
+        $note  = isset($moved[$index]) ? '   (moved from ' . $moved[$index][0] . ')' : '';
+
+        out(sprintf('    %s–%s  %-3d  %s%s', $slot['start'], $slot['end'], $slot['duration'], $codes, $note));
+    }
+
+    out('');
+
+    if (!in_array('--yes', $flags, true)
+        && strtolower(prompt('  Create this week for ' . $target['section_code'] . '? (yes/no)')) !== 'yes') {
+        out('');
+        out('  Nothing was created.', 'grey');
+        out('');
+
+        return;
+    }
+
+    // ------------------------------------------------------------- writing --
+    $added   = 0;
+    $skipped = 0;
+    $failed  = [];
+
+    foreach ($slots as $index => $slot) {
+        foreach ($assigned[$index] as $lesson) {
+            foreach ($lesson['days'] as $day) {
+                $duplicate = (int) $db->scalar(
+                    "SELECT COUNT(*) FROM schedules
+                      WHERE section_id = :s AND day_of_week = :d AND start_time = :t
+                        AND status = 'active' AND deleted_at IS NULL",
+                    ['s' => (int) $target['section_id'], 'd' => $day, 't' => $slot['start'] . ':00']
+                );
+
+                if ($duplicate > 0) {
+                    $skipped++;
+                    continue;
+                }
+
+                try {
+                    ScheduleService::create([
+                        'teacher_id'   => $lesson['teacher_id'],
+                        'subject_id'   => $lesson['subject_id'],
+                        'section_id'   => (int) $target['section_id'],
+                        'classroom_id' => (int) $classroom['classroom_id'],
+                        'day_of_week'  => $day,
+                        'start_time'   => $slot['start'],
+                        'end_time'     => $slot['end'],
+                        'time_in_window_open'    => $lesson['windows']['in_open'],
+                        'time_in_window_close'   => $lesson['windows']['in_close'],
+                        'late_threshold_minutes' => $lesson['windows']['late'],
+                        'time_out_window_open'   => $lesson['windows']['out_open'],
+                        'time_out_window_close'  => $lesson['windows']['out_close'],
+                        'minimum_dwell_minutes'  => $lesson['windows']['dwell'],
+                    ], $adminId, true);
+
+                    $added++;
+                } catch (Throwable $e) {
+                    $failed[] = sprintf('%s %s %s: %s', $day, $slot['start'], $lesson['code'], $e->getMessage());
+                }
+            }
+        }
+    }
+
+    out('');
+    out(sprintf('  %d period(s) created, %d already there.', $added, $skipped), $added > 0 ? 'green' : 'grey');
+
+    if ($failed !== []) {
+        out('');
+        out('  These were refused — the validator found a clash the rotation did not:', 'yellow');
+
+        foreach ($failed as $line) {
+            out('    ' . $line, 'grey');
+        }
+
+        out('');
+        out('  Try a different --rotate, or place these few by hand from Admin -> Schedules.', 'grey');
+    }
+
+    out('');
+    $failed === [] ? ok('Timetable built.') : fail(sprintf('%d period(s) refused - see above.', count($failed)));
 }
 
 /**
