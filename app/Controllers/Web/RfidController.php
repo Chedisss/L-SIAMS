@@ -213,7 +213,7 @@ final class RfidController extends Controller
 
         return $this->json(
             $this->readPayload($result['request']) + ['rfid_id' => $result['rfid_id']],
-            'Card issued. The student keeps all previous attendance history.'
+            RfidService::issueMessage((int) $result['rfid_id'])
         );
     }
 
@@ -305,7 +305,7 @@ final class RfidController extends Controller
 
         return $this->json(
             ['rfid_id' => $rfidId],
-            'RFID card assigned successfully. The student keeps all previous attendance history.'
+            RfidService::issueMessage($rfidId)
         );
     }
 

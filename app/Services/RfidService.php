@@ -275,6 +275,61 @@ final class RfidService
     }
 
     /**
+     * What to tell somebody who has just issued a card.
+     *
+     * There is one sentence for three different events, and the wrong one is
+     * alarming rather than merely unhelpful. "The student keeps all previous
+     * attendance history" is true and reassuring when a pupil's lost card is
+     * being replaced — their record follows them, not the plastic. Said over a
+     * card that used to belong to a different pupil it reads as a promise that
+     * the previous holder's attendance has come along with it, which is exactly
+     * the thing an administrator would panic about and exactly what does not
+     * happen. Said over a pupil's first card it claims a history that does not
+     * exist.
+     *
+     * So the message is read back off the card that was actually written.
+     */
+    public static function issueMessage(int $rfidId): string
+    {
+        $card = Database::instance()->selectOne(
+            'SELECT rc.replaced_rfid_id, rc.released_student_id,
+                    s.first_name, s.last_name,
+                    prev.first_name AS prev_first_name, prev.last_name AS prev_last_name
+               FROM rfid_cards rc
+               LEFT JOIN students s    ON s.student_id = rc.student_id
+               LEFT JOIN students prev ON prev.student_id = rc.released_student_id
+              WHERE rc.rfid_id = :id',
+            ['id' => $rfidId]
+        );
+
+        if ($card === null) {
+            return 'Card issued.';
+        }
+
+        $student = trim((string) $card['first_name'] . ' ' . (string) $card['last_name']);
+
+        // Replacing the student's own card. The reassurance belongs here and
+        // only here: it is their record, and a new piece of plastic does not
+        // start it over.
+        if ($card['replaced_rfid_id'] !== null) {
+            return sprintf('Card replaced. %s keeps all previous attendance history.', $student);
+        }
+
+        // Second-hand plastic. Say plainly whose it was and that none of it
+        // came with the card, because that is the question being asked.
+        if ($card['released_student_id'] !== null) {
+            return sprintf(
+                'Card issued. It was previously %s %s\'s — their attendance stays with them, and %s starts with none on this card.',
+                $card['prev_first_name'],
+                $card['prev_last_name'],
+                $student
+            );
+        }
+
+        return sprintf('Card issued to %s.', $student);
+    }
+
+    /**
      * Return a card to stock so the plastic can be handed to somebody else.
      *
      * Physical cards are a finite supply. A school that ran a term with one
