@@ -750,11 +750,29 @@
             const clock = document.getElementById('live-clock');
             if (!clock) return;
 
+            /* Tick from the server's clock, not the browser's.
+             *
+             * These are not the same time whenever the application clock is
+             * shifted for schedule testing, and they are not the same time on
+             * a PC whose own clock has drifted. Attendance is written against
+             * the server's, so that is the one a teacher has to be shown — a
+             * header reading Sunday 02:50 beside a dashboard correctly running
+             * a Monday 13:00 class makes the dashboard look broken.
+             *
+             * The offset is measured once, at load, and the browser counts
+             * from there: no polling, and the seconds still advance. */
+            const appNow = Date.parse(clock.dataset.appNow || '');
+            const skew   = Number.isNaN(appNow) ? 0 : appNow - Date.now();
+            const shifted = clock.dataset.shifted === '1';
+
+            clock.classList.toggle('clock--shifted', shifted);
+            if (shifted) clock.title = 'The application clock is shifted for testing.';
+
             const tick = () => {
-                clock.textContent = new Date().toLocaleString([], {
+                clock.textContent = new Date(Date.now() + skew).toLocaleString([], {
                     weekday: 'short', month: 'short', day: 'numeric',
                     hour: 'numeric', minute: '2-digit',
-                });
+                }) + (shifted ? ' (shifted)' : '');
             };
 
             tick();

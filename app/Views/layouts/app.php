@@ -46,7 +46,20 @@ $photo    = $authUser['photo_path'] ?? null;
 
             <div class="topbar__spacer"></div>
 
-            <span class="clock" id="live-clock" aria-live="off"></span>
+            <?php /* The application's time, not the browser's.
+                     This read new Date() and nothing else, so while the clock
+                     was shifted for testing the header showed the PC's real
+                     time — Sunday 02:50 — while every schedule, session and
+                     record in the system was running at Monday 13:00. A teacher
+                     reading the header concluded there was no class and the
+                     dashboard was wrong, when the dashboard was right and the
+                     header was the only thing lying.
+                     The server's time is sent with the page and the browser
+                     ticks from the difference, so it stays live to the second
+                     without asking the PC what time it is. */ ?>
+            <span class="clock" id="live-clock" aria-live="off"
+                  data-app-now="<?= e(App\Core\Clock::now()->format('c')) ?>"
+                  data-shifted="<?= App\Core\Clock::isShifted() ? '1' : '0' ?>"></span>
 
             <span class="connection-pill" id="connection-indicator" data-state="connecting"
                   title="Live update status">
