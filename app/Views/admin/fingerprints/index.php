@@ -46,6 +46,36 @@ $__view->start('content');
     $held     = (int) $mismatch['sensor_template_count'];
     $expected = (int) $mismatch['expected'];
     ?>
+    <?php /* A reading older than a few heartbeats is not a lagging count, it is
+             a sensor that has stopped answering — and saying "is holding five"
+             from a five-day-old number states as present tense something that
+             was true last week. The stale case names the actual fault instead,
+             which is also the one somebody can act on. */ ?>
+    <?php if (!empty($mismatch['stale'])): ?>
+        <div class="alert alert-warning">
+            <span class="alert__icon"><i class="fa-solid fa-plug-circle-exclamation"></i></span>
+            <div class="alert__body">
+                <strong><?= e($mismatch['device_id']) ?><?= $mismatch['room_number'] ? ' in Room ' . e($mismatch['room_number']) : '' ?>
+                has not reported what its sensor holds since
+                <?= e(time_ago($mismatch['sensor_reported_at'])) ?>.</strong>
+
+                A terminal reports this on every heartbeat, roughly twice a minute, and only while
+                the sensor answers. Silence this long means the module is not responding — check
+                its wiring and its 3.3&nbsp;V supply, and the capacitors across the sensor's power
+                pins if it is on a long lead.
+
+                <?php if (isset($mismatch['fingerprint_ok']) && (int) $mismatch['fingerprint_ok'] === 0): ?>
+                    The terminal has itself reported the sensor as failed at boot, which confirms it.
+                <?php endif; ?>
+
+                <div class="text-xs text-muted mt-1">
+                    Its last reading, from <?= e(time_ago($mismatch['sensor_reported_at'])) ?>,
+                    was <?= e($held) ?> template<?= $held === 1 ? '' : 's' ?> against
+                    <?= e($expected) ?> recorded here — treat that as history, not as the state now.
+                </div>
+            </div>
+        </div>
+    <?php else: ?>
     <div class="alert alert-danger">
         <span class="alert__icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
         <div class="alert__body">
@@ -71,6 +101,7 @@ $__view->start('content');
             </div>
         </div>
     </div>
+    <?php endif; ?>
 <?php endforeach; ?>
 
 <?php /* Which sensors actually hold which teachers.

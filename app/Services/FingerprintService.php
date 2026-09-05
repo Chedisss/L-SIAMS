@@ -784,9 +784,27 @@ final class FingerprintService
         // disagreeing about the same sensor is worse than either being wrong
         // alone: it leaves nobody knowing which to believe.
         return Database::instance()->select(
+            // `stale` decides how this is worded, and it matters more than it
+            // looks. sensor_template_count is written only when a heartbeat
+            // actually carried fp_templates, and the firmware sends that field
+            // only while the sensor answers getTemplateCount(). A sensor that
+            // stops answering therefore freezes its last count instead of
+            // clearing it — deliberately, so a terminal on older firmware does
+            // not read as "unknown" — and the mismatch below then repeated a
+            // days-old number in the present tense for as long as the fault
+            // lasted. "Room 101 is holding 5 fingerprints" was not true; the
+            // sensor had said nothing since.
+            //
+            // Heartbeats run every 30 seconds and a terminal is offline at 90,
+            // so anything older than ten minutes is not a lagging reading, it
+            // is a sensor that has gone quiet — which is the fault worth
+            // reporting, and the one this warning was hiding.
             "SELECT d.id AS device_row_id, d.device_id, d.device_name,
                     c.room_number,
                     d.sensor_template_count, d.sensor_reported_at,
+                    d.fingerprint_ok, d.last_heartbeat_at,
+                    (d.sensor_reported_at IS NULL
+                     OR d.sensor_reported_at < :stale_before) AS stale,
                     (SELECT COUNT(*) FROM fingerprint_slots s
                       WHERE s.device_row_id = d.id
                         AND s.status = 'present'
@@ -796,7 +814,8 @@ final class FingerprintService
               WHERE d.deleted_at IS NULL
                 AND d.sensor_template_count IS NOT NULL
              HAVING d.sensor_template_count <> expected
-              ORDER BY d.device_id"
+              ORDER BY d.device_id",
+            ['stale_before' => Clock::now()->modify('-10 minutes')->format('Y-m-d H:i:s')]
         );
     }
 
