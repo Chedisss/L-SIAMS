@@ -44,7 +44,9 @@ use App\Services\IdempotencyService;
 use App\Services\NotificationService;
 use App\Services\RealtimeService;
 use App\Services\ScheduleService;
+use App\Services\SchoolYearService;
 use App\Services\SessionService;
+use App\Services\StudentService;
 use App\Services\TlsCertificateService;
 
 $command   = $argv[1] ?? 'help';
@@ -125,6 +127,7 @@ try {
         'user:purge'          => commandUserPurge($arguments, $flags),
         'session:why'         => commandSessionWhy($arguments),
         'fingerprint:reset'   => commandFingerprintReset($flags),
+        'students:sample'     => commandSampleStudents($flags),
         default               => commandHelp(),
     };
 } catch (Throwable $e) {
@@ -153,6 +156,7 @@ function commandHelp(): void
     out('    user:create-teachers    Give every teacher without a login one (--yes to skip asking)');
     out('    user:purge <id>         Erase a user and their history (destructive, last resort)');
     out('    fingerprint:reset       Erase every enrolment and every sensor, to start over');
+    out('    students:sample         Enrol sample students (--section=G3-S1 --count=10)');
     out('');
     out('  Operations', 'cyan');
     out('    worker [--once]         Maintenance loop: sessions, heartbeats, retention');
@@ -3405,6 +3409,265 @@ function doctorTlsHandshake(string $appUrl, string $caFile, callable $check, cal
 
     $check(false, 'HTTPS answers and validates', trim($error) !== '' ? trim($error) : 'connection failed');
     $note('Apache may not have been restarted, or may not be including the config from tls:apache.');
+}
+
+/**
+ * Enrol sample students into a section, so there is a class to tap cards for.
+ *
+ *   console.bat students:sample                          every active section, 10 each
+ *   console.bat students:sample --section=G3-S1          one section
+ *   console.bat students:sample --section=G3-S1 --section=G3-S2 --count=10
+ *
+ * A section with no students is not testable: no roster, no attendance rate,
+ * nothing for a card to belong to. This fills that gap without hand-typing
+ * thirty forms, and stops short of the part that has to be real — no RFID card
+ * is issued, because a card UID has to come off an actual card at an actual
+ * reader. Register those from Admin -> RFID Cards afterwards.
+ *
+ * Everything goes through StudentService::create(), so the capacity trigger,
+ * the grade-level check, the enrolment history row and the audit entry all
+ * happen exactly as they would if each student were typed into the form.
+ *
+ * Idempotent by count rather than by name: a section that already holds the
+ * requested number of active students is left alone, so running this twice
+ * does not produce twenty. Student numbers continue from whatever the school
+ * already uses rather than restarting, so these cannot collide with real ones.
+ *
+ * @param list<string> $flags
+ */
+function commandSampleStudents(array $flags): void
+{
+    $db     = Database::instance();
+    $codes  = [];
+    $count  = 10;
+
+    foreach ($flags as $flag) {
+        if (str_starts_with($flag, '--section=')) {
+            $codes[] = substr($flag, 10);
+        }
+        if (str_starts_with($flag, '--count=')) {
+            $count = max(1, min(45, (int) substr($flag, 8)));
+        }
+    }
+
+    heading('Sample students');
+
+    // Named sections, or every active one. Archived sections are never
+    // included: enrolling into a section somebody has retired is not a thing
+    // anybody means to do.
+    if ($codes === []) {
+        $sections = $db->select(
+            "SELECT sec.section_id, sec.section_code, sec.section_name, sec.grade_level_id,
+                    sec.capacity, gl.numeric_level, gl.grade_level_name
+               FROM sections sec
+               JOIN grade_levels gl ON gl.grade_level_id = sec.grade_level_id
+              WHERE sec.status = 'active' AND sec.deleted_at IS NULL
+              ORDER BY gl.numeric_level, sec.section_code"
+        );
+    } else {
+        $placeholders = [];
+        $bindings     = [];
+
+        foreach (array_values($codes) as $i => $code) {
+            $placeholders[]      = ':c' . $i;
+            $bindings['c' . $i]  = $code;
+        }
+
+        $sections = $db->select(
+            "SELECT sec.section_id, sec.section_code, sec.section_name, sec.grade_level_id,
+                    sec.capacity, gl.numeric_level, gl.grade_level_name
+               FROM sections sec
+               JOIN grade_levels gl ON gl.grade_level_id = sec.grade_level_id
+              WHERE sec.section_code IN (" . implode(',', $placeholders) . ")
+                AND sec.deleted_at IS NULL
+              ORDER BY gl.numeric_level, sec.section_code",
+            $bindings
+        );
+
+        $found   = array_column($sections, 'section_code');
+        $missing = array_diff($codes, $found);
+
+        if ($missing !== []) {
+            fail('No such section: ' . implode(', ', $missing) . '. Check the code on Admin -> Sections.');
+        }
+    }
+
+    if ($sections === []) {
+        fail('There are no active sections to enrol into. Create a section first.');
+    }
+
+    $adminId = (int) $db->scalar(
+        "SELECT u.user_id FROM users u JOIN roles r ON r.role_id = u.role_id
+          WHERE r.role_slug = 'administrator' AND u.deleted_at IS NULL
+          ORDER BY u.user_id LIMIT 1"
+    );
+
+    if ($adminId === 0) {
+        fail('No administrator account exists to record the enrolment against. Run user:create-admin first.');
+    }
+
+    // ------------------------------------------------------------- planning --
+    $plan = [];
+
+    foreach ($sections as $section) {
+        $existing = (int) $db->scalar(
+            "SELECT COUNT(*) FROM students
+              WHERE section_id = :s AND status = 'active' AND deleted_at IS NULL",
+            ['s' => (int) $section['section_id']]
+        );
+
+        $wanted = max(0, $count - $existing);
+
+        if ($existing + $wanted > (int) $section['capacity']) {
+            $wanted = max(0, (int) $section['capacity'] - $existing);
+        }
+
+        $plan[] = $section + ['existing' => $existing, 'wanted' => $wanted];
+    }
+
+    foreach ($plan as $row) {
+        out(sprintf(
+            '    %-12s %-22s %2d enrolled  ->  %s',
+            $row['section_code'],
+            $row['grade_level_name'],
+            $row['existing'],
+            $row['wanted'] === 0 ? 'nothing to add' : sprintf('add %d', $row['wanted'])
+        ), $row['wanted'] === 0 ? 'grey' : '');
+    }
+
+    $total = array_sum(array_column($plan, 'wanted'));
+
+    out('');
+
+    if ($total === 0) {
+        ok('Every section already has ' . $count . ' or more students. Nothing to do.');
+        out('');
+
+        return;
+    }
+
+    if (!in_array('--yes', $flags, true)) {
+        out('  These are sample records, not real enrolments. They can be archived', 'yellow');
+        out('  from Admin -> Students, but never deleted — attendance is permanent.', 'yellow');
+
+        if (strtolower(prompt('  Enrol ' . $total . ' sample student(s)? (yes/no)')) !== 'yes') {
+            out('');
+            out('  Nothing was created.', 'grey');
+            out('');
+
+            return;
+        }
+    }
+
+    // -------------------------------------------------------------- the data --
+    // Two pools rather than one, so a section is not all boys. Surnames are
+    // common Filipino ones; nothing here is taken from a real roll.
+    $male = [
+        'Angelo Rafael', 'Kian Dwight', 'Miguel Andres', 'Joshua Emmanuel', 'Nathaniel Cruz',
+        'Paulo Sebastian', 'Rafael Luis', 'Ivan Gabriel', 'Marcus Elias', 'Dominic Jose',
+        'Lorenzo Miguel', 'Enzo Matteo', 'Zach Tristan', 'Aaron Kyle', 'Julian Reyes',
+    ];
+    $female = [
+        'Kyla Marie', 'Sofia Isabelle', 'Andrea Nicole', 'Bea Katrina', 'Trisha Mae',
+        'Althea Jane', 'Camille Louise', 'Danica Rose', 'Erika Faith', 'Maria Clara',
+        'Hannah Grace', 'Yvonne Patrice', 'Jasmine Reigh', 'Nicole Anne', 'Precious Joy',
+    ];
+    $surnames = [
+        'Dela Peña', 'Ocampo', 'Villanueva', 'Bautista', 'Mercado', 'Salazar', 'Fernandez',
+        'Aquino', 'Del Rosario', 'Gonzales', 'Navarro', 'Pascual', 'Rivera', 'Tolentino',
+        'Espiritu', 'Alcantara', 'Bernardo', 'Castillo', 'Domingo', 'Enriquez',
+    ];
+    $middles = [
+        'Santos', 'Reyes', 'Cruz', 'Garcia', 'Ramos', 'Mendoza', 'Torres', 'Flores',
+        'Manalo', 'Lim', 'Bacani', 'Ignacio', 'Padilla', 'Soriano', 'Velasco',
+    ];
+    $guardians = [
+        'Marissa', 'Ronaldo', 'Cristina', 'Eduardo', 'Lorna', 'Ferdinand', 'Editha',
+        'Rogelio', 'Teresita', 'Alfredo', 'Imelda', 'Bernardo', 'Corazon', 'Danilo',
+    ];
+
+    // Continue the school's own numbering rather than starting a parallel one,
+    // so a sample record cannot collide with a real student issued later.
+    $year   = SchoolYearService::current();
+    $prefix = $year === null
+        ? Clock::now()->format('y')
+        : date('y', (int) strtotime((string) $year['start_date']));
+
+    $highest = (int) $db->scalar(
+        "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(student_number, '-', -1) AS UNSIGNED)), 0)
+           FROM students WHERE student_number LIKE :p",
+        ['p' => $prefix . '-%']
+    );
+
+    $created = 0;
+    $failed  = [];
+    $pick    = 0;
+
+    foreach ($plan as $section) {
+        if ($section['wanted'] === 0) {
+            continue;
+        }
+
+        // Roughly the age a pupil is in that grade: six at Grade 1, and one
+        // more per grade after that. Birthdays are spread across the year so a
+        // report grouped by month is not one bar.
+        $age = 6 + max(1, (int) $section['numeric_level']);
+
+        for ($i = 0; $i < $section['wanted']; $i++, $pick++) {
+            $isMale = $pick % 2 === 0;
+            $first  = $isMale ? $male[$pick % count($male)] : $female[$pick % count($female)];
+            $last   = $surnames[$pick % count($surnames)];
+
+            $birthYear  = (int) Clock::now()->format('Y') - $age;
+            $birthMonth = ($pick % 12) + 1;
+            $birthDay   = (($pick * 7) % 27) + 1;
+
+            $number  = $prefix . '-' . str_pad((string) (++$highest), 4, '0', STR_PAD_LEFT);
+            $guardian = $guardians[$pick % count($guardians)] . ' ' . $last;
+
+            try {
+                StudentService::create([
+                    'student_number'   => $number,
+                    'section_id'       => (int) $section['section_id'],
+                    'grade_level_id'   => (int) $section['grade_level_id'],
+                    'first_name'       => $first,
+                    'middle_name'      => $middles[$pick % count($middles)],
+                    'last_name'        => $last,
+                    'gender'           => $isMale ? 'Male' : 'Female',
+                    'birthdate'        => sprintf('%04d-%02d-%02d', $birthYear, $birthMonth, $birthDay),
+                    // Left empty on purpose. An invented address is a plausible
+                    // real one, and an invented email is somebody's real inbox.
+                    'email'            => null,
+                    'address'          => null,
+                    'guardian_name'    => $guardian,
+                    // Clearly sequential, so nobody mistakes it for a number
+                    // that can be rung.
+                    'guardian_contact' => '0917' . str_pad((string) (1230000 + $pick), 7, '0', STR_PAD_LEFT),
+                    'guardian_email'   => null,
+                    'status'           => 'active',
+                    'enrolled_at'      => Clock::today(),
+                ], $adminId);
+
+                $created++;
+            } catch (Throwable $e) {
+                $failed[] = $number . ' (' . $section['section_code'] . '): ' . $e->getMessage();
+                $highest--;   // the number was never used, so do not burn it
+            }
+        }
+    }
+
+    out('');
+    ok(sprintf('%d student(s) enrolled.', $created));
+
+    foreach ($failed as $message) {
+        out('  ✗ ' . $message, 'red');
+    }
+
+    out('');
+    out('  No RFID cards were issued — a card UID has to come off a real card at a', 'cyan');
+    out('  real reader. Assign them from Admin -> RFID Cards, or tap an unknown card', 'cyan');
+    out('  on a terminal and register it from the prompt that appears.', 'cyan');
+    out('');
 }
 
 /**
