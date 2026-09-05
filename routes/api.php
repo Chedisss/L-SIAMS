@@ -113,6 +113,9 @@ $router->group('/api/fingerprint/enrollment', $deviceChain, static function ($ro
     $router->get('', FingerprintEnrollmentApiController::class . '@pending');
     $router->post('/progress', FingerprintEnrollmentApiController::class . '@progress');
     $router->post('/complete', FingerprintEnrollmentApiController::class . '@complete');
+    // Asked before the sensor is written to, not after: a finger already known
+    // to this sensor must not become a second enrolment.
+    $router->post('/duplicate', FingerprintEnrollmentApiController::class . '@duplicate');
     $router->post('/failed', FingerprintEnrollmentApiController::class . '@failed');
     $router->post('/discarded', FingerprintEnrollmentApiController::class . '@discarded');
 });

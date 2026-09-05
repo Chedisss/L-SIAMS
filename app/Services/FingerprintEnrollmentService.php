@@ -7,6 +7,7 @@ use App\Core\Clock;
 use App\Core\Config;
 use App\Core\Crypto;
 use App\Core\Database;
+use App\Core\Logger;
 use App\Core\Exceptions\BusinessRuleException;
 use App\Core\Exceptions\ValidationException;
 
@@ -664,6 +665,71 @@ final class FingerprintEnrollmentService
     }
 
     /** The capture cycle did not produce a usable template. */
+    /**
+     * The terminal has recognised the finger it was about to enrol.
+     *
+     * A sensor will happily store the same finger in two slots, and nothing
+     * downstream can tell afterwards that it did: two teachers end up with
+     * enrolments that both match one person, and whichever slot the search
+     * happens to return first decides whose class opens. That is worse than a
+     * refused enrolment by a long way, and it is silent.
+     *
+     * So the firmware searches before it enrols and reports a hit here. The
+     * slot number is all it can say — slots are per-sensor and mean nothing on
+     * their own — so the mapping to a person is done here, where the records
+     * are.
+     *
+     * A match against the teacher being enrolled is not a duplicate: that is
+     * somebody re-enrolling, which is allowed and is how a poor first capture
+     * gets replaced. Only a match against somebody else stops the enrolment.
+     *
+     * @return array{duplicate:bool,teacher_name:string,message:string}
+     */
+    public static function duplicateCheck(int $requestId, int $deviceRowId, int $matchedSlot): array
+    {
+        $request = self::findForDevice($requestId, $deviceRowId);
+
+        $owner = Database::instance()->selectOne(
+            "SELECT fp.teacher_id, CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
+               FROM fingerprint_slots s
+               JOIN fingerprint_templates fp ON fp.fingerprint_id = s.fingerprint_id
+               JOIN teachers t ON t.teacher_id = fp.teacher_id
+              WHERE s.device_row_id = :device
+                AND s.sensor_template_id = :slot
+                AND t.deleted_at IS NULL
+              LIMIT 1",
+            ['device' => $deviceRowId, 'slot' => $matchedSlot]
+        );
+
+        // The sensor matched a slot this server has no record of. That is not
+        // proof of a duplicate — it is proof the sensor and the register have
+        // drifted apart — and refusing on it would block enrolment on a
+        // terminal somebody had wiped by hand. Reported, not enforced.
+        if ($owner === null) {
+            Logger::warning('Fingerprint matched a slot with no record', [
+                'device_row_id'      => $deviceRowId,
+                'sensor_template_id' => $matchedSlot,
+                'request_id'         => $requestId,
+            ]);
+
+            return ['duplicate' => false, 'teacher_name' => '', 'message' => ''];
+        }
+
+        if ($request['teacher_id'] !== null && (int) $owner['teacher_id'] === (int) $request['teacher_id']) {
+            return ['duplicate' => false, 'teacher_name' => (string) $owner['teacher_name'], 'message' => ''];
+        }
+
+        $message = sprintf('This fingerprint is already enrolled to %s.', $owner['teacher_name']);
+
+        self::fail($requestId, $deviceRowId, $message);
+
+        return [
+            'duplicate'    => true,
+            'teacher_name' => (string) $owner['teacher_name'],
+            'message'      => $message,
+        ];
+    }
+
     public static function fail(int $requestId, int $deviceRowId, string $reason): array
     {
         $request = self::findForDevice($requestId, $deviceRowId);

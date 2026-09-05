@@ -613,6 +613,47 @@ final class FingerprintSyncService
             return true;
         }
 
+        // Whatever the server believed was in this slot on this sensor is now
+        // wrong: the sensor has physically written a different template over
+        // it, and a slot holds one template.
+        //
+        // The lookup above is by (device, fingerprint) because that is one of
+        // the two unique keys. The other is (device, slot), and nothing
+        // honoured it — so enrolling a teacher into a slot another teacher's
+        // template had been synced into raised a duplicate-key error out of an
+        // INSERT, surfaced as HTTP 500 INTERNAL_ERROR, and left the terminal
+        // reporting "the server refused the completion" with no idea why.
+        //
+        // The displaced teacher is re-queued rather than quietly dropped. Their
+        // template really is gone from this sensor, and a row still claiming it
+        // is there is how a teacher ends up unrecognised in a room the records
+        // say they are enrolled in.
+        $displaced = $db->selectOne(
+            'SELECT slot_row_id, fingerprint_id FROM fingerprint_slots
+              WHERE device_row_id = :device AND sensor_template_id = :slot AND fingerprint_id <> :fp',
+            ['device' => $deviceRowId, 'slot' => $slot, 'fp' => $fingerprintId]
+        );
+
+        if ($displaced !== null) {
+            Logger::warning('Fingerprint slot reassigned on the sensor', [
+                'device_row_id'       => $deviceRowId,
+                'sensor_template_id'  => $slot,
+                'displaced_fingerprint' => (int) $displaced['fingerprint_id'],
+                'new_fingerprint'     => $fingerprintId,
+            ]);
+
+            // Deleted rather than marked pending, because the backlog is
+            // computed with NOT EXISTS over this table rather than remembered:
+            // removing the row is precisely what makes the next poll offer this
+            // teacher's template to this terminal again, into whatever slot is
+            // free then. sensor_template_id is NOT NULL, so there is no way to
+            // keep the row while releasing its claim on the slot anyway.
+            $db->execute(
+                'DELETE FROM fingerprint_slots WHERE slot_row_id = :id',
+                ['id' => (int) $displaced['slot_row_id']]
+            );
+        }
+
         $db->insert('fingerprint_slots', [
             'fingerprint_id'     => $fingerprintId,
             'device_row_id'      => $deviceRowId,

@@ -158,6 +158,45 @@ final class FingerprintEnrollmentApiController extends Controller
     }
 
     /** POST /api/fingerprint/enrollment/failed */
+    /**
+     * POST /api/fingerprint/enrollment/duplicate
+     *
+     * The terminal searched its own sensor before enrolling and found the
+     * finger already there. It reports the slot; only the server can say whose
+     * that is, because a slot number is meaningless without knowing the sensor.
+     *
+     * Answers `proceed` rather than an error status: a match against the
+     * teacher being enrolled is somebody re-enrolling, which is allowed, and
+     * the firmware needs to be told to carry on rather than to stop.
+     */
+    public function duplicate(Request $httpRequest): Response
+    {
+        $device = Auth::device();
+
+        $data = $this->validate($httpRequest, [
+            'request_id'   => 'required|int',
+            'matched_slot' => 'required|int|between:1,999',
+        ], [
+            'matched_slot' => 'Matched slot',
+        ]);
+
+        $result = FingerprintEnrollmentService::duplicateCheck(
+            (int) $data['request_id'],
+            (int) $device['id'],
+            (int) $data['matched_slot']
+        );
+
+        return $this->json([
+            'duplicate'      => $result['duplicate'],
+            'proceed'        => !$result['duplicate'],
+            'teacher_name'   => $result['teacher_name'],
+            'display_line_1' => $result['duplicate'] ? 'ALREADY ENROLLED' : 'CONTINUE',
+            'display_line_2' => mb_substr($result['teacher_name'], 0, 20),
+            'led'            => $result['duplicate'] ? 'red' : 'blue',
+            'buzzer'         => $result['duplicate'] ? 'rapid' : 'none',
+        ], $result['duplicate'] ? $result['message'] : 'Not a duplicate; continue.');
+    }
+
     public function failed(Request $httpRequest): Response
     {
         $device = Auth::device();

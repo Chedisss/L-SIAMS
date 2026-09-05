@@ -1485,6 +1485,62 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
     return;
   }
 
+  /* Is this finger already in this sensor?
+   *
+   * The sensor will store the same finger in two slots without complaint, and
+   * afterwards nothing can tell that it did: two teachers hold enrolments that
+   * both match one person, and whichever slot the search returns first decides
+   * whose class opens. Worse than a refused enrolment by a long way, and
+   * silent — the register looks correct.
+   *
+   * The first capture is already in buffer 1, so the search costs nothing
+   * extra. The slot number is all this board can report; only the server knows
+   * whose it is, so the question goes there. A match against the teacher being
+   * enrolled is a re-enrolment, which is allowed, and the server says so by
+   * answering proceed. */
+  if (finger.fingerFastSearch() == FINGERPRINT_OK) {
+    Serial.printf("       this finger already matches slot %d (confidence %d)\n",
+                  finger.fingerID, finger.confidence);
+
+    LsJson body;
+    body["request_id"]   = requestId;
+    body["matched_slot"] = finger.fingerID;
+
+    LsJson response;
+    int    status = signedRequest("POST", "/api/fingerprint/enrollment/duplicate",
+                                  jsonToString(body), &response, generateUuid());
+
+    /* Only a clear "no" from the server lets this continue. A network failure
+     * here must not be read as permission: the whole point is to refuse when
+     * the answer is not known, because the failure it prevents is invisible
+     * afterwards. */
+    bool proceed = (status == 200 || status == 201) && (response["data"]["proceed"] | false);
+
+    if (!proceed) {
+      const char *who = response["data"]["teacher_name"] | "";
+
+      if (status == 200 || status == 201) {
+        Serial.printf("       REFUSED: already enrolled to %s\n", who);
+      } else {
+        Serial.println("       REFUSED: the server could not be asked whose finger this is.");
+      }
+
+      /* The server has already marked the request failed with the name in it
+       * when it answered a duplicate; reporting again would overwrite that
+       * message with a vaguer one. Only the unreachable case needs saying. */
+      if (status != 200 && status != 201) {
+        reportEnrollFailed(requestId,
+          "The finger matched an existing enrolment and the server could not be reached "
+          "to say whose. Nothing was written.");
+      }
+
+      busy = false;
+      return;
+    }
+
+    Serial.println("       same teacher re-enrolling; continuing");
+  }
+
   Serial.println("       lift the finger off...");
   reportEnrollStage(requestId, "remove_finger", nullptr);
   while (finger.getImage() != FINGERPRINT_NOFINGER) delay(50);
