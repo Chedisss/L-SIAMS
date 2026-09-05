@@ -407,9 +407,40 @@ final class FingerprintEnrollmentService
         int $sensorTemplateId,
         ?int $quality = null,
         int $sampleCount = 0,
-        #[\SensitiveParameter] string $templateData = ''
+        #[\SensitiveParameter] string $templateData = '',
+        bool $duplicateChecked = false
     ): array {
         $request = self::findForDevice($requestId, $deviceRowId);
+
+        // The duplicate-finger check runs on the terminal, because only the
+        // sensor can match a print. Firmware is flashed by hand, so a terminal
+        // still carrying an older sketch ran no check at all — and the server
+        // accepted the enrolment anyway. That is how one finger came to be
+        // enrolled to two teachers on a system that had already shipped the
+        // fix: the fix was on a board nobody had reflashed.
+        //
+        // A control that an out-of-date device can skip is not a control. The
+        // terminal must now state that it searched, and a completion without
+        // that statement is refused. An un-updated terminal becomes unable to
+        // enrol rather than able to enrol unsafely, which is the right way
+        // round — and the message says exactly what to do about it, because
+        // otherwise this reads as the reader being broken.
+        if (!$duplicateChecked) {
+            self::fail(
+                $requestId,
+                $deviceRowId,
+                'This terminal did not check whether the finger was already enrolled. Update its firmware.'
+            );
+
+            throw new BusinessRuleException(
+                'DUPLICATE_CHECK_MISSING',
+                'This terminal is running firmware older than 2.1.0, which cannot check whether a finger '
+                . 'is already enrolled to somebody else. Re-flash it from firmware/L_SIAMS_Bench before '
+                . 'enrolling anyone on it. Nothing was recorded.',
+                [],
+                409
+            );
+        }
 
         if (!in_array((string) $request['status'], ['pending', 'scanning'], true)) {
             throw new BusinessRuleException(

@@ -108,6 +108,10 @@ final class FingerprintEnrollmentApiController extends Controller
             // terminal on older firmware sends nothing and the enrolment still
             // stands, it just cannot be copied to the other rooms.
             'template'           => 'nullable|string|max:4096',
+            // Whether the terminal searched its own sensor before writing.
+            // Nullable here and enforced in the service, so the refusal can
+            // explain itself rather than coming back as a field error.
+            'duplicate_checked'  => 'nullable|bool',
         ], [
             'sensor_template_id' => 'Sensor slot',
             'template'           => 'Template',
@@ -119,7 +123,8 @@ final class FingerprintEnrollmentApiController extends Controller
             (int) $data['sensor_template_id'],
             isset($data['quality_score']) ? (int) $data['quality_score'] : null,
             (int) ($data['sample_count'] ?? 0),
-            (string) ($data['template'] ?? '')
+            (string) ($data['template'] ?? ''),
+            (bool) ($data['duplicate_checked'] ?? false)
         );
 
         return $this->json([

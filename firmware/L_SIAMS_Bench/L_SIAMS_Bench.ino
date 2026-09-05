@@ -1175,7 +1175,7 @@ static bool claimDevice() {
 
 static void sendHeartbeat() {
   LsJson body;
-  body["firmware"]    = "2.0.0";
+  body["firmware"]    = "2.1.0";   /* 2.1.0 is the first build that checks for a duplicate finger */
   body["uptime"]      = (millis() - bootMillis) / 1000;
   body["free_heap"]   = ESP.getFreeHeap();
   body["wifi_signal"] = WiFi.RSSI();
@@ -1605,6 +1605,15 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
   body["request_id"]         = requestId;
   body["sensor_template_id"] = slot;
   body["sample_count"]       = 2;
+  /* Proof that the duplicate search above actually ran on this board.
+   *
+   * The check that stops one finger being enrolled to two teachers lives in
+   * firmware, and firmware is flashed by hand — so a terminal still carrying
+   * an older sketch performed no check at all and the server accepted the
+   * enrolment anyway. That is not a control, it is a suggestion. The server
+   * now refuses a completion that does not carry this, which makes an
+   * un-updated terminal unable to enrol rather than able to enrol unsafely. */
+  body["duplicate_checked"]  = true;
   if (templateB64.length()) body["template"] = templateB64;
 
   LsJson response;
