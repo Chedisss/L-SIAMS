@@ -163,11 +163,18 @@ final class TeacherPortalController extends Controller
         }
 
         return $this->view('teacher.schedule', [
-            'pageTitle' => 'My Schedule',
-            'schedules' => $schedules,
-            'view'      => $view,
-            'days'      => ScheduleService::DAYS,
-            'today'     => Clock::now()->format('l'),
+            'pageTitle'   => 'My Schedule',
+            'schedules'   => $schedules,
+            'view'        => $view,
+            'days'        => ScheduleService::DAYS,
+            'today'       => Clock::now()->format('l'),
+            // Built from the whole week regardless of the view: the daily
+            // filter above narrows $schedules, and a grid of one day is not a
+            // week. Only the weekly view renders it.
+            'week'        => $view === 'daily' ? ['days' => [], 'rows' => []] : ScheduleService::weekGridForTeacher($teacherId),
+            // From the session rather than a fresh query: the name on the
+            // downloaded picture is the name of whoever is signed in.
+            'teacherName' => Auth::fullName(),
         ]);
     }
 
