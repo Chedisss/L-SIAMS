@@ -168,6 +168,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/rfid/unknown', RfidController::class . '@unknown');
     $router->post('/rfid/unknown/{id:\d+}/resolve', RfidController::class . '@resolveUnknown');
     $router->post('/rfid/{id:\d+}/status', RfidController::class . '@setStatus');
+    $router->post('/rfid/{id:\d+}/release', RfidController::class . '@release');
 
     // --- Fingerprints ---
     $router->get('/fingerprints', FingerprintController::class . '@index', [], 'admin.fingerprints');

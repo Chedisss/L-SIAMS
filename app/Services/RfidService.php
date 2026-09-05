@@ -274,6 +274,108 @@ final class RfidService
         });
     }
 
+    /**
+     * Return a card to stock so the plastic can be handed to somebody else.
+     *
+     * Physical cards are a finite supply. A school that ran a term with one
+     * roll of pupils and archived them has a drawer of cards the system will
+     * not let it re-issue: assign() refuses any UID already bearing another
+     * student's id, and archiving a student deactivates their card without
+     * ever clearing that id. The card is then locked to a person who has left,
+     * with no way out of it from anywhere in the interface — and buying new
+     * cards to work around a database field is not a fix.
+     *
+     * Releasing sets student_id to NULL and the status to inactive, which is
+     * exactly the "stock card not yet issued" state the schema already
+     * describes. assign() then treats it as new plastic.
+     *
+     * Nothing historical moves. attendance_records.rfid_uid and
+     * rfid_logs.card_uid are snapshot strings rather than foreign keys, so
+     * every tap the previous holder ever made keeps their name and their UID.
+     * What changes is only who the registry says holds the card now.
+     *
+     * Refused while the holder is still an active student. Taking a card off
+     * somebody still enrolled is a replacement, and the replacement flow exists
+     * to demand a reason for it — routing round that with a release would turn
+     * "lost card" into an untracked event.
+     */
+    public static function release(int $rfidId, int $userId, ?string $reason = null): void
+    {
+        $db   = Database::instance();
+        $card = $db->selectOne(
+            'SELECT rc.*, s.student_number, s.first_name, s.last_name, s.status AS student_status
+               FROM rfid_cards rc
+               LEFT JOIN students s ON s.student_id = rc.student_id
+              WHERE rc.rfid_id = :id',
+            ['id' => $rfidId]
+        );
+
+        if ($card === null) {
+            throw new ValidationException(['rfid_id' => ['Card not found.']]);
+        }
+
+        if ($card['student_id'] === null) {
+            throw new ValidationException(['rfid_id' => ['This card is already unassigned.']]);
+        }
+
+        if ((string) $card['status'] === 'blacklisted') {
+            throw new ValidationException([
+                'rfid_id' => ['This card is blacklisted. Take it off the blacklist first if it is genuinely to be reused.'],
+            ]);
+        }
+
+        if ((string) $card['student_status'] === 'active') {
+            throw new ValidationException(['rfid_id' => [sprintf(
+                '%s %s is still enrolled. Issue them a replacement card instead, which records why this one is being withdrawn.',
+                $card['first_name'],
+                $card['last_name']
+            )]]);
+        }
+
+        $db->update('rfid_cards', [
+            'student_id' => null,
+            'status'     => 'inactive',
+            'notes'      => $reason ?? $card['notes'],
+            'updated_at' => Clock::nowString(),
+        ], ['rfid_id' => $rfidId]);
+
+        AuditService::log(
+            AuditService::RFID_RELEASED,
+            'rfid',
+            'rfid_card',
+            $rfidId,
+            ['student_id' => (int) $card['student_id'], 'status' => $card['status']],
+            ['student_id' => null, 'status' => 'inactive', 'reason' => $reason],
+            sprintf(
+                'Card %s released from %s (%s) and returned to stock. %s',
+                $card['card_uid'],
+                trim((string) $card['first_name'] . ' ' . (string) $card['last_name']),
+                $card['student_number'],
+                $reason ?? ''
+            ),
+            'success',
+            $userId
+        );
+    }
+
+    /**
+     * Every card still registered to a student who has left.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function releasable(): array
+    {
+        return Database::instance()->select(
+            "SELECT rc.rfid_id, rc.card_uid, rc.status,
+                    s.student_number, s.first_name, s.last_name, s.status AS student_status
+               FROM rfid_cards rc
+               JOIN students s ON s.student_id = rc.student_id
+              WHERE rc.status <> 'blacklisted'
+                AND (s.status <> 'active' OR s.deleted_at IS NOT NULL)
+              ORDER BY s.student_number"
+        );
+    }
+
     public static function setStatus(int $rfidId, string $status, int $userId, ?string $reason = null): void
     {
         $allowed = ['active', 'inactive', 'lost', 'blacklisted'];
@@ -372,8 +474,10 @@ final class RfidService
             // replacement chain is a self-join on the same table, and resolving
             // it inline made the query noticeably harder to read for one column
             // that is null on almost every row.
+            // student_status drives the Release action: a card is only
+            // releasable once its holder has left.
             "SELECT rc.*, s.student_number, s.first_name, s.last_name, s.photo_path,
-                    sec.section_code,
+                    s.status AS student_status, sec.section_code,
                     (SELECT COUNT(*) FROM rfid_logs rl WHERE rl.card_uid = rc.card_uid) AS tap_count,
                     (SELECT MAX(rl2.created_at) FROM rfid_logs rl2 WHERE rl2.card_uid = rc.card_uid) AS last_tap_at
              {$base}
