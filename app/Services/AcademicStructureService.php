@@ -911,7 +911,7 @@ final class AcademicStructureService
                FROM teacher_subjects ts
                JOIN teachers t    ON t.teacher_id = ts.teacher_id
                JOIN departments d ON d.department_id = t.department_id
-              WHERE ts.subject_id = :subject AND t.deleted_at IS NULL
+              WHERE ts.subject_id = :subject AND t.deleted_at IS NULL AND t.status = 'active'
               ORDER BY t.last_name, t.first_name",
             ['subject' => $subjectId, 'subject2' => $subjectId]
         );
