@@ -3,16 +3,15 @@
 $__view->extend('layouts.app');
 $__view->start('content');
 
-/** Group the flat schedule list by day so the weekly grid can render columns. */
-$byDay = array_fill_keys($days, []);
+/* The sections this teacher takes, for the links under the grid. Keyed by id
+   so a teacher who takes the same section for two subjects is listed once. */
+$sections = [];
 
 foreach ($schedules as $schedule) {
-    $byDay[$schedule['day_of_week']][] = $schedule;
+    $sections[(int) $schedule['section_id']] = (string) $schedule['section_code'];
 }
 
-$weekdays = array_slice($days, 0, 5);
-$weekend  = array_filter(array_slice($days, 5), static fn (string $d): bool => $byDay[$d] !== []);
-$columns  = array_merge($weekdays, $weekend);
+asort($sections);
 ?>
 
 <?php $__view->include('partials.page-header', [
@@ -79,47 +78,35 @@ $columns  = array_merge($weekdays, $weekend);
         </div>
     </div>
 <?php else: ?>
-    <div class="card">
-        <div class="card__body--flush">
-            <div class="table-wrap">
-                <div class="timetable" style="grid-template-columns:repeat(<?= e(count($columns)) ?>, minmax(190px, 1fr))">
-                    <?php foreach ($columns as $day): ?>
-                        <div class="timetable__col">
-                            <div class="timetable__head <?= $day === $today ? 'is-today' : '' ?>">
-                                <?= e($day) ?>
-                                <span class="text-xs text-muted">(<?= e(count($byDay[$day])) ?>)</span>
-                            </div>
+    <?php /* The same grid the section pages use — rows of time, columns of day,
+            with break, lunch and home time named rather than left as holes.
+            This replaced a column of stacked cards per day, which was accurate
+            and hard to read across: the question a teacher actually asks of
+            their own timetable is "what am I doing at ten", and that is a row,
+            not a column. */ ?>
+    <?php $__view->include('partials.week-grid', [
+        'week'       => $week,
+        'title'      => 'Weekly schedule',
+        'emptyTitle' => 'No classes assigned yet',
+        'emptyText'  => 'Once the administration assigns you subjects and sections, your timetable appears here.',
+    ]); ?>
 
-                            <?php if ($byDay[$day] === []): ?>
-                                <div class="timetable__free">No classes</div>
-                            <?php else: ?>
-                                <?php foreach ($byDay[$day] as $schedule): ?>
-                                    <div class="timetable__slot">
-                                        <div class="timetable__time">
-                                            <?= e(format_time($schedule['start_time'])) ?> – <?= e(format_time($schedule['end_time'])) ?>
-                                        </div>
-                                        <div class="timetable__subject"><?= e($schedule['subject_code']) ?></div>
-                                        <div class="timetable__meta">
-                                            <?php /* The weekly grid is the default view, so the roster
-                                                     has to be reachable from here and not only from the
-                                                     daily table. */ ?>
-                                            <a href="/teacher/sections/<?= e($schedule['section_id']) ?>"
-                                               title="See who is in this section"><?= e($schedule['section_code']) ?></a>
-                                            · Room <?= e($schedule['room_number']) ?>
-                                        </div>
-                                        <div class="timetable__meta text-xs">
-                                            Late after <?= e($schedule['late_threshold_minutes']) ?> min ·
-                                            stay <?= e($schedule['minimum_dwell_minutes']) ?> min
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </div>
+    <?php /* The grid names the section but cannot link it — a downloadable
+            picture of a table has no links in it, and the cells are already
+            carrying two lines. The rosters stay reachable underneath. */ ?>
+    <?php if ($sections !== []): ?>
+        <div class="card">
+            <div class="card__header"><h2 class="card__title">Your sections</h2></div>
+            <div class="card__body">
+                <div class="flex flex-wrap gap-1">
+                    <?php foreach ($sections as $sectionId => $label): ?>
+                        <a class="badge badge-primary" href="/teacher/sections/<?= e($sectionId) ?>"
+                           title="See who is in this section"><?= e($label) ?></a>
                     <?php endforeach; ?>
                 </div>
             </div>
         </div>
-    </div>
+    <?php endif; ?>
 <?php endif; ?>
 
 <div class="card">
@@ -136,4 +123,27 @@ $columns  = array_merge($weekdays, $weekend);
     </div>
 </div>
 
+<?php if ($view !== 'daily' && ($week['rows'] ?? []) !== []): ?>
+<?php
+/* Handed to the download as data rather than scraped back out of the DOM, so
+   the picture is of the timetable rather than of however the table happened to
+   be laid out at the window width somebody had open. */
+$__timetable = [
+    'heading'    => $teacherName,
+    'subheading' => '',
+    'caption'    => 'Teaching Schedule',
+    'filename'   => 'schedule-' . $teacherName,
+    'school'     => App\Services\SettingsService::schoolName(),
+    'days'       => $week['days'],
+    'rows'       => $week['rows'],
+];
+?>
+<script type="application/json" id="week-data"><?= json_encode($__timetable, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
+<?php endif; ?>
+
+<?php
+$__view->stop();
+$__view->start('scripts');
+?>
+<?php $__view->include('partials.week-grid-script'); ?>
 <?php $__view->stop(); ?>

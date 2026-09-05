@@ -68,6 +68,7 @@ final class TeacherManagementController extends Controller
             'teacher'     => $teacher,
             'constraints' => TeacherService::constraints($teacherId),
             'schedules'   => ScheduleService::forTeacher($teacherId),
+            'week'        => ScheduleService::weekGridForTeacher($teacherId),
             'subjectIds'  => TeacherService::subjectIds($teacherId),
             'sectionIds'  => TeacherService::sectionIds($teacherId),
             'fingerprintLogs' => FingerprintService::logsForTeacher($teacherId, 20),

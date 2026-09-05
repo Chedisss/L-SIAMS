@@ -703,8 +703,46 @@ final class ScheduleService
      */
     public static function weekGrid(int $sectionId): array
     {
-        $schedules = self::forSection($sectionId);
+        // A section's week answers "what is this class doing, and who takes
+        // it", so the second line is the teacher.
+        return self::buildWeekGrid(self::forSection($sectionId), static fn (array $s): array => [
+            'primary'   => (string) $s['subject_name'],
+            'secondary' => (string) $s['teacher_name'],
+        ]);
+    }
 
+    /**
+     * The same week, seen from a teacher rather than a section.
+     *
+     * A teacher's timetable moves between sections and rooms while a section's
+     * stays put, so the second line has to say where they are due — a grid that
+     * only named the subject would be read as "Science, again" five times over
+     * with nothing to say which class or which room.
+     *
+     * @return array{days:list<string>,rows:list<array<string,mixed>>}
+     */
+    public static function weekGridForTeacher(int $teacherId): array
+    {
+        return self::buildWeekGrid(self::forTeacher($teacherId), static fn (array $s): array => [
+            'primary'   => (string) $s['subject_name'],
+            'secondary' => trim((string) $s['section_code'] . ' · Room ' . (string) $s['room_number']),
+        ], true);
+    }
+
+    /**
+     * Pivot a flat schedule list into rows of time against columns of day.
+     *
+     * Shared by both grids because the part worth getting right is not the
+     * pivot — it is the gaps. A timetable rendered from periods alone has holes
+     * in it where break, lunch and the end of the day belong, and a hole reads
+     * as a fault rather than as free time.
+     *
+     * @param  list<array<string,mixed>>                       $schedules
+     * @param  callable(array<string,mixed>):array{primary:string,secondary:string} $cell
+     * @return array{days:list<string>,rows:list<array<string,mixed>>}
+     */
+    private static function buildWeekGrid(array $schedules, callable $cell, bool $forOneTeacher = false): array
+    {
         if ($schedules === []) {
             return ['days' => [], 'rows' => []];
         }
@@ -722,10 +760,8 @@ final class ScheduleService
 
             $key = substr((string) $schedule['start_time'], 0, 5) . '|' . substr((string) $schedule['end_time'], 0, 5);
 
-            $slots[$key][$day] = [
+            $slots[$key][$day] = $cell($schedule) + [
                 'subject_code' => (string) $schedule['subject_code'],
-                'subject_name' => (string) $schedule['subject_name'],
-                'teacher_name' => (string) $schedule['teacher_name'],
                 'room_number'  => (string) $schedule['room_number'],
             ];
         }
@@ -754,13 +790,23 @@ final class ScheduleService
                         'start'    => $previous,
                         'end'      => $start,
                         'duration' => $minutes,
-                        // The long one over the middle of the day is lunch;
-                        // the short ones between lessons are breaks. Anything
-                        // else is left as the neutral word, because guessing
-                        // harder than the times support helps nobody.
-                        'label'    => $minutes >= 45 && $previous >= '11:00' && $previous <= '13:30'
-                            ? 'Lunch break'
-                            : ($minutes <= 30 ? 'Break time' : 'No class scheduled'),
+                        // A gap means different things in the two grids, and
+                        // labelling them the same way was wrong for one of them.
+                        //
+                        // In a section's week the class is together all day, so
+                        // a gap is the school's own break: the long one over the
+                        // middle of the day is lunch, the short ones between
+                        // lessons are breaks.
+                        //
+                        // In a teacher's week a gap only means they are not
+                        // teaching — the class is with somebody else. Calling
+                        // their free afternoon "Lunch break" tells them the
+                        // school stops when it does not.
+                        'label'    => $forOneTeacher
+                            ? 'Free period'
+                            : ($minutes >= 45 && $previous >= '11:00' && $previous <= '13:30'
+                                ? 'Lunch break'
+                                : ($minutes <= 30 ? 'Break time' : 'No class scheduled')),
                     ];
                 }
             }
@@ -777,7 +823,12 @@ final class ScheduleService
         }
 
         if ($previous !== null) {
-            $rows[] = ['type' => 'band', 'start' => $previous, 'end' => null, 'duration' => null, 'label' => 'Home time'];
+            $rows[] = [
+                'type' => 'band', 'start' => $previous, 'end' => null, 'duration' => null,
+                // Same distinction: the class goes home, a teacher's last
+                // period simply ends — the school day may well run on.
+                'label' => $forOneTeacher ? 'No further classes' : 'Home time',
+            ];
         }
 
         return ['days' => $days, 'rows' => $rows];

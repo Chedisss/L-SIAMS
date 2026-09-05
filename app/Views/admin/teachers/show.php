@@ -102,33 +102,20 @@ $__view->start('content');
     </div>
 </div>
 
-<div class="grid grid--2">
-    <div class="card">
-        <div class="card__header"><h2 class="card__title">Schedule</h2></div>
-        <div class="card__body--flush">
-            <?php if ($schedules === []): ?>
-                <?php $__view->include('partials.empty-state', ['icon' => 'fa-calendar-days', 'title' => 'No classes assigned']); ?>
-            <?php else: ?>
-                <div class="table-wrap">
-                    <table class="data">
-                        <thead><tr><th>Day</th><th>Time</th><th>Subject</th><th>Section</th><th>Room</th></tr></thead>
-                        <tbody>
-                        <?php foreach ($schedules as $schedule): ?>
-                            <tr>
-                                <td><span class="badge badge-neutral"><?= e(substr((string) $schedule['day_of_week'], 0, 3)) ?></span></td>
-                                <td class="nowrap mono text-sm"><?= e(substr((string) $schedule['start_time'], 0, 5)) ?>–<?= e(substr((string) $schedule['end_time'], 0, 5)) ?></td>
-                                <td class="cell-primary"><?= e($schedule['subject_code']) ?></td>
-                                <td><span class="badge badge-primary"><?= e($schedule['section_code']) ?></span></td>
-                                <td class="text-sm"><?= e($schedule['room_number']) ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            <?php endif; ?>
-        </div>
-    </div>
+<?php /* Full width and on its own row: five day columns do not fit in half a
+        page, and the band labels centred across the week end up centred
+        somewhere nobody can see. The same grid the teacher sees on their own
+        My Schedule page, so the two never disagree about a timetable. */ ?>
+<div class="grid">
+    <?php $__view->include('partials.week-grid', [
+        'week'       => $week,
+        'title'      => 'Weekly schedule',
+        'emptyTitle' => 'No classes assigned',
+        'emptyText'  => 'This teacher has no schedule yet, so they cannot open a session on a terminal.',
+    ]); ?>
+</div>
 
+<div class="grid">
     <div class="card">
         <div class="card__header"><h2 class="card__title">Recent activity</h2></div>
         <div class="card__body--flush" style="max-height:420px;overflow-y:auto">
@@ -163,10 +150,26 @@ $__view->start('content');
     </div>
 </div>
 
+<?php if (($week['rows'] ?? []) !== []): ?>
+<?php
+$__timetable = [
+    'heading'    => trim((string) $teacher['first_name'] . ' ' . (string) $teacher['last_name']),
+    'subheading' => (string) ($teacher['department_name'] ?? ''),
+    'caption'    => 'Teaching Schedule',
+    'filename'   => 'schedule-' . (string) $teacher['last_name'],
+    'school'     => App\Services\SettingsService::schoolName(),
+    'days'       => $week['days'],
+    'rows'       => $week['rows'],
+];
+?>
+<script type="application/json" id="week-data"><?= json_encode($__timetable, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
+<?php endif; ?>
+
 <?php
 $__view->stop();
 $__view->start('scripts');
 ?>
+<?php $__view->include('partials.week-grid-script'); ?>
 <script nonce="<?= e(csp_nonce()) ?>">
 document.getElementById('reset-password').addEventListener('click', async function () {
     const LS = window.LSIAMS;
