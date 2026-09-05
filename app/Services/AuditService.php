@@ -61,6 +61,7 @@ final class AuditService
     public const RFID_REPLACED               = 'RFID_REPLACED';
     public const RFID_DEACTIVATED            = 'RFID_DEACTIVATED';
     public const RFID_BLACKLISTED            = 'RFID_BLACKLISTED';
+    public const RFID_RELEASED               = 'RFID_RELEASED';
     public const FINGERPRINT_ENROLLED        = 'FINGERPRINT_ENROLLED';
     public const FINGERPRINT_DELETED         = 'FINGERPRINT_DELETED';
     public const FINGERPRINT_VERIFIED        = 'FINGERPRINT_VERIFIED';

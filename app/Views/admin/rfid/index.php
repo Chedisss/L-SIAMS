@@ -180,6 +180,16 @@ $__view->start('content');
                                     <a class="btn btn-ghost btn-sm" href="/admin/rfid?replace=<?= e($card['student_id']) ?>"
                                        title="Replace this card"><i class="fa-solid fa-id-card"></i></a>
                                 <?php endif; ?>
+                                <?php /* Only where the holder has left. A card belonging to somebody
+                                        still enrolled is withdrawn through the replacement flow, which
+                                        makes a reason compulsory; offering release here as well would
+                                        be offering a way round that. */ ?>
+                                <?php if ($card['student_id'] && (string) ($card['student_status'] ?? '') !== 'active'
+                                          && (string) $card['status'] !== 'blacklisted'): ?>
+                                    <button class="btn btn-ghost btn-sm" data-release="<?= e($card['rfid_id']) ?>"
+                                            data-uid="<?= e($card['card_uid']) ?>"
+                                            title="Release this card back to stock"><i class="fa-solid fa-rotate-left"></i></button>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -1064,6 +1074,28 @@ window.rfidTable = {
             try {
                 const response = await LS.http.post('/admin/rfid/' + status.dataset.status + '/status',
                     { status: next, reason: reason });
+                LS.toast.success(response.message);
+                setTimeout(() => window.location.reload(), 700);
+            } catch (error) {
+                LS.toast.fromError(error);
+            }
+        }
+
+        const release = event.target.closest('[data-release]');
+
+        if (release) {
+            const confirmed = await LS.modal.confirm({
+                title: 'Release card ' + release.dataset.uid + '?',
+                message: 'The card stops belonging to this student and returns to stock, so it can be '
+                       + 'issued to somebody else. Their attendance history is not affected — every tap '
+                       + 'they made keeps their name and this UID.',
+                confirmLabel: 'Release to stock',
+            });
+
+            if (!confirmed) return;
+
+            try {
+                const response = await LS.http.post('/admin/rfid/' + release.dataset.release + '/release', {});
                 LS.toast.success(response.message);
                 setTimeout(() => window.location.reload(), 700);
             } catch (error) {

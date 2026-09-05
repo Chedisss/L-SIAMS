@@ -129,6 +129,7 @@ try {
         'session:why'         => commandSessionWhy($arguments),
         'fingerprint:reset'   => commandFingerprintReset($flags),
         'students:sample'     => commandSampleStudents($flags),
+        'rfid:release'        => commandRfidRelease($flags),
         default               => commandHelp(),
     };
 } catch (Throwable $e) {
@@ -158,6 +159,7 @@ function commandHelp(): void
     out('    user:create-teachers    Give every teacher without a login one (--yes to skip asking)');
     out('    user:purge <id>         Erase a user and their history (destructive, last resort)');
     out('    fingerprint:reset       Erase every enrolment and every sensor, to start over');
+    out('    rfid:release            Free cards held by students who have left, for re-issue');
     out('    students:sample         Enrol sample students (--section=G3-S1 --count=10)');
     out('');
     out('  Operations', 'cyan');
@@ -3411,6 +3413,95 @@ function doctorTlsHandshake(string $appUrl, string $caFile, callable $check, cal
 
     $check(false, 'HTTPS answers and validates', trim($error) !== '' ? trim($error) : 'connection failed');
     $note('Apache may not have been restarted, or may not be including the config from tls:apache.');
+}
+
+/**
+ * Return every card held by a student who has left to the stock pool.
+ *
+ *   console.bat rfid:release
+ *
+ * The case this exists for: a school that ran a term on demo records, archived
+ * them, and now has a drawer of physical cards the system will not re-issue.
+ * assign() refuses any UID already carrying another student's id, and archiving
+ * a student deactivates their card without clearing that id — so without this
+ * the only routes out are a hundred clicks or buying new plastic.
+ *
+ * Only cards whose holder is no longer active are touched. A card belonging to
+ * an enrolled pupil is withdrawn through the replacement flow, which makes a
+ * reason compulsory; this must not become a way round that.
+ *
+ * @param list<string> $flags
+ */
+function commandRfidRelease(array $flags): void
+{
+    heading('Release cards back to stock');
+
+    $cards   = App\Services\RfidService::releasable();
+    $adminId = (int) Database::instance()->scalar(
+        "SELECT u.user_id FROM users u JOIN roles r ON r.role_id = u.role_id
+          WHERE r.role_slug = 'administrator' AND u.deleted_at IS NULL ORDER BY u.user_id LIMIT 1"
+    );
+
+    if ($cards === []) {
+        ok('No cards are held by students who have left. Nothing to release.');
+        out('');
+
+        return;
+    }
+
+    out(sprintf('  %d card(s) are still registered to students who have left:', count($cards)), 'grey');
+    out('');
+
+    foreach (array_slice($cards, 0, 15) as $card) {
+        out(sprintf(
+            '    %-12s %-10s %s %s (%s)',
+            $card['card_uid'],
+            $card['status'],
+            $card['first_name'],
+            $card['last_name'],
+            $card['student_number']
+        ));
+    }
+
+    if (count($cards) > 15) {
+        out(sprintf('    ... and %d more', count($cards) - 15), 'grey');
+    }
+
+    out('');
+    out('  Releasing does not touch attendance. Every tap these cards made keeps the', 'grey');
+    out('  student who made it and the UID it was made with — only the registry changes.', 'grey');
+
+    if (!in_array('--yes', $flags, true)
+        && strtolower(prompt('  Release all ' . count($cards) . ' card(s)? (yes/no)')) !== 'yes') {
+        out('');
+        out('  Nothing was released.', 'grey');
+        out('');
+
+        return;
+    }
+
+    $released = 0;
+    $failed   = [];
+
+    foreach ($cards as $card) {
+        try {
+            App\Services\RfidService::release((int) $card['rfid_id'], $adminId, 'Bulk release: previous holder has left.');
+            $released++;
+        } catch (Throwable $e) {
+            $failed[] = $card['card_uid'] . ': ' . $e->getMessage();
+        }
+    }
+
+    out('');
+    ok(sprintf('%d card(s) returned to stock.', $released));
+
+    foreach ($failed as $line) {
+        out('  ✗ ' . $line, 'red');
+    }
+
+    out('');
+    out('  These UIDs can now be assigned to anybody from Admin -> RFID Cards.', 'cyan');
+    out('');
 }
 
 /**

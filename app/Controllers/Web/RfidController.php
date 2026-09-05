@@ -332,6 +332,28 @@ final class RfidController extends Controller
         return $this->json([], sprintf('Card set to %s.', $data['status']));
     }
 
+    /**
+     * Return a card to stock so it can be issued to somebody else.
+     *
+     * Separate from setStatus because it is not a status change: the card stops
+     * belonging to anyone, which is the part that matters and the part that has
+     * to be in the audit log under its own name.
+     */
+    public function release(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'reason' => 'nullable|string|max:255|no_html',
+        ]);
+
+        RfidService::release(
+            $request->routeInt('id'),
+            $this->requireUserId(),
+            $data['reason'] ?? null
+        );
+
+        return $this->json([], 'Card released and returned to stock.');
+    }
+
     public function history(Request $request): Response
     {
         $uid = $request->string('uid', '');
