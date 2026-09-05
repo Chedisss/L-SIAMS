@@ -387,7 +387,11 @@ final class TeacherService
      */
     public static function paginate(array $filters, int $page, int $perPage): array
     {
-        $where    = ['t.deleted_at IS NULL'];
+        // Archived teachers carry deleted_at, so the default listing hides
+        // them — but the Status filter has to be able to reach them, or
+        // archiving is a one-way door with no way back to the restore button.
+        $archived = ($filters['status'] ?? '') === 'archived';
+        $where    = [$archived ? "t.status = 'archived'" : 't.deleted_at IS NULL'];
         $bindings = [];
 
         if (!empty($filters['search'])) {
@@ -398,6 +402,12 @@ final class TeacherService
         }
 
         foreach (['department_id' => 't.department_id', 'status' => 't.status', 'fingerprint_status' => 't.fingerprint_status'] as $key => $column) {
+            // Already applied above, and applying it twice would bind :status
+            // against a WHERE clause that no longer mentions it.
+            if ($key === 'status' && $archived) {
+                continue;
+            }
+
             if (!empty($filters[$key])) {
                 $where[]        = "{$column} = :{$key}";
                 $bindings[$key] = $filters[$key];
@@ -641,6 +651,64 @@ final class TeacherService
             ['status' => $teacher['status']],
             ['status' => 'archived'],
             sprintf('Teacher %s archived; account disabled and schedules archived.', $teacher['employee_number']),
+            'success',
+            $userId
+        );
+    }
+
+    /**
+     * Bring an archived teacher back.
+     *
+     * Archiving hides a teacher from every list in the system, so without this
+     * it is a one-way door: a name clicked by mistake could only be recovered
+     * with SQL. Sections, departments and classrooms all have a way back, and a
+     * person is a worse thing to lose than a room.
+     *
+     * Their schedules are deliberately NOT resurrected. The timetable moved on
+     * while they were gone — somebody else is very likely teaching those
+     * periods now — and silently reinstating them would either collide with the
+     * cover or, worse, not collide and quietly double-book a room. The teacher
+     * comes back assignable; the timetable is rebuilt on purpose.
+     */
+    public static function restore(int $teacherId, int $userId): void
+    {
+        $db      = Database::instance();
+        $teacher = $db->selectOne('SELECT * FROM teachers WHERE teacher_id = :id', ['id' => $teacherId]);
+
+        if ($teacher === null) {
+            throw new ValidationException(['teacher_id' => ['Teacher not found.']]);
+        }
+
+        if ($teacher['deleted_at'] === null && (string) $teacher['status'] !== 'archived') {
+            throw new ValidationException(['teacher_id' => ['This teacher is not archived.']]);
+        }
+
+        $db->transaction(static function (Database $db) use ($teacherId, $teacher): void {
+            $db->update('teachers', [
+                'status'     => 'active',
+                'deleted_at' => null,
+                'updated_at' => Clock::nowString(),
+            ], ['teacher_id' => $teacherId]);
+
+            // The account was disabled by archiving, so it comes back with the
+            // teacher. A password change is not forced: nothing about it was
+            // compromised, it was merely switched off.
+            if ($teacher['user_id'] !== null) {
+                $db->update('users', ['status' => 'active'], ['user_id' => (int) $teacher['user_id']]);
+            }
+        });
+
+        AuditService::log(
+            'TEACHER_RESTORED',
+            'teachers',
+            'teacher',
+            $teacherId,
+            ['status' => $teacher['status']],
+            ['status' => 'active'],
+            sprintf(
+                'Teacher %s restored; account re-enabled. Archived schedules were not reinstated.',
+                $teacher['employee_number']
+            ),
             'success',
             $userId
         );

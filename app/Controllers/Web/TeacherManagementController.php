@@ -282,6 +282,17 @@ final class TeacherManagementController extends Controller
         return $this->redirect('/admin/teachers', 'Teacher archived.');
     }
 
+    public function restore(Request $request): Response
+    {
+        TeacherService::restore($request->routeInt('id'), $this->requireUserId());
+
+        if ($request->wantsJson()) {
+            return $this->json([], 'Teacher restored. Their archived schedules were not reinstated.');
+        }
+
+        return $this->redirect('/admin/teachers', 'Teacher restored.');
+    }
+
     public function resetPassword(Request $request): Response
     {
         $this->requirePasswordConfirmation($request);
