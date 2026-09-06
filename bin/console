@@ -116,6 +116,7 @@ try {
         'worker'              => commandWorker($arguments),
         'backup'              => commandBackup(),
         'security:audit-keys' => commandAuditKeys(),
+        'security:privileges' => commandAuditPrivileges(),
         'tls:generate'        => commandTlsGenerate($arguments, $flags),
         'tls:apache'          => commandTlsApache($arguments, $flags),
         'doctor'              => commandDoctor(),
@@ -167,6 +168,7 @@ function commandHelp(): void
     out('    worker [--once]         Maintenance loop: sessions, heartbeats, retention');
     out('    backup                  Create an encrypted database backup');
     out('    security:audit-keys     Verify no weak RNG exists in the key path');
+    out('    security:privileges     Verify the database cannot delete a log row');
     out('    doctor                  Diagnose this installation and report problems');
     out('    session:why [device]    Explain why a terminal will not open a session now');
     out('    device:unblock [device]  Show who is rate limited, and lift it (--all)');
@@ -341,8 +343,34 @@ function discoverMigrations(): array
     ], $files);
 }
 
+/**
+ * `CREATE TABLE IF NOT EXISTS` still needs the CREATE privilege, even when the
+ * table is already there and nothing is created. The application's own database
+ * user does not have it — deliberately, because migrations run as a separate,
+ * more privileged account (docs/DEPLOYMENT.md) — so every read-only caller of
+ * this function, `doctor` and `migrate:status` among them, died on a table that
+ * had existed for months.
+ *
+ * Which is the wrong way round: those two commands are exactly what somebody
+ * runs when the system is misbehaving, and a correctly locked-down installation
+ * is precisely where they would refuse to run.
+ *
+ * So existence is checked first and the CREATE is only attempted when there is
+ * genuinely something to create. `migrate` itself still needs the privileged
+ * user and still says so plainly when it does not have it.
+ */
 function ensureMigrationsTable(Database $db): void
 {
+    $exists = (int) $db->scalar(
+        'SELECT COUNT(*) FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :name',
+        ['name' => 'schema_migrations']
+    );
+
+    if ($exists > 0) {
+        return;
+    }
+
     $db->pdo()->exec(
         'CREATE TABLE IF NOT EXISTS schema_migrations (
             migration  VARCHAR(190) NOT NULL PRIMARY KEY,
@@ -1591,6 +1619,150 @@ function doctorSummary(array $problems, array $warnings): void
  * Static assurance for the Part 20.4 acceptance criterion:
  * "rand(), mt_rand(), and uniqid() appear nowhere in the key path".
  */
+/**
+ * Prove that the application's own database user cannot rewrite history.
+ *
+ * The audit trail is protected three ways: the services expose no update or
+ * delete method, triggers raise SQLSTATE 45000, and the database user simply
+ * holds no such privilege. The first two live in this repository and are true
+ * wherever it is deployed. The third is applied by hand at install time, is the
+ * only one an attacker holding the application's own credentials cannot get
+ * around, and is the only one that can quietly stop being true — a restore from
+ * a full dump reinstates whatever grants existed when the dump was taken.
+ *
+ * So it is checked rather than assumed, by asking the database what this user
+ * may actually do rather than reading a document that says what it should.
+ *
+ * Deliberately read-only: it inspects grants and never attempts the writes it
+ * is describing. Testing a DELETE for real would have to succeed to be
+ * informative, and a check that can destroy an audit row to prove audit rows
+ * cannot be destroyed is not a check anybody should run on a live system.
+ */
+function commandAuditPrivileges(): void
+{
+    $db = Database::instance();
+
+    heading('Database privileges');
+
+    $user = (string) $db->scalar('SELECT CURRENT_USER()');
+    $name = explode('@', $user)[0];
+
+    out(sprintf('  Connected as %s', $user), 'grey');
+
+    // A superuser passes every table check below for the wrong reason: it holds
+    // the privileges rather than being denied them. Said first, because every
+    // line after it would otherwise read as a pass.
+    $isRoot = in_array(strtolower($name), ['root', 'mysql.sys', 'mariadb.sys'], true);
+
+    if ($isRoot) {
+        out('', '');
+        out('  ✗ This is a superuser account. Every check below will pass because', 'red');
+        out('    nothing is denied to it — which is the opposite of what this proves.', 'red');
+        out('    Point DB_USER in .env at the application user (docs/DEPLOYMENT.md),', 'grey');
+        out('    and keep the privileged account for migrations only.', 'grey');
+        out('');
+    }
+
+    /** @var array<string,string> $protected table => what must be impossible */
+    $protected = [
+        'audit_logs'                => 'UPDATE,DELETE',
+        'security_logs'             => 'UPDATE,DELETE',
+        'login_history'             => 'UPDATE,DELETE',
+        'attendance_records'        => 'DELETE',
+        'rfid_logs'                 => 'DELETE',
+        'fingerprint_logs'          => 'DELETE',
+        'attendance_modifications'  => 'DELETE',
+    ];
+
+    // information_schema reports the effective privilege, which is the union of
+    // every level MySQL grants at. That union is the point: a table-level grant
+    // never narrows a database-level one, so reading SHOW GRANTS line by line
+    // and believing the narrowest is exactly the mistake this command exists to
+    // catch.
+    $rows = $db->select(
+        "SELECT TABLE_NAME, PRIVILEGE_TYPE
+           FROM information_schema.TABLE_PRIVILEGES
+          WHERE GRANTEE = CONCAT('''', SUBSTRING_INDEX(CURRENT_USER(), '@', 1), '''@''',
+                                 SUBSTRING_INDEX(CURRENT_USER(), '@', -1), '''')
+            AND TABLE_SCHEMA = DATABASE()"
+    );
+
+    $schemaWide = $db->select(
+        "SELECT PRIVILEGE_TYPE
+           FROM information_schema.SCHEMA_PRIVILEGES
+          WHERE GRANTEE = CONCAT('''', SUBSTRING_INDEX(CURRENT_USER(), '@', 1), '''@''',
+                                 SUBSTRING_INDEX(CURRENT_USER(), '@', -1), '''')
+            AND TABLE_SCHEMA = DATABASE()"
+    );
+
+    $wide = array_map(static fn (array $r): string => strtoupper((string) $r['PRIVILEGE_TYPE']), $schemaWide);
+
+    $perTable = [];
+
+    foreach ($rows as $row) {
+        $perTable[(string) $row['TABLE_NAME']][] = strtoupper((string) $row['PRIVILEGE_TYPE']);
+    }
+
+    out('');
+
+    $failures = 0;
+    $unknown  = 0;
+
+    foreach ($protected as $table => $mustNotHold) {
+        foreach (explode(',', $mustNotHold) as $privilege) {
+            // Held at schema level, at table level, or not at all. Schema level
+            // is the one that catches the REVOKE that never applied.
+            $viaSchema = in_array($privilege, $wide, true);
+            $viaTable  = in_array($privilege, $perTable[$table] ?? [], true);
+
+            if ($viaSchema || $viaTable) {
+                $failures++;
+                out(sprintf('  ✗ %-26s %-6s is GRANTED%s', $table, $privilege,
+                    $viaSchema ? ' — database-wide, so no table-level grant can take it back' : ''), 'red');
+                continue;
+            }
+
+            out(sprintf('  ✓ %-26s %-6s refused', $table, $privilege), 'green');
+        }
+    }
+
+    // A user with no rows at either level is not necessarily safe — it may hold
+    // the privilege globally, on *.*, which neither view above reports.
+    if ($wide === [] && $perTable === []) {
+        $unknown++;
+    }
+
+    out('');
+
+    if ($isRoot) {
+        fail('Run this again with .env pointing at the application user. Nothing was proved.');
+    }
+
+    if ($unknown > 0) {
+        out('  ! This user holds no schema or table grants on this database at all,', 'yellow');
+        out('    which usually means it holds them globally on *.* instead. A global', 'yellow');
+        out('    grant defeats this layer and is not visible here — check SHOW GRANTS.', 'yellow');
+        out('');
+
+        return;
+    }
+
+    if ($failures > 0) {
+        out(sprintf('✗ %d privilege(s) that should be impossible are granted.', $failures), 'red');
+        out('  The triggers still refuse these writes, so the audit trail is not open —', 'grey');
+        out('  but the third layer is missing, and it is the one that holds when somebody', 'grey');
+        out('  has the application\'s own credentials. docs/DEPLOYMENT.md has the fix.', 'grey');
+        out('');
+
+        exit(1);
+    }
+
+    ok('The application cannot update or delete a single audit, security or login row.');
+    out('  Attendance and tap logs can be corrected but never removed.', 'grey');
+    out('  Proved from the database\'s own grant tables, as the application user.', 'grey');
+    out('');
+}
+
 function commandAuditKeys(): void
 {
     heading('Auditing the key generation path');

@@ -124,28 +124,85 @@ GRANT SELECT, INSERT, UPDATE, DELETE
 FLUSH PRIVILEGES;
 ```
 
-### Then take the write privileges away from the immutable tables
+### Then withhold the write privileges from the immutable tables
 
 This is the third layer of the immutability guarantee, and the only one an
 attacker holding the application's own credentials cannot get around. Apply it
 **after** running the migrations, because migrations need DDL rights that this
-user must not keep:
+user must not keep.
+
+> **This section used to say `REVOKE`, and that does not work.** MySQL and
+> MariaDB privileges are *cumulative*, not subtractive: there is no way to take
+> a privilege back at table level once it has been granted at database level.
+> Running `REVOKE DELETE ON lsiams_db.audit_logs FROM 'lsiams_app'@'localhost'`
+> against the grant above fails outright —
+>
+> ```
+> ERROR 1147 (42000): There is no such grant defined for user 'lsiams_app'
+> on host 'localhost' on table 'audit_logs'
+> ```
+>
+> — and the subtler trap is that granting a *narrower* set at table level does
+> not help either. `GRANT SELECT, INSERT ON lsiams_db.audit_logs` leaves the
+> database-level `UPDATE, DELETE` fully in force, while `SHOW GRANTS` prints a
+> line that reads as though the table were restricted. An installation that did
+> that would believe it had the third layer and would not have it.
+>
+> The privilege has to be **never granted**, not granted and taken back. That is
+> what the rest of this section does.
+
+Replace the database-wide grant above with one that carries only what every
+table may safely have:
 
 ```sql
--- These three are append-only. The application reads them and adds to them;
--- it has no legitimate reason to change or remove a row, so it cannot.
-REVOKE UPDATE, DELETE ON lsiams_db.audit_logs    FROM 'lsiams_app'@'localhost';
-REVOKE UPDATE, DELETE ON lsiams_db.security_logs FROM 'lsiams_app'@'localhost';
-REVOKE UPDATE, DELETE ON lsiams_db.login_history FROM 'lsiams_app'@'localhost';
-
--- Attendance rows are never deleted. They *are* updated — see below.
-REVOKE DELETE ON lsiams_db.attendance_records FROM 'lsiams_app'@'localhost';
-REVOKE DELETE ON lsiams_db.rfid_logs          FROM 'lsiams_app'@'localhost';
-REVOKE DELETE ON lsiams_db.fingerprint_logs   FROM 'lsiams_app'@'localhost';
-REVOKE DELETE ON lsiams_db.attendance_modifications FROM 'lsiams_app'@'localhost';
-
-FLUSH PRIVILEGES;
+GRANT SELECT, INSERT ON lsiams_db.* TO 'lsiams_app'@'localhost';
 ```
+
+Then hand out `UPDATE` and `DELETE` table by table. Do not type this list —
+generate it, so that a table added by a future migration is picked up rather
+than silently left without the privileges the application needs:
+
+```sql
+-- Everything except the seven protected tables gets both.
+SELECT CONCAT('GRANT UPDATE, DELETE ON `lsiams_db`.`', TABLE_NAME,
+              '` TO ''lsiams_app''@''localhost'';')
+  FROM information_schema.TABLES
+ WHERE TABLE_SCHEMA = 'lsiams_db' AND TABLE_TYPE = 'BASE TABLE'
+   AND TABLE_NAME NOT IN ('audit_logs', 'security_logs', 'login_history',
+                          'attendance_records', 'rfid_logs', 'fingerprint_logs',
+                          'attendance_modifications')
+UNION ALL
+-- Attendance rows are updated but never deleted — see the note below.
+SELECT CONCAT('GRANT UPDATE ON `lsiams_db`.`', TABLE_NAME,
+              '` TO ''lsiams_app''@''localhost'';')
+  FROM information_schema.TABLES
+ WHERE TABLE_SCHEMA = 'lsiams_db' AND TABLE_TYPE = 'BASE TABLE'
+   AND TABLE_NAME IN ('attendance_records', 'rfid_logs', 'fingerprint_logs',
+                      'attendance_modifications');
+```
+
+Run that, copy the statements it prints, run those, then `FLUSH PRIVILEGES;`.
+
+`audit_logs`, `security_logs` and `login_history` appear in neither list: they
+keep `SELECT, INSERT` from the database-wide grant and nothing else, which is
+exactly append-only.
+
+**Re-run the generator after every upgrade that adds a table.** A new table
+inherits `SELECT, INSERT` automatically and nothing more, so the symptom is an
+"UPDATE command denied" error in the log rather than a silent security hole —
+but it is still an outage.
+
+### Then prove it, rather than assuming it
+
+```
+console.bat security:privileges
+```
+
+Connects as the application's own database user, reads its effective grants and
+reports, table by table, whether each protected write is genuinely refused. Run
+it after any restore from a full dump: a dump reinstates the grants that were in
+place when it was taken, and this is the only layer of the three that a restore
+can quietly undo.
 
 > **Do not revoke UPDATE on `attendance_records`.** Unlike the log tables, an
 > attendance row is legitimately written twice: the tap-in creates it, and the
