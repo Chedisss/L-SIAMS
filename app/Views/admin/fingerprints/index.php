@@ -543,12 +543,36 @@ $manual      = array_values(array_filter($recapture, static fn (array $r): bool 
                         <div class="alert__body" id="scan-terminal-warning-text"></div>
                     </div>
 
+                    <?php /* Why the enrolment ended, when it ended badly.
+                            A refusal used to be a line of grey status text that
+                            the wizard wiped 2.5 seconds later on its way back to
+                            the form, which is not long enough to read a sentence
+                            you were not expecting — and for the refusal that
+                            matters most, "this finger belongs to another
+                            teacher", vanishing makes it look like a glitch worth
+                            retrying. It stays up now until somebody chooses what
+                            to do next. */ ?>
+                    <div class="alert alert-danger mt-2 hidden" id="scan-outcome">
+                        <span class="alert__icon"><i class="fa-solid fa-circle-exclamation" id="scan-outcome-icon"></i></span>
+                        <div class="alert__body">
+                            <div class="alert__title" id="scan-outcome-title"></div>
+                            <div id="scan-outcome-text"></div>
+                            <div class="text-sm mt-1 hidden" id="scan-outcome-hint"></div>
+                        </div>
+                    </div>
+
                     <div class="text-xs text-muted mt-2" id="scan-target"></div>
                 </div>
             </div>
 
             <div class="modal__footer">
                 <button type="button" class="btn btn-secondary" data-modal-close id="enroll-cancel">Cancel</button>
+                <?php /* Shown in place of "Stop" once a scan has ended badly, so
+                        the refusal above it is dismissed deliberately rather
+                        than on a timer. */ ?>
+                <button type="button" class="btn btn-primary hidden" id="enroll-retry">
+                    <i class="fa-solid fa-rotate-right"></i> Try again
+                </button>
                 <button type="submit" class="btn btn-primary" id="enroll-start">
                     <i class="fa-solid fa-fingerprint"></i> Start scan
                 </button>
@@ -579,7 +603,46 @@ $__view->start('scripts');
     const setup    = document.getElementById('enroll-step-setup');
     const scanning = document.getElementById('enroll-step-scanning');
     const startBtn = document.getElementById('enroll-start');
+    const retryBtn = document.getElementById('enroll-retry');
     const cancelBtn = document.getElementById('enroll-cancel');
+
+    const outcome = document.getElementById('scan-outcome');
+
+    /* How each ending is presented. A duplicate is the one the person at the
+       terminal must not miss — it means the finger in front of them belongs to
+       a colleague, and every explanation for that is worth stopping over — so
+       it gets a title of its own and says what to do next rather than only what
+       went wrong. Anything not named here falls back to the plain wording,
+       which is also what a server without migration 035 sends. */
+    const OUTCOMES = {
+        DUPLICATE_FINGERPRINT: {
+            icon:  'fa-fingerprint',
+            title: 'Already enrolled to someone else',
+            hint:  'Nothing was written to the sensor. If this is the right person, they may already '
+                 + 'be enrolled under another record — check the list behind this dialog before '
+                 + 'enrolling them again.',
+            /* No "Try again": the same finger on the same sensor gives the same
+               answer, and offering the button sends somebody back to the
+               terminal for nothing. Something has to change first — a different
+               finger, or a look at who already holds this one. */
+            retry: false,
+        },
+        DUPLICATE_UNVERIFIED: {
+            icon:  'fa-circle-question',
+            title: 'Refused — the finger matched, and the match could not be identified',
+            hint:  'The terminal found this finger already in its sensor but could not reach the '
+                 + 'server to ask whose it is, so it wrote nothing rather than risk a second '
+                 + 'enrolment of one person. Try again; if it keeps happening, the terminal is '
+                 + 'losing its connection mid-scan.',
+        },
+        DUPLICATE_CHECK_MISSING: {
+            icon:  'fa-microchip',
+            title: 'This terminal cannot check for duplicates',
+            hint:  'It is running firmware older than 2.1.0. Re-flash it from firmware/L_SIAMS_Bench '
+                 + 'before enrolling anyone on it. Nothing was recorded.',
+            retry: false,
+        },
+    };
 
     // The order the firmware walks. Anything before the current stage is done,
     // which is what lets the checklist fill in without the server having to
@@ -593,6 +656,8 @@ $__view->start('scripts');
         setup.classList.remove('hidden');
         scanning.classList.add('hidden');
         startBtn.classList.remove('hidden');
+        retryBtn.classList.add('hidden');
+        outcome.classList.add('hidden');
         cancelBtn.textContent = 'Cancel';
         LS.util.setBusy(startBtn, false);
     }
@@ -601,7 +666,38 @@ $__view->start('scripts');
         setup.classList.add('hidden');
         scanning.classList.remove('hidden');
         startBtn.classList.add('hidden');
+        retryBtn.classList.add('hidden');
+        outcome.classList.add('hidden');
         cancelBtn.textContent = 'Stop';
+    }
+
+    /* The scan ended and it did not enrol anybody. Say so where it can be read,
+       and hand the decision back rather than taking it on a timer. */
+    function showOutcome(data) {
+        const known = OUTCOMES[data.failure_code] || null;
+
+        const fallback = data.status === 'expired'
+            ? 'The terminal did not finish in time'
+            : data.status === 'cancelled' ? 'Enrolment cancelled' : 'Enrolment failed';
+
+        document.getElementById('scan-outcome-icon').className =
+            'fa-solid ' + (known ? known.icon : 'fa-circle-exclamation');
+
+        document.getElementById('scan-outcome-title').textContent = known ? known.title : fallback;
+        document.getElementById('scan-outcome-text').textContent =
+            data.message || 'The terminal did not say why.';
+
+        const hint = document.getElementById('scan-outcome-hint');
+        hint.textContent = known ? known.hint : '';
+        hint.classList.toggle('hidden', !known);
+
+        outcome.classList.remove('hidden');
+
+        /* Cancelling is over — there is nothing left to stop — so the footer
+           becomes "Close", plus "Try again" where trying again could actually
+           come out differently. */
+        cancelBtn.textContent = 'Close';
+        retryBtn.classList.toggle('hidden', known ? known.retry === false : false);
     }
 
     function paint(data) {
@@ -695,8 +791,13 @@ $__view->start('scripts');
                 LS.toast.success(data.teacher_name + ' enrolled in sensor slot ' + data.sensor_template_id + '.');
                 setTimeout(() => window.location.reload(), 1200);
             } else {
+                /* Both, deliberately: the toast catches the eye of somebody
+                   looking at the terminal rather than the screen, and the alert
+                   is still there when they look back. The dialog no longer
+                   resets itself — a refusal that clears on a timer is a refusal
+                   nobody read. */
                 LS.toast.warning(data.message || 'The enrolment did not complete.');
-                setTimeout(showSetup, 2500);
+                showOutcome(data);
             }
         } catch (error) {
             stopPolling();
@@ -752,6 +853,14 @@ $__view->start('scripts');
             await LS.http.post('/admin/fingerprints/scan/' + id + '/cancel', {});
         } catch (error) { /* the request expires on its own soon enough */ }
     }
+
+    /* Straight back to the sensor with the same teacher and terminal — the
+       selections are still in the form behind the scanning panel, so this is
+       the same journey as pressing Start scan again, without the two clicks. */
+    retryBtn.addEventListener('click', () => {
+        outcome.classList.add('hidden');
+        form.requestSubmit();
+    });
 
     cancelBtn.addEventListener('click', () => { abandon().then(showSetup); });
     document.querySelectorAll('#enroll-modal [data-modal-close]').forEach((button) => {

@@ -1175,7 +1175,11 @@ static bool claimDevice() {
 
 static void sendHeartbeat() {
   LsJson body;
-  body["firmware"]    = "2.1.0";   /* 2.1.0 is the first build that checks for a duplicate finger */
+  /* 2.1.0 is the first build that checks for a duplicate finger — the server
+   * refuses a completion from anything older. 2.1.1 only labels the failures it
+   * reports, so the wizard can emphasise a refusal; a terminal left on 2.1.0
+   * enrols exactly as before. */
+  body["firmware"]    = "2.1.1";
   body["uptime"]      = (millis() - bootMillis) / 1000;
   body["free_heap"]   = ESP.getFreeHeap();
   body["wifi_signal"] = WiFi.RSSI();
@@ -1436,10 +1440,16 @@ static void reportEnrollStage(int requestId, const char *stage, const char *mess
   signedRequest("POST", "/api/fingerprint/enrollment/progress", jsonToString(body), nullptr);
 }
 
-static void reportEnrollFailed(int requestId, const char *reason) {
+/* `code` is optional and may be nullptr. It exists so the enrolment wizard can
+ * tell a refusal from an ordinary failure without reading the sentence — a
+ * finger that belongs to another teacher is shown as a refusal that stays on
+ * screen, a capture that timed out as a retryable failure. A server that has
+ * not been updated ignores the field. */
+static void reportEnrollFailed(int requestId, const char *reason, const char *code = nullptr) {
   LsJson body;
   body["request_id"] = requestId;
   body["reason"]     = reason;
+  if (code && strlen(code)) body["code"] = code;
 
   signedRequest("POST", "/api/fingerprint/enrollment/failed", jsonToString(body), nullptr);
   Serial.printf("Enrol: failed — %s\n", reason);
@@ -1480,7 +1490,7 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
   Serial.printf("\nEnrol: %s into slot %d\n", teacherName, slot);
 
   if (!captureFinger(requestId, "place_finger", 1)) {
-    reportEnrollFailed(requestId, "No usable fingerprint was captured in time.");
+    reportEnrollFailed(requestId, "No usable fingerprint was captured in time.", "CAPTURE_FAILED");
     busy = false;
     return;
   }
@@ -1531,7 +1541,8 @@ static void runEnrollment(int requestId, int slot, const char *teacherName) {
       if (status != 200 && status != 201) {
         reportEnrollFailed(requestId,
           "The finger matched an existing enrolment and the server could not be reached "
-          "to say whose. Nothing was written.");
+          "to say whose. Nothing was written.",
+          "DUPLICATE_UNVERIFIED");
       }
 
       busy = false;

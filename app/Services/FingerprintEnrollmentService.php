@@ -429,7 +429,8 @@ final class FingerprintEnrollmentService
             self::fail(
                 $requestId,
                 $deviceRowId,
-                'This terminal did not check whether the finger was already enrolled. Update its firmware.'
+                'This terminal did not check whether the finger was already enrolled. Update its firmware.',
+                'DUPLICATE_CHECK_MISSING'
             );
 
             throw new BusinessRuleException(
@@ -752,7 +753,7 @@ final class FingerprintEnrollmentService
 
         $message = sprintf('This fingerprint is already enrolled to %s.', $owner['teacher_name']);
 
-        self::fail($requestId, $deviceRowId, $message);
+        self::fail($requestId, $deviceRowId, $message, 'DUPLICATE_FINGERPRINT');
 
         return [
             'duplicate'    => true,
@@ -761,16 +762,36 @@ final class FingerprintEnrollmentService
         ];
     }
 
-    public static function fail(int $requestId, int $deviceRowId, string $reason): array
+    /**
+     * @param string|null $code Machine-readable reason, for the one consumer
+     *                          that has to tell the cases apart: the enrolment
+     *                          wizard, which shows a duplicate as a refusal
+     *                          that stays on screen and everything else as an
+     *                          ordinary failure. Prose is for the reader; this
+     *                          is so the browser never has to parse it.
+     */
+    public static function fail(int $requestId, int $deviceRowId, string $reason, ?string $code = null): array
     {
         $request = self::findForDevice($requestId, $deviceRowId);
 
-        Database::instance()->update('fingerprint_enrollment_requests', [
+        $row = [
             'status'       => 'failed',
             'message'      => mb_substr($reason, 0, 255),
             'completed_at' => Clock::nowString(),
             'updated_at'   => Clock::nowString(),
-        ], ['request_id' => $requestId]);
+        ];
+
+        // Written only where the schema has it, so a server whose files are
+        // newer than its database — pulled without running migrate — records
+        // the failure with its message rather than throwing on the way to
+        // recording it. Losing the code costs the wizard its emphasis; losing
+        // the whole row would leave the dialog saying "Scanning" for ever,
+        // which is the exact fault this change exists to fix.
+        if ($code !== null && Database::instance()->hasColumn('fingerprint_enrollment_requests', 'failure_code')) {
+            $row['failure_code'] = $code;
+        }
+
+        Database::instance()->update('fingerprint_enrollment_requests', $row, ['request_id' => $requestId]);
 
         Database::instance()->insert('fingerprint_logs', [
             'teacher_id'         => $request['teacher_id'] === null ? null : (int) $request['teacher_id'],

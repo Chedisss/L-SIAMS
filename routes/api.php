@@ -42,6 +42,14 @@ $deviceChain = [
     'idempotency',
 ];
 
+// The same chain for the routes a terminal uses to report how a job ended,
+// differing only in which rate-limit bucket it spends. A terminal that has used
+// up its polling budget must still be able to say "I refused this enrolment,
+// and here is why" — throttling that turns a limit into a silent failure the
+// administrator cannot diagnose. See config/security.php.
+$deviceReportChain = $deviceChain;
+$deviceReportChain[array_search('rate-limit:device', $deviceReportChain, true)] = 'rate-limit:device_report';
+
 // The claim endpoint is the one device route that runs before the terminal has
 // credentials — it authenticates with its single-use claim token instead.
 $claimChain = [
@@ -109,12 +117,21 @@ $router->post('/api/fingerprint/verify', AttendanceApiController::class . '@star
 // polls `enrollment` while idle and reports its way through the capture cycle;
 // the slot the sensor allocates comes back here rather than being typed into a
 // form by whoever is standing at the terminal.
-$router->group('/api/fingerprint/enrollment', $deviceChain, static function ($router): void {
-    $router->get('', FingerprintEnrollmentApiController::class . '@pending');
+//
+// The poll stays on the ordinary device bucket because it is the high-volume
+// half — every idle terminal asks every two seconds. Everything the terminal
+// says back is on the report bucket.
+$router->get('/api/fingerprint/enrollment', FingerprintEnrollmentApiController::class . '@pending', $deviceChain);
+
+$router->group('/api/fingerprint/enrollment', $deviceReportChain, static function ($router): void {
     $router->post('/progress', FingerprintEnrollmentApiController::class . '@progress');
     $router->post('/complete', FingerprintEnrollmentApiController::class . '@complete');
     // Asked before the sensor is written to, not after: a finger already known
     // to this sensor must not become a second enrolment.
+    //
+    // On the report bucket for the same reason as /failed, and more sharply: a
+    // terminal refused an answer here cannot write the template, so throttling
+    // it does not slow an enrolment down, it stops one.
     $router->post('/duplicate', FingerprintEnrollmentApiController::class . '@duplicate');
     $router->post('/failed', FingerprintEnrollmentApiController::class . '@failed');
     $router->post('/discarded', FingerprintEnrollmentApiController::class . '@discarded');
@@ -141,8 +158,9 @@ $router->post('/api/rfid/scan', AttendanceApiController::class . '@tap', $device
 // tap route above on purpose: reading a card to issue it records no attendance,
 // needs no open session and needs no classroom, so a terminal on the
 // registrar's desk can do it.
-$router->group('/api/rfid/enrollment', $deviceChain, static function ($router): void {
-    $router->get('', RfidEnrollmentApiController::class . '@pending');
+$router->get('/api/rfid/enrollment', RfidEnrollmentApiController::class . '@pending', $deviceChain);
+
+$router->group('/api/rfid/enrollment', $deviceReportChain, static function ($router): void {
     $router->post('/progress', RfidEnrollmentApiController::class . '@progress');
     $router->post('/captured', RfidEnrollmentApiController::class . '@captured');
     $router->post('/failed', RfidEnrollmentApiController::class . '@failed');

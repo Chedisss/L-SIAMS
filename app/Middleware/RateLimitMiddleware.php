@@ -109,7 +109,11 @@ final class RateLimitMiddleware extends Middleware
         return match ($bucket) {
             // Devices are limited per terminal, not per IP: several terminals
             // may legitimately share a NAT address on a school LAN.
-            'device'   => (string) ($request->header((string) Config::get('security.request.headers.device_id', 'X-LSIAMS-Device-Id')) ?? $request->ip()),
+            //
+            // `device_report` is keyed the same way but counted in its own
+            // bucket, so a terminal that has spent its polling budget can still
+            // tell the server how an enrolment ended. See config/security.php.
+            'device', 'device_report' => (string) ($request->header((string) Config::get('security.request.headers.device_id', 'X-LSIAMS-Device-Id')) ?? $request->ip()),
             'login'    => $request->ip() . '|' . $request->string('username', ''),
             // Per signed-in account. The endpoint is already behind auth, so
             // there is always an id; the IP fallback only exists so a bucket
