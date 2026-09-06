@@ -127,6 +127,7 @@ try {
         'user:create-teachers' => commandCreateTeacherAccounts($flags),
         'user:purge'          => commandUserPurge($arguments, $flags),
         'session:why'         => commandSessionWhy($arguments),
+        'device:unblock'      => commandDeviceUnblock($arguments, $flags),
         'fingerprint:reset'   => commandFingerprintReset($flags),
         'students:sample'     => commandSampleStudents($flags),
         'rfid:release'        => commandRfidRelease($flags),
@@ -168,6 +169,7 @@ function commandHelp(): void
     out('    security:audit-keys     Verify no weak RNG exists in the key path');
     out('    doctor                  Diagnose this installation and report problems');
     out('    session:why [device]    Explain why a terminal will not open a session now');
+    out('    device:unblock [device]  Show who is rate limited, and lift it (--all)');
     out('    schema:dump             Write database/lsiams_schema.sql for phpMyAdmin import');
     out('    db:import <file.sql>    Import a .sql file or phpMyAdmin export (--fresh drops first)');
     out('    backup:decrypt <file>   Turn a backup archive back into readable SQL');
@@ -2550,6 +2552,142 @@ function restoreImmutabilityTriggers(Database $db): void
  *
  * @param list<string> $arguments
  */
+/**
+ * Show which terminals are being rate limited, and lift it.
+ *
+ * A block is held on the server, in `rate_limits`, so it survives everything
+ * somebody standing at the terminal can do to it: resetting the board,
+ * re-flashing it, power-cycling the whole classroom. Until this existed the
+ * only ways out were to wait the window out — which does not help a board that
+ * re-trips it immediately — or to edit the database by hand.
+ *
+ * Printing the counts first is the point of the command as much as clearing
+ * them. "Why was it blocked" is answered by how far over the limit it went: a
+ * terminal a few requests over is doing its job on too small a budget, and one
+ * thousands over is stuck in a retry loop and will be blocked again a minute
+ * after this command is run.
+ *
+ * @param list<string>        $arguments
+ * @param array<string,mixed> $flags
+ */
+function commandDeviceUnblock(array $arguments, array $flags): void
+{
+    $db  = Database::instance();
+    $all = in_array('--all', $flags, true);
+
+    // $arguments still carries the flags, so the device id is the first thing
+    // that is not one — otherwise `device:unblock --all` reads "--all" as the
+    // name of a terminal and reports that no such terminal is limited.
+    $positional = array_values(array_filter(
+        $arguments,
+        static fn (string $a): bool => !str_starts_with($a, '--')
+    ));
+
+    $selector = $positional[0] ?? '';
+
+    $buckets = Config::get('security.rate_limit', []);
+
+    heading('Rate limits');
+
+    $rows = $db->select('SELECT bucket_key, hits, window_start, blocked_until FROM rate_limits ORDER BY bucket_key');
+
+    if ($rows === []) {
+        out('  Nothing is rate limited. No terminal is being refused for this reason.', 'green');
+        out('');
+
+        return;
+    }
+
+    // The bucket key is the name plus a hash of the subject, so the device id
+    // cannot be read back out of it — it has to be hashed and compared. That is
+    // deliberate: the table holds no device identifiers in the clear.
+    $subjectKey = static function (string $bucket, string $subject): string {
+        return $bucket . ':' . hash('sha256', $subject);
+    };
+
+    $known = [];
+
+    foreach ($db->select('SELECT device_id FROM devices') as $device) {
+        foreach (array_keys($buckets) as $bucket) {
+            $known[$subjectKey((string) $bucket, (string) $device['device_id'])] = [
+                'device' => (string) $device['device_id'],
+                'bucket' => (string) $bucket,
+            ];
+        }
+    }
+
+    $now     = Clock::now();
+    $matched = [];
+
+    foreach ($rows as $row) {
+        $key   = (string) $row['bucket_key'];
+        $owner = $known[$key] ?? null;
+        $name  = $owner === null ? '(not a terminal)' : $owner['device'];
+        $label = $owner === null ? explode(':', $key)[0] : $owner['bucket'];
+
+        $limit   = (int) ($buckets[$label]['limit'] ?? 0);
+        $blocked = $row['blocked_until'] !== null && Clock::parse((string) $row['blocked_until']) > $now;
+
+        if ($selector !== '' && $name !== $selector) {
+            continue;
+        }
+
+        $matched[] = $key;
+
+        out(sprintf('  %-16s %-14s %s of %s request(s)%s',
+            $name,
+            $label,
+            (int) $row['hits'],
+            $limit > 0 ? (string) $limit : 'no',
+            $blocked
+                ? sprintf('  — BLOCKED for another %d second(s)',
+                    max(1, Clock::parse((string) $row['blocked_until'])->getTimestamp() - $now->getTimestamp()))
+                : ''
+        ), $blocked ? 'red' : 'grey');
+
+        if ($blocked && $limit > 0 && (int) $row['hits'] > $limit * 4) {
+            out(sprintf('    %d times over the limit — this terminal is retrying in a loop, and clearing '
+                . 'the block will not keep it clear. Read its Serial Monitor.', intdiv((int) $row['hits'], $limit)), 'yellow');
+        }
+    }
+
+    out('');
+
+    if ($matched === []) {
+        fail(sprintf('Nothing is rate limited for "%s". Pass a device id, or nothing to see them all.', $selector));
+    }
+
+    if (!$all && $selector === '') {
+        out('  Pass a device id to lift one, or --all to lift every block above.', 'cyan');
+        out('');
+
+        return;
+    }
+
+    $db->execute(
+        'DELETE FROM rate_limits WHERE bucket_key IN (' . implode(',', array_fill(0, count($matched), '?')) . ')',
+        $matched
+    );
+
+    App\Services\AuditService::log(
+        'rate_limit.cleared',
+        'security',
+        'system',
+        null,
+        null,
+        [
+            'buckets' => count($matched),
+            'device'  => $selector !== '' ? $selector : 'all',
+        ],
+        sprintf('Rate limit lifted for %s from the console.',
+            $selector !== '' ? $selector : 'every blocked subject')
+    );
+
+    out(sprintf('✓ %d block(s) lifted. The terminal may speak again immediately.', count($matched)), 'green');
+    out('  It does not need resetting; the block was here, not on the board.', 'grey');
+    out('');
+}
+
 function commandSessionWhy(array $arguments): void
 {
     $db       = Database::instance();
