@@ -1726,6 +1726,59 @@ function commandAuditPrivileges(): void
         }
     }
 
+    // The other half, and it is not optional.
+    //
+    // Everything above passes when the application holds no privileges at all —
+    // which is exactly what a half-applied grant list looks like, and it is the
+    // easy mistake to make here: the per-table GRANTs are generated and pasted
+    // by hand, so running the first block and not the second leaves a user with
+    // SELECT and INSERT and nothing else. Every line above then reads green
+    // while tap-out is broken, because writing time_out onto an existing
+    // attendance row needs UPDATE.
+    //
+    // A check that passes on a system that cannot record attendance is worse
+    // than no check, so what must remain possible is verified too.
+    $missing = [];
+
+    foreach ($db->select(
+        "SELECT TABLE_NAME FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+          ORDER BY TABLE_NAME"
+    ) as $row) {
+        $table = (string) $row['TABLE_NAME'];
+        $must  = match (true) {
+            in_array($table, ['audit_logs', 'security_logs', 'login_history'], true) => [],
+            isset($protected[$table]) => ['UPDATE'],
+            default                   => ['UPDATE', 'DELETE'],
+        };
+
+        foreach ($must as $privilege) {
+            if (!in_array($privilege, $wide, true)
+                && !in_array($privilege, $perTable[$table] ?? [], true)
+            ) {
+                $missing[] = $table . ' ' . $privilege;
+            }
+        }
+    }
+
+    if ($missing !== []) {
+        out('');
+        out(sprintf('  ✗ %d privilege(s) the application NEEDS are missing, including:', count($missing)), 'red');
+
+        foreach (array_slice($missing, 0, 6) as $entry) {
+            out('      ' . $entry, 'red');
+        }
+
+        if (count($missing) > 6) {
+            out(sprintf('      …and %d more', count($missing) - 6), 'red');
+        }
+
+        $failures += count($missing);
+    } else {
+        out('');
+        out('  ✓ every write the application legitimately makes is still granted', 'green');
+    }
+
     // A user with no rows at either level is not necessarily safe — it may hold
     // the privilege globally, on *.*, which neither view above reports.
     if ($wide === [] && $perTable === []) {
@@ -1748,10 +1801,18 @@ function commandAuditPrivileges(): void
     }
 
     if ($failures > 0) {
-        out(sprintf('✗ %d privilege(s) that should be impossible are granted.', $failures), 'red');
-        out('  The triggers still refuse these writes, so the audit trail is not open —', 'grey');
-        out('  but the third layer is missing, and it is the one that holds when somebody', 'grey');
-        out('  has the application\'s own credentials. docs/DEPLOYMENT.md has the fix.', 'grey');
+        if ($missing !== []) {
+            out('✗ The grants are incomplete — the application cannot do its job.', 'red');
+            out('  Run the per-table GRANT generator in docs/DEPLOYMENT.md and paste back', 'grey');
+            out('  every statement it prints. Until then a card can be tapped in and not', 'grey');
+            out('  out, because writing the departure time needs UPDATE.', 'grey');
+        } else {
+            out(sprintf('✗ %d privilege(s) that should be impossible are granted.', $failures), 'red');
+            out('  The triggers still refuse these writes, so the audit trail is not open —', 'grey');
+            out('  but the third layer is missing, and it is the one that holds when somebody', 'grey');
+            out('  has the application\'s own credentials. docs/DEPLOYMENT.md has the fix.', 'grey');
+        }
+
         out('');
 
         exit(1);
