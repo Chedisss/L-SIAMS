@@ -177,6 +177,34 @@ return [
             ? ['limit' => 120, 'window' => 60]
             : null,
 
+        // Reading the server's clock. Its own bucket for the same reason as the
+        // one above, only more so.
+        //
+        // A terminal has no battery-backed clock. Every request it makes is
+        // signed over a timestamp the server checks against a 30-second window,
+        // so a board that does not know the time cannot make a single valid
+        // request — including, in the ordinary arrangement, the request that
+        // would tell it the time. /api/device/time is the one door out of that,
+        // and while it sat in the shared bucket the door could be closed by the
+        // terminal's own earlier traffic. A board that fell behind then had no
+        // way back at all: it asked for the time, was refused, waited, asked
+        // again, and stayed dead until somebody power-cycled it — and a
+        // power-cycle does not help, because the block is on the server.
+        //
+        // A halted terminal asks twice every thirty seconds by design (the
+        // first attempt is refused as expired and carries the server's epoch
+        // back, the second uses it), so four a minute is the real load and 30
+        // is ten times that. Well clear of any legitimate use, and still a
+        // ceiling.
+        //
+        // This does not widen what an attacker can reach. The route is inside
+        // the device chain: HMAC signature over the request, an API key the
+        // server issued, and a source address on the device allowlist, all
+        // still required. The endpoint discloses the time of day.
+        'device_clock' => $deviceRateLimit > 0
+            ? ['limit' => 30, 'window' => 60]
+            : null,
+
         'login'    => ['limit' => 10,  'window' => 300],
         // Opening an attendance session on a password instead of a
         // fingerprint. Counted per account rather than per IP, because a

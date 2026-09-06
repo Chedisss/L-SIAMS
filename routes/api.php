@@ -95,8 +95,16 @@ $router->group('/api/device', $deviceChain, static function ($router): void {
     $router->post('/sync', DeviceApiController::class . '@sync');
     $router->post('/log', DeviceApiController::class . '@log');
     $router->get('/status', DeviceApiController::class . '@status');
-    $router->get('/time', DeviceApiController::class . '@time');
 });
+
+// Deliberately outside the group above. A terminal with no clock cannot sign a
+// valid request, and this is the request that gives it one — so it must not be
+// reachable only by a terminal that is already in good standing. Own bucket,
+// same authentication. See config/security.php.
+$deviceClockChain = $deviceChain;
+$deviceClockChain[array_search('rate-limit:device', $deviceClockChain, true)] = 'rate-limit:device_clock';
+
+$router->get('/api/device/time', DeviceApiController::class . '@time', $deviceClockChain);
 
 $router->group('/api/attendance', $deviceChain, static function ($router): void {
     // Fingerprint verification is what opens a session — nothing else does.
