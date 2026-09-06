@@ -248,6 +248,11 @@ final class FingerprintController extends Controller
             'status'             => (string) $enrolment['status'],
             'stage'              => (string) $enrolment['stage'],
             'message'            => (string) ($enrolment['message'] ?? ''),
+            // Why it failed, in a form the browser does not have to read the
+            // prose to understand. Absent on a server that has the files but
+            // not migration 035, and on rows written before it; the wizard
+            // treats that as an ordinary failure rather than breaking.
+            'failure_code'       => (string) ($enrolment['failure_code'] ?? ''),
             'sensor_template_id' => (int) $enrolment['sensor_template_id'],
             'quality_score'      => $enrolment['quality_score'] === null ? null : (int) $enrolment['quality_score'],
             'sample_count'       => (int) $enrolment['sample_count'],

@@ -148,6 +148,35 @@ return [
         'device'   => $deviceRateLimit > 0
             ? ['limit' => $deviceRateLimit, 'window' => 60]
             : null,
+
+        // A terminal reporting the outcome of work this server asked it to do:
+        // how an enrolment progressed, which slot it wrote, that it refused,
+        // that it failed. Counted separately from the bucket above, and this is
+        // not a convenience.
+        //
+        // Sharing one budget meant the polling path could spend it and the
+        // reporting path would then be refused — which is not a throttle, it is
+        // data loss. It happened during duplicate-fingerprint testing: the
+        // terminal found the finger already enrolled, asked whose it was, was
+        // answered 429, correctly refused to write, tried to report the refusal
+        // and was answered 429 again. The board did everything right and the
+        // administrator watching the screen saw "Scanning" until it timed out,
+        // with no reason given anywhere.
+        //
+        // These endpoints cannot flood on their own. Each one may only speak
+        // about an enrolment request an administrator created, there is at most
+        // one open per terminal, and a whole enrolment spends about seven
+        // requests. 120 a minute leaves room for back-to-back enrolments in a
+        // busy registration session while still bounding a terminal stuck in a
+        // retry loop, which is the single thing this limiter exists to catch.
+        //
+        // Follows DEVICE_RATE_LIMIT=0 so switching the cap off while diagnosing
+        // a terminal switches off all of it, rather than leaving one bucket on
+        // to confuse the next person.
+        'device_report' => $deviceRateLimit > 0
+            ? ['limit' => 120, 'window' => 60]
+            : null,
+
         'login'    => ['limit' => 10,  'window' => 300],
         // Opening an attendance session on a password instead of a
         // fingerprint. Counted per account rather than per IP, because a

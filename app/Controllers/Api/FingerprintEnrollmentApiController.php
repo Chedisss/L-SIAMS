@@ -209,12 +209,19 @@ final class FingerprintEnrollmentApiController extends Controller
         $data = $this->validate($httpRequest, [
             'request_id' => 'required|int',
             'reason'     => 'required|string|max:255',
+            // Optional so firmware that does not send it still reports its
+            // failures — the wizard then shows the reason without the extra
+            // emphasis, which is the right degradation. Only the codes the
+            // wizard knows change how it renders; anything else is stored and
+            // displayed as an ordinary failure.
+            'code'       => 'nullable|string|max:40',
         ]);
 
         FingerprintEnrollmentService::fail(
             (int) $data['request_id'],
             (int) $device['id'],
-            (string) $data['reason']
+            (string) $data['reason'],
+            isset($data['code']) && $data['code'] !== '' ? (string) $data['code'] : null
         );
 
         return $this->json([
