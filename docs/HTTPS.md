@@ -191,6 +191,29 @@ If Apache refuses to start, click its **Logs → Apache (error.log)** button in
 the Control Panel. Nearly always it is one of: the `#` in step 2 was missed
 (port 443 already in use), or the `Include` path has a typo.
 
+### Then open the port Apache now listens on
+
+The site has moved from **8080** to **443**, and the firewall does not know
+that. Skip this and the symptom is alarming and misleading: the server's own
+browser opens the site perfectly — it never crosses the firewall — while every
+other PC and phone in the school gets a timeout, which reads as "HTTPS broke
+everything" rather than "one rule is missing".
+
+Command Prompt **as Administrator**, on the server:
+
+```bat
+netsh advfirewall firewall add rule name="L-SIAMS web (HTTPS)" dir=in action=allow protocol=TCP localport=443
+netsh advfirewall firewall delete rule name="L-SIAMS web"
+```
+
+The second line is not tidying. Port 8080 is no longer serving anything, and
+§3.8 of the manuscript asks an Nmap scan to find **no unnecessary open ports** —
+a rule left behind for a service that has moved is exactly what that criterion
+is looking for. The realtime rule on **8443** stays as it is; that listener has
+not moved, it has only gained TLS.
+
+`console.bat doctor` reports what is actually listening afterwards.
+
 ---
 
 ## Step 3 — point the system at its new address
@@ -243,7 +266,7 @@ on a hard refusal: any device request arriving over plain HTTP is answered
 While it stays `local`, terminals that have not been re-flashed keep working
 over `http://` exactly as before — which is what lets you switch the site today
 and walk the terminals over the next few days. Set it to `production` once
-step 8 is finished on every terminal, and re-run the doctor.
+Step 5 is finished on every terminal, and re-run the doctor.
 
 This matters more than it looks. `APP_URL` is what the system uses to build
 links, and — because the session cookie is marked `Secure` — getting it wrong
@@ -401,7 +424,7 @@ The session cookie is not reaching the browser. Two causes, both in `.env`:
 **Every terminal stopped recording the moment the site went HTTPS.**
 `APP_ENV` was set to `production` before the terminals were re-flashed. Device
 requests over plain HTTP are then refused with `426 HTTPS_REQUIRED`. Set
-`APP_ENV=local` again until step 8 is done everywhere.
+`APP_ENV=local` again until Step 5 is done everywhere.
 
 **The dashboards stopped updating live, but everything else works.**
 Two different causes, and `console.bat doctor` tells them apart.
