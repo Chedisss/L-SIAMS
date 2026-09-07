@@ -371,7 +371,10 @@ $manual      = array_values(array_filter($recapture, static fn (array $r): bool 
 <?php endif; ?>
 
 <div class="card">
-    <div class="card__header"><h2 class="card__title">Enrolled fingerprints</h2></div>
+    <div class="card__header">
+        <h2 class="card__title">Enrolled fingerprints</h2>
+        <span class="text-sm text-muted">The slot is on the terminal each teacher was enrolled at — a copy sits on every other terminal too, often at a different slot.</span>
+    </div>
     <div class="card__body--flush">
         <?php if ($enrolments === []): ?>
             <?php $__view->include('partials.empty-state', [
@@ -381,7 +384,7 @@ $manual      = array_values(array_filter($recapture, static fn (array $r): bool 
         <?php else: ?>
             <div class="table-wrap">
                 <table class="data">
-                    <thead><tr><th>Teacher</th><th>Department</th><th class="numeric">Sensor slot</th><th>Enrolled on</th>
+                    <thead><tr><th>Teacher</th><th>Department</th><th class="numeric">Slot</th><th>Enrolled on</th>
                         <th>Enrolled</th><th class="numeric">Verifications</th><th>Last verified</th><th>Status</th><th style="width:130px"></th></tr></thead>
                     <tbody>
                     <?php foreach ($enrolments as $enrolment): ?>
