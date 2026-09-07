@@ -24,6 +24,63 @@ $__view->start('content');
 
 <div class="card">
     <div class="card__header">
+        <h2 class="card__title">Automatic backup</h2>
+        <?php if ($schedule['enabled']): ?>
+            <span class="badge badge-success">On · daily at <?= e($schedule['time']) ?></span>
+        <?php else: ?>
+            <span class="badge badge-neutral">Off</span>
+        <?php endif; ?>
+    </div>
+    <div class="card__body">
+        <p class="text-sm text-muted" style="margin-top:0">
+            One backup a day, at the time you set, keeping the most recent few and pruning the rest.
+            It is the background worker that writes them — <strong>the server must be running at that
+            hour</strong>, so pick a time the machine is switched on. A school that powers the server down
+            overnight should set this to the middle of the school day, not 1&nbsp;AM.
+        </p>
+
+        <?php if ($schedule['enabled']): ?>
+            <p class="text-sm" style="margin:.4rem 0 0">
+                <?php if ($lastScheduled !== null): ?>
+                    <i class="fa-solid fa-circle-check text-success"></i>
+                    Last automatic backup: <strong><?= e(format_datetime($lastScheduled)) ?></strong>.
+                <?php else: ?>
+                    <i class="fa-solid fa-triangle-exclamation text-warning"></i>
+                    <strong>No automatic backup has run yet.</strong> If this stays true past the next
+                    scheduled time, the worker is not running when it should be — start
+                    <code>start.bat</code>, or run <code>install-worker.bat</code> once so it starts at boot.
+                <?php endif; ?>
+            </p>
+        <?php endif; ?>
+
+        <form id="schedule-form" class="form-grid" style="margin-top:1rem; max-width:520px">
+            <div class="form-group form-group--full">
+                <label class="checkbox">
+                    <input type="checkbox" id="s-enabled" name="enabled" <?= $schedule['enabled'] ? 'checked' : '' ?>>
+                    <span><strong>Back up automatically every day</strong></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="s-time">Time of day</label>
+                <input type="time" id="s-time" name="time" value="<?= e($schedule['time']) ?>" required>
+            </div>
+            <div class="form-group">
+                <label for="s-retain">Backups to keep</label>
+                <input type="number" id="s-retain" name="retain" min="1" max="365"
+                       value="<?= e($schedule['retain']) ?>" required>
+                <span class="text-xs text-muted">Older automatic backups beyond this many are pruned. Manual backups are never pruned.</span>
+            </div>
+            <div>
+                <button type="submit" class="btn btn-primary" id="save-schedule">
+                    <i class="fa-solid fa-floppy-disk"></i> Save schedule
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card__header">
         <h2 class="card__title">Backup history</h2>
         <span class="text-sm text-muted"><?= e(count($backups)) ?> archive(s)</span>
     </div>
@@ -32,7 +89,7 @@ $__view->start('content');
             <?php $__view->include('partials.empty-state', [
                 'icon'   => 'fa-database',
                 'title'  => 'No backups yet',
-                'text'   => 'Create one now, and schedule the maintenance worker for daily automatic backups.',
+                'text'   => 'Create one now, and set a daily automatic backup in the panel above.',
                 'action' => '<button class="btn btn-primary" id="create-backup-empty"><i class="fa-solid fa-database"></i> Create backup</button>',
             ]); ?>
         <?php else: ?>
@@ -103,6 +160,33 @@ $__view->start('scripts');
         const button = document.getElementById(id);
         if (button) button.addEventListener('click', () => createBackup(button));
     });
+
+    const scheduleForm = document.getElementById('schedule-form');
+
+    if (scheduleForm) {
+        scheduleForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            const save = document.getElementById('save-schedule');
+            LS.util.setBusy(save, true, 'Saving…');
+
+            try {
+                const response = await LS.http.post('/admin/backup/schedule', {
+                    enabled: document.getElementById('s-enabled').checked,
+                    time:    document.getElementById('s-time').value,
+                    retain:  document.getElementById('s-retain').value,
+                });
+                LS.toast.success(response.message, 'Schedule saved');
+                // The badge and the "last backup" line are rendered server-side,
+                // so reload to show the saved state rather than patching it here.
+                setTimeout(() => window.location.reload(), 700);
+            } catch (error) {
+                if (error.errors) LS.util.showFieldErrors(scheduleForm, error.errors);
+                LS.toast.fromError(error);
+                LS.util.setBusy(save, false);
+            }
+        });
+    }
 
     document.addEventListener('click', async (event) => {
         const verify = event.target.closest('[data-verify]');
