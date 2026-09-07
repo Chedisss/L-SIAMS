@@ -193,6 +193,55 @@ final class SecurityLogService
     }
 
     /**
+     * Resolve a set of events in one statement.
+     *
+     * @param  list<int> $securityIds
+     * @return int        how many rows were actually changed
+     */
+    public static function resolveMany(array $securityIds, int $userId, string $status, ?string $notes): int
+    {
+        $ids = array_values(array_unique(array_filter(
+            array_map(static fn ($v): int => (int) $v, $securityIds),
+            static fn (int $id): bool => $id > 0
+        )));
+
+        if ($ids === []) {
+            return 0;
+        }
+
+        $db           = Database::instance();
+        $placeholders = implode(', ', array_fill(0, count($ids), '?'));
+
+        // One UPDATE for the whole set. The content-freeze trigger still runs
+        // per row, so a batch can no more rewrite an event than a single resolve
+        // can — it only touches the triage columns named here.
+        $changed = $db->execute(
+            "UPDATE security_logs
+                SET resolution_status = ?, resolved_by = ?, resolved_at = ?, admin_notes = ?
+              WHERE security_id IN ($placeholders)",
+            array_merge(
+                [$status, $userId, Clock::nowString(), $notes === null ? null : mb_substr($notes, 0, 1000)],
+                $ids
+            )
+        );
+
+        // One audit row for the batch, naming the ids, rather than flooding the
+        // trail with an entry per event — the count and the list are the fact
+        // worth keeping.
+        AuditService::log(
+            'SECURITY_EVENT_RESOLVED',
+            'security',
+            'security_log',
+            null,
+            null,
+            ['resolution_status' => $status, 'security_ids' => $ids, 'count' => $changed],
+            sprintf('%d security event(s) marked %s in bulk', $changed, $status)
+        );
+
+        return $changed;
+    }
+
+    /**
      * Rolls the last 24 hours into the counters and risk level the security
      * dashboard renders.
      *

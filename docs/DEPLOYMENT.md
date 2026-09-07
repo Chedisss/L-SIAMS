@@ -172,29 +172,34 @@ generate it, so that a table added by a future migration is picked up rather
 than silently left without the privileges the application needs:
 
 ```sql
--- Everything except the seven protected tables gets both.
+-- Everything except the six no-delete tables gets both.
 SELECT CONCAT('GRANT UPDATE, DELETE ON `lsiams_db`.`', TABLE_NAME,
               '` TO ''lsiams_app''@''localhost'';')
   FROM information_schema.TABLES
  WHERE TABLE_SCHEMA = 'lsiams_db' AND TABLE_TYPE = 'BASE TABLE'
-   AND TABLE_NAME NOT IN ('audit_logs', 'security_logs', 'login_history',
-                          'attendance_records', 'rfid_logs', 'fingerprint_logs',
-                          'attendance_modifications')
+   AND TABLE_NAME NOT IN ('audit_logs', 'login_history',
+                          'security_logs', 'attendance_records', 'rfid_logs',
+                          'fingerprint_logs', 'attendance_modifications')
 UNION ALL
--- Attendance rows are updated but never deleted — see the note below.
+-- Corrected in place but never deleted — see the notes below. security_logs
+-- is here because an event is resolved and annotated; its content is frozen by
+-- a trigger, not by withholding UPDATE.
 SELECT CONCAT('GRANT UPDATE ON `lsiams_db`.`', TABLE_NAME,
               '` TO ''lsiams_app''@''localhost'';')
   FROM information_schema.TABLES
  WHERE TABLE_SCHEMA = 'lsiams_db' AND TABLE_TYPE = 'BASE TABLE'
-   AND TABLE_NAME IN ('attendance_records', 'rfid_logs', 'fingerprint_logs',
-                      'attendance_modifications');
+   AND TABLE_NAME IN ('security_logs', 'attendance_records', 'rfid_logs',
+                      'fingerprint_logs', 'attendance_modifications');
 ```
 
 Run that, copy the statements it prints, run those, then `FLUSH PRIVILEGES;`.
 
-`audit_logs`, `security_logs` and `login_history` appear in neither list: they
-keep `SELECT, INSERT` from the database-wide grant and nothing else, which is
-exactly append-only.
+`audit_logs` and `login_history` appear in neither list: they keep
+`SELECT, INSERT` from the database-wide grant and nothing else, which is exactly
+append-only. `security_logs` gets `UPDATE` so an administrator can resolve an
+event — but no `DELETE`, and `trg_security_immutable_content` (migration 036)
+rejects any update that changes the event itself, leaving only the resolution
+status and note free to move.
 
 **Re-run the generator after every upgrade that adds a table.** A new table
 inherits `SELECT, INSERT` automatically and nothing more, so the symptom is an

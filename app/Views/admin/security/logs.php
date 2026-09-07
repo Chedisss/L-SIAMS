@@ -5,9 +5,19 @@ $__view->start('content');
 ?>
 <?php $__view->include('partials.page-header', [
     'title'       => 'Security Logs',
-    'subtitle'    => 'Permanent and immutable. Events cannot be edited or deleted through any interface.',
+    'subtitle'    => 'Permanent: an event cannot be deleted and its content cannot be changed. Only its resolution status is editable.',
     'breadcrumbs' => [['Dashboard', '/admin'], ['Security Center', '/admin/security'], ['Logs', null]],
 ]); ?>
+
+<style nonce="<?= e(csp_nonce()) ?>">
+    .bulk-bar {
+        display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+        padding: .6rem .9rem; border-bottom: 1px solid var(--border, #d5dde4);
+        background: var(--surface-alt, #eef1f4);
+    }
+    .bulk-bar__count { font-size: .85rem; color: var(--text-muted, #47576a); white-space: nowrap; }
+    .bulk-bar select, .bulk-bar input[type="text"] { margin: 0; max-width: 320px; }
+</style>
 
 <form class="filter-bar" data-no-submit>
     <div class="form-group form-group--wide">
@@ -52,13 +62,33 @@ $__view->start('content');
         <?php if ($logs === []): ?>
             <?php $__view->include('partials.empty-state', ['icon' => 'fa-shield-halved', 'title' => 'No security events match']); ?>
         <?php else: ?>
+            <?php /* Bulk triage. A page of routine TIMESTAMP_EXPIRED entries all
+                     say the same thing; ticking them and resolving in one go beats
+                     one dialog per row. The bar stays hidden until something is
+                     ticked, so it never gets in the way of reading the table. */ ?>
+            <div class="bulk-bar" id="bulk-bar" hidden>
+                <span class="bulk-bar__count"><strong id="bulk-count">0</strong> selected</span>
+                <select id="bulk-status">
+                    <option value="resolved">Mark resolved</option>
+                    <option value="false_positive">Mark false positive</option>
+                    <option value="investigating">Mark investigating</option>
+                    <option value="open">Reopen</option>
+                </select>
+                <input type="text" id="bulk-notes" maxlength="1000"
+                       placeholder="Note (optional)" style="flex:1;min-width:160px">
+                <button type="button" class="btn btn-primary btn-sm" id="bulk-apply">Apply</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="bulk-clear">Clear</button>
+            </div>
             <div class="table-wrap">
                 <table class="data">
-                    <thead><tr><th>When</th><th>Severity</th><th>Event</th><th>Description</th>
+                    <thead><tr>
+                        <th style="width:34px"><input type="checkbox" id="check-all" title="Select all on this page"></th>
+                        <th>When</th><th>Severity</th><th>Event</th><th>Description</th>
                         <th>Source IP</th><th>Device</th><th>User</th><th>Status</th><th style="width:60px"></th></tr></thead>
                     <tbody>
                     <?php foreach ($logs as $log): ?>
                         <tr>
+                            <td><input type="checkbox" class="row-check" value="<?= e($log['security_id']) ?>"></td>
                             <td class="nowrap text-sm"><?= e(format_datetime($log['created_at'])) ?></td>
                             <td>
                                 <span class="badge badge-<?= e(['critical' => 'danger', 'high' => 'danger', 'medium' => 'warning', 'low' => 'neutral'][$log['severity']] ?? 'neutral') ?>">
@@ -173,6 +203,73 @@ window.securityTable = {
             LS.util.setBusy(button, false);
         }
     });
+
+    /* ---- bulk triage --------------------------------------------------- */
+    const bar     = document.getElementById('bulk-bar');
+    const checkAll = document.getElementById('check-all');
+
+    // The page may be empty (no rows, so no bar); guard every handler on that.
+    if (bar && checkAll) {
+        const rowChecks = () => Array.from(document.querySelectorAll('.row-check'));
+        const selected  = () => rowChecks().filter((c) => c.checked);
+
+        function refresh() {
+            const picked = selected().length;
+            document.getElementById('bulk-count').textContent = String(picked);
+            bar.hidden = picked === 0;
+
+            const all = rowChecks();
+            checkAll.checked = picked > 0 && picked === all.length;
+            checkAll.indeterminate = picked > 0 && picked < all.length;
+        }
+
+        checkAll.addEventListener('change', () => {
+            rowChecks().forEach((c) => { c.checked = checkAll.checked; });
+            refresh();
+        });
+
+        // Delegated, so it covers every row without a listener each.
+        document.addEventListener('change', (event) => {
+            if (event.target.classList.contains('row-check')) refresh();
+        });
+
+        document.getElementById('bulk-clear').addEventListener('click', () => {
+            rowChecks().forEach((c) => { c.checked = false; });
+            checkAll.checked = false;
+            refresh();
+        });
+
+        document.getElementById('bulk-apply').addEventListener('click', async function () {
+            const ids = selected().map((c) => c.value);
+            if (ids.length === 0) return;
+
+            const status = document.getElementById('bulk-status').value;
+            const label  = document.getElementById('bulk-status').selectedOptions[0].textContent.toLowerCase();
+
+            const confirmed = await LS.modal.confirm({
+                title:   ids.length + ' event(s): ' + label + '?',
+                message: 'This updates the resolution status of the selected security events. '
+                       + 'The events themselves are not changed and nothing is deleted.',
+                confirmLabel: 'Apply to ' + ids.length,
+            });
+            if (!confirmed) return;
+
+            LS.util.setBusy(this, true, 'Applying…');
+
+            try {
+                const response = await LS.http.post('/admin/security/logs/resolve-bulk', {
+                    ids: ids,
+                    resolution_status: status,
+                    admin_notes: document.getElementById('bulk-notes').value,
+                });
+                LS.toast.success(response.message);
+                setTimeout(() => window.location.reload(), 700);
+            } catch (error) {
+                LS.toast.fromError(error);
+                LS.util.setBusy(this, false);
+            }
+        });
+    }
 })();
 
 // The filter controls announce changes rather than calling this directly:

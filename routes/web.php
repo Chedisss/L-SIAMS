@@ -229,6 +229,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     // --- Security Center ---
     $router->get('/security', SecurityController::class . '@center', [], 'admin.security');
     $router->get('/security/logs', SecurityController::class . '@logs');
+    $router->post('/security/logs/resolve-bulk', SecurityController::class . '@resolveLogsBulk');
     $router->post('/security/logs/{id:\d+}/resolve', SecurityController::class . '@resolveLog');
     $router->get('/security/sessions', SecurityController::class . '@sessions');
     $router->post('/security/sessions/{id:\d+}/terminate', SecurityController::class . '@terminateSession');
