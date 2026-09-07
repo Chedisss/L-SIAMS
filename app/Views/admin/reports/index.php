@@ -33,6 +33,42 @@ $fieldsByType = [
     'audit'               => ['range'],
     'security'            => ['range'],
 ];
+
+/**
+ * A one-line plain-English summary of each report, shown under the type
+ * picker so an administrator can tell "Section Summary" from "Section
+ * Comparison" without having to run both.
+ */
+$typeDescriptions = [
+    'daily'               => 'Every attendance record for a single day, one row per student.',
+    'weekly'              => 'Day-by-day attendance for each student across a week.',
+    'monthly'             => 'Day-by-day attendance for each student across a month.',
+    'student'             => 'One student\'s full attendance history over a date range.',
+    'teacher'             => 'Sessions a teacher ran, with counts, over a date range.',
+    'subject'             => 'One subject\'s attendance, broken down day by day.',
+    'section_daily'       => 'A printable roll-call sheet for one section on one day.',
+    'section_summary'     => 'Per-student attendance totals and rates for a section.',
+    'section_comparison'  => 'Attendance rates of every section in a grade, side by side.',
+    'adviser'             => 'Attendance summary for an adviser\'s advisory class.',
+    'section_roster_rfid' => 'Which students in a section have an RFID card registered.',
+    'chronic_absence'     => 'Students whose attendance falls below a threshold you set.',
+    'device_uptime'       => 'How reliably each classroom terminal has stayed online.',
+    'audit'               => 'A log of system changes — who changed what, and when.',
+    'security'            => 'Security events (blocked scans, failed logins) over a range.',
+];
+
+/**
+ * Group the report types so the picker reads as a short menu of categories
+ * rather than one flat list of fifteen. Order within a group is deliberate:
+ * the most-used report leads each group.
+ */
+$typeGroups = [
+    'Attendance'   => ['daily', 'weekly', 'monthly', 'student', 'teacher', 'subject'],
+    'By section'   => ['section_daily', 'section_summary', 'section_comparison', 'adviser', 'section_roster_rfid', 'chronic_absence'],
+    'Operations'   => ['device_uptime', 'audit', 'security'],
+];
+// Report types teachers may never run, even if they somehow reach this view.
+$teacherHidden = ['audit', 'security', 'device_uptime'];
 ?>
 
 <?php $__view->include('partials.page-header', [
@@ -50,11 +86,23 @@ $fieldsByType = [
                 <div class="form-group">
                     <label for="r-type" class="required">Report type</label>
                     <select id="r-type" name="type" required>
-                        <?php foreach ($types as $value => $label): ?>
-                            <?php if ($isTeacher && in_array($value, ['audit', 'security', 'device_uptime'], true)) { continue; } ?>
-                            <option value="<?= e($value) ?>"><?= e($label) ?></option>
+                        <?php foreach ($typeGroups as $groupLabel => $groupTypes): ?>
+                            <?php
+                            // Skip a whole group if the viewer can run nothing in it.
+                            $visible = array_filter(
+                                $groupTypes,
+                                fn ($t) => isset($types[$t]) && !($isTeacher && in_array($t, $teacherHidden, true))
+                            );
+                            if ($visible === []) { continue; }
+                            ?>
+                            <optgroup label="<?= e($groupLabel) ?>">
+                                <?php foreach ($visible as $value): ?>
+                                    <option value="<?= e($value) ?>"><?= e($types[$value]) ?></option>
+                                <?php endforeach; ?>
+                            </optgroup>
                         <?php endforeach; ?>
                     </select>
+                    <span class="field-help" id="r-type-desc"></span>
                 </div>
 
                 <div class="form-group" data-field="date">
@@ -170,9 +218,14 @@ $fieldsByType = [
                     </select>
                 </div>
 
-                <button type="submit" class="btn btn-primary w-full">
-                    <i class="fa-solid fa-magnifying-glass"></i> Preview
-                </button>
+                <div class="flex gap-1">
+                    <button type="submit" class="btn btn-primary" style="flex:1">
+                        <i class="fa-solid fa-magnifying-glass"></i> Preview
+                    </button>
+                    <button type="button" class="btn btn-secondary" id="r-reset" title="Clear every filter back to its default">
+                        <i class="fa-solid fa-rotate-left"></i> Reset
+                    </button>
+                </div>
             </form>
         </div>
     </div>
@@ -263,15 +316,19 @@ $__view->start('scripts');
     const BASE = <?= json_js($base) ?>;
 
     const FIELDS = <?= json_js($fieldsByType) ?>;
+    const DESCS  = <?= json_js($typeDescriptions) ?>;
 
     const form   = document.getElementById('report-form');
     const type   = document.getElementById('r-type');
+    const desc   = document.getElementById('r-type-desc');
     const grade  = document.getElementById('r-grade');
     const section = document.getElementById('r-section');
 
     /* ---- show only the filters this report type consumes ---------------- */
     function syncFields() {
         const wanted = FIELDS[type.value] || [];
+
+        desc.textContent = DESCS[type.value] || '';
 
         form.querySelectorAll('[data-field]').forEach((node) => {
             const show = wanted.indexOf(node.dataset.field) !== -1;
@@ -292,8 +349,8 @@ $__view->start('scripts');
     syncFields();
 
     /* ---- section list follows the grade level --------------------------- */
-    grade.addEventListener('change', function () {
-        const gradeId = this.value;
+    function syncSections() {
+        const gradeId = grade.value;
 
         Array.from(section.options).forEach((option) => {
             if (option.value === '') return;
@@ -301,6 +358,27 @@ $__view->start('scripts');
         });
 
         if (section.selectedOptions[0] && section.selectedOptions[0].hidden) section.value = '';
+    }
+
+    grade.addEventListener('change', syncSections);
+
+    /* ---- reset every filter back to its default ------------------------- */
+    document.getElementById('r-reset').addEventListener('click', function () {
+        form.reset();
+        // form.reset() restores the markup defaults but does not fire change
+        // events, so re-run the two things that react to selections and clear
+        // the student typeahead's chosen state by hand.
+        const studentChosen = document.getElementById('r-student');
+        const studentLabel  = document.getElementById('r-student-chosen');
+        const studentResults = document.getElementById('r-student-results');
+        if (studentChosen)  studentChosen.value = '';
+        if (studentResults) studentResults.hidden = true;
+        if (studentLabel) {
+            studentLabel.textContent = 'No student selected.';
+            studentLabel.className = 'field-help';
+        }
+        syncSections();
+        syncFields();
     });
 
     /* ---- student typeahead ---------------------------------------------- */

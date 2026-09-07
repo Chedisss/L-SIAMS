@@ -16,6 +16,22 @@ $fieldsByType = [
     'section_daily'   => ['date', 'section_id'],
     'section_summary' => ['range', 'section_id'],
 ];
+
+/** A one-line summary shown under the type picker, scoped to the teacher. */
+$typeDescriptions = [
+    'daily'           => 'Attendance for one of your classes on a single day.',
+    'weekly'          => 'Day-by-day attendance for your classes across a week.',
+    'monthly'         => 'Day-by-day attendance for your classes across a month.',
+    'teacher'         => 'A summary of the sessions you ran over a date range.',
+    'section_daily'   => 'A printable roll-call sheet for one section on one day.',
+    'section_summary' => 'Per-student attendance totals for one of your sections.',
+];
+
+/** Group the picker so it reads as a short menu rather than a flat list. */
+$typeGroups = [
+    'Attendance' => ['daily', 'weekly', 'monthly', 'teacher'],
+    'By section' => ['section_daily', 'section_summary'],
+];
 ?>
 
 <?php $__view->include('partials.page-header', [
@@ -33,10 +49,17 @@ $fieldsByType = [
                 <div class="form-group">
                     <label for="r-type" class="required">Report type</label>
                     <select id="r-type" name="type" required>
-                        <?php foreach ($types as $value => $label): ?>
-                            <option value="<?= e($value) ?>"><?= e($label) ?></option>
+                        <?php foreach ($typeGroups as $groupLabel => $groupTypes): ?>
+                            <?php $visible = array_filter($groupTypes, fn ($t) => isset($types[$t])); ?>
+                            <?php if ($visible === []) { continue; } ?>
+                            <optgroup label="<?= e($groupLabel) ?>">
+                                <?php foreach ($visible as $value): ?>
+                                    <option value="<?= e($value) ?>"><?= e($types[$value]) ?></option>
+                                <?php endforeach; ?>
+                            </optgroup>
                         <?php endforeach; ?>
                     </select>
+                    <span class="field-help" id="r-type-desc"></span>
                 </div>
 
                 <div class="form-group" data-field="date">
@@ -79,9 +102,14 @@ $fieldsByType = [
                     </select>
                 </div>
 
-                <button type="submit" class="btn btn-primary w-full">
-                    <i class="fa-solid fa-magnifying-glass"></i> Preview
-                </button>
+                <div class="flex gap-1">
+                    <button type="submit" class="btn btn-primary" style="flex:1">
+                        <i class="fa-solid fa-magnifying-glass"></i> Preview
+                    </button>
+                    <button type="button" class="btn btn-secondary" id="r-reset" title="Clear every filter back to its default">
+                        <i class="fa-solid fa-rotate-left"></i> Reset
+                    </button>
+                </div>
             </form>
         </div>
     </div>
@@ -120,12 +148,16 @@ $__view->start('scripts');
 (function () {
     const LS     = window.LSIAMS;
     const FIELDS = <?= json_js($fieldsByType) ?>;
+    const DESCS  = <?= json_js($typeDescriptions) ?>;
 
     const form = document.getElementById('report-form');
     const type = document.getElementById('r-type');
+    const desc = document.getElementById('r-type-desc');
 
     function syncFields() {
         const wanted = FIELDS[type.value] || [];
+
+        desc.textContent = DESCS[type.value] || '';
 
         form.querySelectorAll('[data-field]').forEach((node) => {
             const show = wanted.indexOf(node.dataset.field) !== -1;
@@ -139,6 +171,11 @@ $__view->start('scripts');
 
     type.addEventListener('change', syncFields);
     syncFields();
+
+    document.getElementById('r-reset').addEventListener('click', function () {
+        form.reset();
+        syncFields();
+    });
 
     form.addEventListener('submit', async function (event) {
         event.preventDefault();
