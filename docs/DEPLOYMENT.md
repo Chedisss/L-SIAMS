@@ -155,8 +155,17 @@ Replace the database-wide grant above with one that carries only what every
 table may safely have:
 
 ```sql
-GRANT SELECT, INSERT ON lsiams_db.* TO 'lsiams_app'@'localhost';
+GRANT SELECT, INSERT, SHOW VIEW ON lsiams_db.* TO 'lsiams_app'@'localhost';
 ```
+
+> **`SHOW VIEW` is not optional, and it is not a write.** The backup dumps the
+> database's views with `SHOW CREATE VIEW`, which needs this privilege; without
+> it the nightly backup fails on the first view it reaches
+> (`1142 SHOW VIEW command denied … for table 'v_attendance_detail'`) and
+> nothing else misbehaves, so it is easy to leave out and only discover when a
+> restore is needed. It only reads view definitions, so it takes nothing away
+> from the immutability guarantee. `console.bat security:privileges` checks for
+> it explicitly.
 
 Then hand out `UPDATE` and `DELETE` table by table. Do not type this list —
 generate it, so that a table added by a future migration is picked up rather

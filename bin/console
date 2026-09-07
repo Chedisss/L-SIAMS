@@ -1761,6 +1761,16 @@ function commandAuditPrivileges(): void
         }
     }
 
+    // SHOW VIEW is schema-wide and easy to forget, because it is not a write —
+    // so the lockdown that revokes everything and grants writes back by hand
+    // leaves it out, and nothing notices until the nightly backup fails on
+    // SHOW CREATE VIEW for the first view it reaches. It reads view
+    // definitions, nothing more, so it costs the immutability guarantee
+    // nothing; the backup cannot run without it.
+    if (!in_array('SHOW VIEW', $wide, true)) {
+        $missing[] = '(schema) SHOW VIEW — required for backups to dump views';
+    }
+
     if ($missing !== []) {
         out('');
         out(sprintf('  ✗ %d privilege(s) the application NEEDS are missing, including:', count($missing)), 'red');
