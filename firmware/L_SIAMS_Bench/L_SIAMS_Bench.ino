@@ -2712,6 +2712,28 @@ static void startRfid(bool verbose = true) {
   rfid.PCD_AntennaOn();
 }
 
+/* Put the reader back into a known-good state without a reboot.
+ *
+ * The MFRC522 is started once at boot and then left alone, which is fine until
+ * something disturbs it mid-run. The usual culprit here is the 3.3 V rail: the
+ * fingerprint sensor lighting up to capture a print, at the same moment the
+ * radio transmits the request that opens the session, dips the supply enough
+ * to scramble the reader's registers or drop its antenna. The chip does not
+ * recover on its own — it keeps answering, so rfidReady stays true and the
+ * loop's "retry the missing half" path never fires, yet PICC_IsNewCardPresent()
+ * sees nothing. From outside it looks like a dead reader that comes back the
+ * instant EN is pressed, because EN is the only thing that was re-running
+ * PCD_Init() and PCD_AntennaOn().
+ *
+ * This is those two calls, on demand. SPI.begin() is deliberately NOT repeated:
+ * it initialises only on its first call, and calling it again would detach MISO
+ * and break a reader that was working. */
+static void reinitRfidReader() {
+  rfid.PCD_Init();
+  delay(50);
+  rfid.PCD_AntennaOn();
+}
+
 static void startFingerprint(bool verbose = true) {
   fingerSerial.begin(FINGERPRINT_BAUD, SERIAL_8N1, PIN_FINGER_RX, PIN_FINGER_TX);
   delay(100);
@@ -3222,7 +3244,21 @@ void loop() {
   pollEnrollment();
   pollCardEnrollment();
   pollTemplateSync();
+
+  /* A fingerprint scan draws current on the same 3.3 V rail as the reader and
+   * is followed by the request that opens the session, and that combination can
+   * leave the MFRC522 unable to see cards until it is re-initialised — which
+   * used to mean pressing EN, so a teacher opened the session, told the class to
+   * tap, and nothing registered. lastFingerAt moves the moment a print is
+   * captured, so a change across this call means a scan just happened: put the
+   * reader back into a known-good state so the class can tap straight away. */
+  uint32_t fingerBefore = lastFingerAt;
   handleFingerprint();
+
+  if (rfidReady && lastFingerAt != fingerBefore) {
+    reinitRfidReader();
+    Serial.println("        (card reader re-initialised — tap cards now, no reset needed)");
+  }
 
   String uid = readCardUid();
 
