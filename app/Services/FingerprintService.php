@@ -805,6 +805,28 @@ final class FingerprintService
             // so anything older than ten minutes is not a lagging reading, it
             // is a sensor that has gone quiet — which is the fault worth
             // reporting, and the one this warning was hiding.
+            // `last_slot_change` is when the register of what this sensor
+            // SHOULD hold last moved — the newest present-slot write. It is the
+            // difference between a real mismatch and the ordinary lag after a
+            // sync.
+            //
+            // A template written to the sensor marks its slot present
+            // immediately, so `expected` rises the instant the sync confirms.
+            // The sensor's own count, though, only refreshes on its next
+            // heartbeat that carries one — up to thirty seconds later. In that
+            // window the sensor genuinely holds the new print and simply has not
+            // said so yet, and the old query read that gap as "holding 6 of 7,
+            // wipe the sensor" seconds after a perfectly good sync. The serial
+            // monitor says "7 templates on this sensor now" while the page
+            // says one is missing.
+            //
+            // So a SHORTFALL is only reported once the sensor has actually
+            // reported SINCE the last slot change. If its reading predates the
+            // change, it cannot yet be evidence of anything — wait for the next
+            // heartbeat. A SURPLUS (the sensor holding more than the register
+            // knows about — an orphan template, a sensor that was not wiped when
+            // records were cleared) is always real and always shown, whatever
+            // the timing.
             "SELECT d.id AS device_row_id, d.device_id, d.device_name,
                     c.room_number,
                     d.sensor_template_count, d.sensor_reported_at,
@@ -814,12 +836,21 @@ final class FingerprintService
                     (SELECT COUNT(*) FROM fingerprint_slots s
                       WHERE s.device_row_id = d.id
                         AND s.status = 'present'
-                    ) AS expected
+                    ) AS expected,
+                    (SELECT MAX(s.updated_at) FROM fingerprint_slots s
+                      WHERE s.device_row_id = d.id
+                        AND s.status = 'present'
+                    ) AS last_slot_change
                FROM devices d
           LEFT JOIN classrooms c ON c.classroom_id = d.classroom_id
               WHERE d.deleted_at IS NULL
                 AND d.sensor_template_count IS NOT NULL
              HAVING d.sensor_template_count <> expected
+                AND (
+                      d.sensor_template_count > expected
+                   OR last_slot_change IS NULL
+                   OR d.sensor_reported_at >= last_slot_change
+                )
               ORDER BY d.device_id",
             ['stale_before' => Clock::now()->modify('-10 minutes')->format('Y-m-d H:i:s')]
         );
