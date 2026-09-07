@@ -268,11 +268,31 @@ final class SecurityLogService
             $bySeverity[(string) $row['severity']] = ($bySeverity[(string) $row['severity']] ?? 0) + (int) $row['total'];
         }
 
+        // The counters above are 24-hour activity — how much happened, resolved
+        // or not. The RISK LEVEL is a different question: how much is still
+        // outstanding. It is computed only from events nobody has dealt with,
+        // so working through the log genuinely calms the dashboard. Without
+        // this, resolving every event left the panel reading "0 unresolved"
+        // and "Critical" at the same time, which is the opposite of what
+        // resolving is for.
+        $openBySeverity = ['low' => 0, 'medium' => 0, 'high' => 0, 'critical' => 0];
+
+        foreach ($db->select(
+            "SELECT severity, COUNT(*) AS total
+               FROM security_logs
+              WHERE created_at >= :since
+                AND resolution_status = 'open'
+              GROUP BY severity",
+            ['since' => $since]
+        ) as $row) {
+            $openBySeverity[(string) $row['severity']] = (int) $row['total'];
+        }
+
         // Weighted so a single critical event outranks a flood of low ones.
-        $score = $bySeverity['low'] * 1
-            + $bySeverity['medium'] * 3
-            + $bySeverity['high'] * 10
-            + $bySeverity['critical'] * 25;
+        $score = $openBySeverity['low'] * 1
+            + $openBySeverity['medium'] * 3
+            + $openBySeverity['high'] * 10
+            + $openBySeverity['critical'] * 25;
 
         $risk = match (true) {
             $score >= 60 => 'critical',
