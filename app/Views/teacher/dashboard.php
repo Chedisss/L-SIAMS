@@ -441,8 +441,17 @@ $__view->start('scripts');
     const watch   = document.getElementById('ss-watch');
     const goto    = document.getElementById('ss-goto');
 
+    // Only attempts from when this panel appeared count. Without this, the one
+    // quiet poll on load reports the most recent fingerprint attempt of the
+    // whole day, so a refusal from an earlier test replays as "That scan didn't
+    // go through" for a scan the teacher never made this session — often
+    // carrying a reason (no class scheduled) that no longer applies now that a
+    // class is live. An already-open session is still detected on load: the
+    // server checks for one separately and ignores this cut-off.
+    const nowStamp = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
+
     let timer = null;
-    let since = null;
+    let since = nowStamp();
 
     function step(name, state) {
         document.querySelectorAll('#ss-steps li').forEach((li) => {
@@ -545,7 +554,7 @@ $__view->start('scripts');
     watch.addEventListener('click', function () {
         // Attempts are counted from this moment, so a failure from earlier in
         // the day does not open the panel already looking like a fresh one.
-        since = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        since = nowStamp();
 
         icon.className = 'enrol-scan__icon is-waiting';
         stage.textContent = 'Waiting for your fingerprint…';
