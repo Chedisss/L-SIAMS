@@ -259,6 +259,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
 
     $router->get('/backup', BackupController::class . '@index', [], 'admin.backup');
     $router->post('/backup', BackupController::class . '@create');
+    $router->post('/backup/schedule', BackupController::class . '@schedule');
     $router->post('/backup/{id:\d+}/verify', BackupController::class . '@verify');
     $router->get('/backup/{id:\d+}/download', BackupController::class . '@download');
     $router->post('/backup/{id:\d+}/restore', BackupController::class . '@restore');

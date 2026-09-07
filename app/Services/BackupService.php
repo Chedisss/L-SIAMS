@@ -521,6 +521,27 @@ final class BackupService
     }
 
     /** @return list<array<string,mixed>> */
+    /**
+     * When the last successful automatic backup ran, or null if none has.
+     *
+     * The schedule panel shows this so "nightly backups are on" can be told
+     * apart from "nightly backups are on and one actually happened" — the gap
+     * between the two being a worker that is not running at the scheduled hour.
+     */
+    public static function lastScheduledAt(): ?string
+    {
+        // Any status other than 'running' or 'failed' means the file was
+        // written — a later verify or restore advances the row past
+        // 'completed', and it still counts as a backup that happened.
+        $at = Database::instance()->scalar(
+            "SELECT MAX(created_at) FROM backups
+              WHERE trigger_type = 'scheduled'
+                AND status IN ('completed', 'verified', 'restored')"
+        );
+
+        return is_string($at) ? $at : null;
+    }
+
     public static function history(int $limit = 50): array
     {
         return Database::instance()->select(
