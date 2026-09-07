@@ -25,7 +25,7 @@ $rotateDays = (int) config('security.api_key.age_rotate_days', 365);
 <?php $__view->include('partials.page-header', [
     'title'       => (string) $device['device_id'],
     'subtitle'    => $device['device_name'] . ($device['room_number'] ? ' · Room ' . $device['room_number'] : ' · unassigned'),
-    'breadcrumbs' => [['Dashboard', '/admin'], ['IoT Devices', '/admin/devices'], [(string) $device['device_id'], null]],
+    'breadcrumbs' => [['Dashboard', '/admin'], ['Classroom Terminals', '/admin/devices'], [(string) $device['device_id'], null]],
     'actions'     => '<button class="btn btn-secondary" id="test-connection"><i class="fa-solid fa-satellite-dish"></i> Test connection</button>'
         . '<button class="btn btn-primary" data-modal-open="device-edit-modal"><i class="fa-solid fa-pen"></i> Edit</button>',
 ]); ?>
