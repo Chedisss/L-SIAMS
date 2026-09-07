@@ -150,6 +150,26 @@ $__view->start('scripts');
     const FIELDS = <?= json_js($fieldsByType) ?>;
     const DESCS  = <?= json_js($typeDescriptions) ?>;
 
+    // Colour the Status column exactly as the dashboard does.
+    const STATUS_BADGE = {
+        'Present':           'badge-success',
+        'Late':              'badge-warning',
+        'Left Early':        'badge-warning',
+        'Incomplete':        'badge-warning',
+        'Absent':            'badge-danger',
+        'Excused':           'badge-info',
+        'Official Business': 'badge-info',
+    };
+
+    function cellHtml(cell, isStatus) {
+        const text = cell === null ? '—' : String(cell);
+        if (isStatus && cell !== null && text !== '' && text !== '—') {
+            return '<td><span class="badge ' + (STATUS_BADGE[text] || 'badge-neutral') + '">'
+                + LS.util.escape(text) + '</span></td>';
+        }
+        return '<td>' + LS.util.escape(text) + '</td>';
+    }
+
     const form = document.getElementById('report-form');
     const type = document.getElementById('r-type');
     const desc = document.getElementById('r-type-desc');
@@ -228,11 +248,13 @@ $__view->start('scripts');
             return;
         }
 
+        const statusCol = data.headers.findIndex((h) => String(h).trim().toLowerCase() === 'status');
+
         let html = '<div class="table-wrap" style="max-height:560px;overflow:auto"><table class="data"><thead><tr>'
             + data.headers.map((header) => '<th>' + LS.util.escape(header) + '</th>').join('')
             + '</tr></thead><tbody>'
             + data.rows.map((row) => '<tr>'
-                + row.map((cell) => '<td>' + LS.util.escape(cell === null ? '—' : String(cell)) + '</td>').join('')
+                + row.map((cell, i) => cellHtml(cell, i === statusCol)).join('')
                 + '</tr>').join('')
             + '</tbody></table></div>';
 
