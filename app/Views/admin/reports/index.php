@@ -40,21 +40,21 @@ $fieldsByType = [
  * Comparison" without having to run both.
  */
 $typeDescriptions = [
-    'daily'               => 'Every attendance record for a single day, one row per student.',
-    'weekly'              => 'Day-by-day attendance for each student across a week.',
-    'monthly'             => 'Day-by-day attendance for each student across a month.',
-    'student'             => 'One student\'s full attendance history over a date range.',
-    'teacher'             => 'Sessions a teacher ran, with counts, over a date range.',
-    'subject'             => 'One subject\'s attendance, broken down day by day.',
-    'section_daily'       => 'A printable roll-call sheet for one section on one day.',
-    'section_summary'     => 'Per-student attendance totals and rates for a section.',
-    'section_comparison'  => 'Attendance rates of every section in a grade, side by side.',
-    'adviser'             => 'Attendance summary for an adviser\'s advisory class.',
-    'section_roster_rfid' => 'Which students in a section have an RFID card registered.',
-    'chronic_absence'     => 'Students whose attendance falls below a threshold you set.',
-    'device_uptime'       => 'How reliably each classroom terminal has stayed online.',
-    'audit'               => 'A log of system changes — who changed what, and when.',
-    'security'            => 'Security events (blocked scans, failed logins) over a range.',
+    'daily'               => 'One day, all students.',
+    'weekly'              => 'A week, day by day.',
+    'monthly'             => 'A month, day by day.',
+    'student'             => 'One student over a range.',
+    'teacher'             => 'A teacher\'s sessions.',
+    'subject'             => 'One subject, day by day.',
+    'section_daily'       => 'Printable roll-call sheet.',
+    'section_summary'     => 'Per-student totals for a section.',
+    'section_comparison'  => 'Sections in a grade, compared.',
+    'adviser'             => 'An adviser\'s advisory class.',
+    'section_roster_rfid' => 'Who has an RFID card.',
+    'chronic_absence'     => 'Students below a threshold.',
+    'device_uptime'       => 'Terminal online reliability.',
+    'audit'               => 'Who changed what, and when.',
+    'security'            => 'Blocked scans, failed logins.',
 ];
 
 /**

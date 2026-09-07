@@ -19,12 +19,12 @@ $fieldsByType = [
 
 /** A one-line summary shown under the type picker, scoped to the teacher. */
 $typeDescriptions = [
-    'daily'           => 'Attendance for one of your classes on a single day.',
-    'weekly'          => 'Day-by-day attendance for your classes across a week.',
-    'monthly'         => 'Day-by-day attendance for your classes across a month.',
-    'teacher'         => 'A summary of the sessions you ran over a date range.',
-    'section_daily'   => 'A printable roll-call sheet for one section on one day.',
-    'section_summary' => 'Per-student attendance totals for one of your sections.',
+    'daily'           => 'One day, one class.',
+    'weekly'          => 'A week, day by day.',
+    'monthly'         => 'A month, day by day.',
+    'teacher'         => 'Sessions you ran.',
+    'section_daily'   => 'Printable roll-call sheet.',
+    'section_summary' => 'Per-student totals for a section.',
 ];
 
 /** Group the picker so it reads as a short menu rather than a flat list. */
