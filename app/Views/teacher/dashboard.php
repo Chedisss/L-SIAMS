@@ -491,12 +491,14 @@ $__view->start('scripts');
             }
 
             if (data.state === 'refused') {
-                // The server's own reason, not a guess. This is the whole point
-                // of the panel: the refusal used to exist only in the serial log.
-                icon.className = 'enrol-scan__icon is-error';
-                stage.textContent = 'That scan was refused';
+                // Amber, not red: a scan that did not take is a "try again", not
+                // a fault. The server's own reason is shown below — this is the
+                // whole point of the panel, since the refusal used to exist only
+                // in the serial log — but the tone stays calm.
+                icon.className = 'enrol-scan__icon is-warning';
+                stage.textContent = 'That scan didn’t go through — try again';
                 detail.textContent = '';
-                warnText.textContent = data.message || 'The terminal refused the scan.';
+                warnText.textContent = data.message || 'The terminal did not accept the scan. Place your finger again.';
                 warning.classList.remove('hidden');
                 step('scan');
                 return;
@@ -516,7 +518,11 @@ $__view->start('scripts');
                posting anything, so this panel would otherwise ask somebody to
                keep placing a finger on a reader that can never answer. */
             if (data.blocked) {
-                icon.className = 'enrol-scan__icon is-error';
+                // Also amber: the reader being quiet, or not holding this
+                // teacher's print yet, is something to act on — not a failure
+                // of the attendance system itself. The message below says what
+                // to do; the password failover sits right under it.
+                icon.className = 'enrol-scan__icon is-warning';
                 stage.textContent = data.blocked === 'template_missing'
                     ? 'This reader cannot recognise you'
                     : 'The reader is not answering';

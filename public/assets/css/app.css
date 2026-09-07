@@ -1154,6 +1154,11 @@ table.data.timetable tr.timetable__band td:nth-child(2) {
 .enrol-scan__icon.is-waiting { background: var(--primary-light); color: var(--primary); }
 .enrol-scan__icon.is-success { background: var(--success-light); color: var(--success-fg); }
 .enrol-scan__icon.is-error   { background: var(--danger-light);  color: var(--danger-fg); }
+/* Amber, not red: a scan that did not take, or a reader that has not answered
+   yet, is a "try again" — not a fault the way a wrong password or a security
+   refusal is. Red here reads as an alarm on a screen a teacher looks at every
+   period, so these transient, retryable states use the warning tone instead. */
+.enrol-scan__icon.is-warning { background: var(--warning-light); color: var(--warning-fg); }
 
 /* The pulse is the signal that the system is still waiting on a human, rather
    than stuck. It stops the moment the outcome is known. */
