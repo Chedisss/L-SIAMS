@@ -5,9 +5,9 @@ $__view->start('content');
 ?>
 
 <?php $__view->include('partials.page-header', [
-    'title'       => 'IoT Devices',
+    'title'       => 'Classroom Terminals',
     'subtitle'    => 'One attendance terminal per classroom. Credentials are shown once and never again.',
-    'breadcrumbs' => [['Dashboard', '/admin'], ['IoT Devices', null]],
+    'breadcrumbs' => [['Dashboard', '/admin'], ['Classroom Terminals', null]],
     'actions'     => '<a class="btn btn-secondary" href="/admin/devices/import"><i class="fa-solid fa-file-import"></i> Bulk register</a>'
         . '<button class="btn btn-primary" data-modal-open="device-modal"><i class="fa-solid fa-plus"></i> Register Device</button>',
 ]); ?>

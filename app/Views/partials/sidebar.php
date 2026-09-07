@@ -51,7 +51,7 @@ $adminMenu = [
     'Hardware' => [
         ['/admin/rfid',         'fa-id-card',    'RFID Cards'],
         ['/admin/fingerprints', 'fa-fingerprint', 'Fingerprints'],
-        ['/admin/devices',      'fa-microchip',  'IoT Devices'],
+        ['/admin/devices',      'fa-microchip',  'Classroom Terminals'],
     ],
     'Governance' => [
         ['/admin/reports',  'fa-file-lines',    'Reports'],

@@ -7,7 +7,7 @@ $__view->start('content');
 <?php $__view->include('partials.page-header', [
     'title'       => 'Bulk Register Devices',
     'subtitle'    => 'Register a batch of terminals from a CSV or Excel file. Each one gets its own key pair and claim token, bundled into a single ZIP you download once.',
-    'breadcrumbs' => [['Dashboard', '/admin'], ['IoT Devices', '/admin/devices'], ['Bulk register', null]],
+    'breadcrumbs' => [['Dashboard', '/admin'], ['Classroom Terminals', '/admin/devices'], ['Bulk register', null]],
     'actions'     => '<a class="btn btn-secondary" href="/admin/devices/import/template"><i class="fa-solid fa-download"></i> Download template</a>',
 ]); ?>
 
