@@ -373,7 +373,7 @@ $manual      = array_values(array_filter($recapture, static fn (array $r): bool 
 <div class="card">
     <div class="card__header">
         <h2 class="card__title">Enrolled fingerprints</h2>
-        <span class="text-sm text-muted">The slot is on the terminal each teacher was enrolled at — a copy sits on every other terminal too, often at a different slot.</span>
+        <span class="text-sm text-muted">Shows where each teacher was first enrolled. A copy is synced to every other terminal too, often at a different slot — so the same slot number on two rooms is two different readers, not a clash.</span>
     </div>
     <div class="card__body--flush">
         <?php if ($enrolments === []): ?>
@@ -384,7 +384,7 @@ $manual      = array_values(array_filter($recapture, static fn (array $r): bool 
         <?php else: ?>
             <div class="table-wrap">
                 <table class="data">
-                    <thead><tr><th>Teacher</th><th>Department</th><th class="numeric">Slot</th><th>Enrolled on</th>
+                    <thead><tr><th>Teacher</th><th>Department</th><th>Enrolled at</th>
                         <th>Enrolled</th><th class="numeric">Verifications</th><th>Last verified</th><th>Status</th><th style="width:130px"></th></tr></thead>
                     <tbody>
                     <?php foreach ($enrolments as $enrolment): ?>
@@ -399,8 +399,15 @@ $manual      = array_values(array_filter($recapture, static fn (array $r): bool 
                                 </div>
                             </td>
                             <td class="text-sm"><?= e($enrolment['department_name']) ?></td>
-                            <td class="numeric mono"><?= e($enrolment['sensor_template_id']) ?></td>
-                            <td class="text-sm"><?= e($enrolment['enrolled_room'] ? 'Room ' . $enrolment['enrolled_room'] : ($enrolment['enrolled_device'] ?? '—')) ?></td>
+                            <?php /* Slot and terminal bound into one fact. A bare "1" on its own
+                                    read as a clash whenever a second teacher was slot 1 on a
+                                    different reader; tied to its room it is unmistakably one
+                                    sensor's slot — "Room 101 · slot 1" is a different place from
+                                    "Room 102 · slot 1". */ ?>
+                            <td class="text-sm nowrap">
+                                <?php $where = $enrolment['enrolled_room'] ? 'Room ' . $enrolment['enrolled_room'] : ($enrolment['enrolled_device'] ?? '—'); ?>
+                                <?= e($where) ?> · <span class="mono">slot <?= e($enrolment['sensor_template_id']) ?></span>
+                            </td>
                             <td class="text-sm nowrap"><?= e(format_date($enrolment['enrollment_date'])) ?></td>
                             <td class="numeric"><?= e($enrolment['verification_count']) ?></td>
                             <td class="text-sm nowrap"><?= e(time_ago($enrolment['last_verified_at'])) ?></td>
