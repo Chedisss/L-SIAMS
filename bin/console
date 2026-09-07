@@ -1663,11 +1663,18 @@ function commandAuditPrivileges(): void
         out('');
     }
 
-    /** @var array<string,string> $protected table => what must be impossible */
+    /** @var array<string,string> $protected table => what must be impossible
+     *
+     * These mirror the triggers, not a blanket "logs are frozen" rule.
+     * audit_logs and login_history take neither UPDATE nor DELETE. security_logs
+     * is delete-proof but deliberately updatable — an event is resolved and
+     * annotated — with its content frozen by trg_security_immutable_content
+     * rather than by withholding UPDATE, exactly as attendance_records is. So it
+     * appears only under the UPDATE-needed set below, not here. */
     $protected = [
         'audit_logs'                => 'UPDATE,DELETE',
-        'security_logs'             => 'UPDATE,DELETE',
         'login_history'             => 'UPDATE,DELETE',
+        'security_logs'             => 'DELETE',
         'attendance_records'        => 'DELETE',
         'rfid_logs'                 => 'DELETE',
         'fingerprint_logs'          => 'DELETE',
@@ -1747,7 +1754,12 @@ function commandAuditPrivileges(): void
     ) as $row) {
         $table = (string) $row['TABLE_NAME'];
         $must  = match (true) {
-            in_array($table, ['audit_logs', 'security_logs', 'login_history'], true) => [],
+            // audit_logs and login_history are append-only: nothing beyond
+            // SELECT and INSERT.
+            in_array($table, ['audit_logs', 'login_history'], true) => [],
+            // security_logs and the attendance/tap tables are corrected in
+            // place, so they need UPDATE (their content is frozen by triggers,
+            // and DELETE is refused above).
             isset($protected[$table]) => ['UPDATE'],
             default                   => ['UPDATE', 'DELETE'],
         };
@@ -1828,8 +1840,10 @@ function commandAuditPrivileges(): void
         exit(1);
     }
 
-    ok('The application cannot update or delete a single audit, security or login row.');
-    out('  Attendance and tap logs can be corrected but never removed.', 'grey');
+    ok('The application cannot alter or delete an audit or login-history row.');
+    out('  A security event cannot be deleted or its content changed — only its', 'grey');
+    out('  resolution status, and that only behind a trigger. Attendance and tap', 'grey');
+    out('  logs can be corrected but never removed.', 'grey');
     out('  Proved from the database\'s own grant tables, as the application user.', 'grey');
     out('');
 }

@@ -86,6 +86,40 @@ final class SecurityController extends Controller
         return $this->json([], 'Security event updated.');
     }
 
+    /**
+     * Resolve many events at once — the answer to a page of routine
+     * TIMESTAMP_EXPIRED entries that each say the same thing and would
+     * otherwise be dismissed one dialog at a time.
+     */
+    public function resolveLogsBulk(Request $request): Response
+    {
+        $data = $this->validate($request, [
+            'resolution_status' => 'required|in:open,investigating,resolved,false_positive',
+            'admin_notes'       => 'nullable|string|max:1000|no_html',
+            'ids'               => 'required|array',
+        ]);
+
+        // Cast every id to a positive int and drop anything that isn't one,
+        // so a malformed entry in the list cannot reach the query.
+        $ids = array_values(array_filter(
+            array_map(static fn ($v): int => (int) $v, (array) $data['ids']),
+            static fn (int $id): bool => $id > 0
+        ));
+
+        if ($ids === []) {
+            return $this->fail('NO_EVENTS', 'No events were selected.', 422);
+        }
+
+        $count = SecurityLogService::resolveMany(
+            $ids,
+            $this->requireUserId(),
+            (string) $data['resolution_status'],
+            $data['admin_notes'] ?? null
+        );
+
+        return $this->json(['resolved' => $count], sprintf('%d event(s) updated.', $count));
+    }
+
     public function auditLogs(Request $request): Response
     {
         $pagination = $this->pagination($request);
