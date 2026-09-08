@@ -561,21 +561,27 @@ $__view->start('scripts');
         }
     }
 
-    watch.addEventListener('click', function () {
-        // Attempts are counted from this moment, so a failure from earlier in
-        // the day does not open the panel already looking like a fresh one.
+    // Watching is automatic from load (see the call at the end). This is the
+    // shared routine, also wired to the — now optional — refresh button.
+    function beginWatch() {
+        // Count attempts from now so a refusal from earlier in the day does not
+        // greet a fresh panel; then poll on a loop so a session the teacher
+        // opens by scanning at the terminal shows here within ~2 seconds, with
+        // nothing to press on this page.
         since = nowStamp();
 
         icon.className = 'enrol-scan__icon is-waiting';
         stage.textContent = 'Waiting for your fingerprint…';
-        detail.textContent = 'Place your finger on the terminal now.';
+        detail.textContent = 'Scan your finger on the terminal to open the class.';
         warning.classList.add('hidden');
         step('scan');
 
         stop();
         poll();
         timer = setInterval(poll, 2000);
-    });
+    }
+
+    watch.addEventListener('click', beginWatch);
 
     /* ------------------------------------------------------- the failover -- */
 
@@ -674,9 +680,10 @@ $__view->start('scripts');
         }
     });
 
-    // A session opened from the terminal without anybody pressing the button
-    // still belongs on this card, so one quiet check runs on load.
-    poll();
+    // The panel watches on its own from load: a session opened by scanning at
+    // the terminal appears here within a couple of seconds, so the teacher
+    // never has to press anything on this page — or even have it open.
+    beginWatch();
 })();
 </script>
 <?php $__view->stop(); ?>

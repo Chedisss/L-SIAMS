@@ -39,9 +39,10 @@ $terminalDown = ($liveClass['device_id'] ?? null) === null
     </div>
 
     <div class="enrol-scan__icon is-waiting" id="ss-icon"><i class="fa-solid fa-fingerprint"></i></div>
-    <div class="enrol-scan__stage" id="ss-stage">Ready when you are</div>
+    <div class="enrol-scan__stage" id="ss-stage">Waiting for your fingerprint…</div>
     <div class="enrol-scan__detail text-sm text-muted" id="ss-detail">
-        Scan your fingerprint on the terminal in Room <?= e($liveClass['room_number']) ?>.
+        Scan your fingerprint on the terminal in Room <?= e($liveClass['room_number']) ?> to open the class.
+        This page opens it for you automatically — you don't need to press anything here.
     </div>
 
     <ol class="enrol-scan__steps" id="ss-steps">
@@ -56,8 +57,8 @@ $terminalDown = ($liveClass['device_id'] ?? null) === null
     </div>
 
     <div class="flex gap-1 mt-2" style="justify-content:center">
-        <button class="btn btn-primary" id="ss-watch">
-            <i class="fa-solid fa-eye"></i> I am scanning now
+        <button class="btn btn-secondary" id="ss-watch">
+            <i class="fa-solid fa-eye"></i> Refresh
         </button>
         <a class="btn btn-secondary hidden" id="ss-goto" href="/teacher/sessions">
             <i class="fa-solid fa-arrow-right"></i> Open the session
