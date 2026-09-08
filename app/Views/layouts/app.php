@@ -67,6 +67,16 @@ $photo    = $authUser['photo_path'] ?? null;
             </span>
 
             <div class="topbar__actions">
+                <?php if ($role === 'teacher'): ?>
+                    <?php /* Mute/unmute the per-tap sound. Teacher-only, and here
+                             in the top bar so it is reachable from every page in
+                             the portal, not just the dashboard. */ ?>
+                    <button class="icon-button" id="tap-sound-toggle" type="button"
+                            aria-label="Tap sound" aria-pressed="true" title="Sound on each recorded tap">
+                        <i class="fa-solid fa-bell"></i>
+                    </button>
+                <?php endif; ?>
+
                 <button class="icon-button" id="theme-toggle" type="button" aria-label="Toggle dark mode">
                     <i class="fa-solid fa-moon"></i>
                 </button>
@@ -217,6 +227,7 @@ $photo    = $authUser['photo_path'] ?? null;
 <script src="<?= e(asset('js/app.js')) ?>"></script>
 <script src="<?= e(asset('js/session.js')) ?>"></script>
 <script src="<?= e(asset('js/realtime.js')) ?>"></script>
+<script src="<?= e(asset('js/tap-sound.js')) ?>"></script>
 <script src="<?= e(asset('js/charts.js')) ?>"></script>
 <script src="<?= e(asset('js/notifications.js')) ?>"></script>
 <?= $__view->section('scripts') ?>
