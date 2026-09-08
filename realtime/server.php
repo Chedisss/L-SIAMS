@@ -41,6 +41,22 @@ use App\Services\SettingsService;
 
 Logger::setChannel('realtime');
 
+// The shared bootstrap installs an exception handler that renders an HTML error
+// page — correct for a browser, wrong for a long-running console daemon, where
+// it dumped a full 500 page to the terminal and then let the process exit.
+// Replace it with one that logs the failure as a single plain line and exits
+// with a clear code, so whatever supervises this (start.bat, NSSM, systemd) can
+// see what happened and restart it.
+set_exception_handler(static function (Throwable $e): void {
+    Logger::critical('Realtime server crashed', [
+        'error' => $e->getMessage(),
+        'file'  => $e->getFile(),
+        'line'  => $e->getLine(),
+    ]);
+    fwrite(STDERR, sprintf("Realtime server stopped: %s\n", $e->getMessage()));
+    exit(1);
+});
+
 final class WebSocketServer
 {
     private const OPCODE_TEXT   = 0x1;
@@ -95,9 +111,21 @@ final class WebSocketServer
 
         // Start from the current tail so a restart does not replay history to
         // everyone; clients that missed events ask for a replay themselves.
-        $this->lastEventId = (int) Database::instance()->scalar(
-            'SELECT COALESCE(MAX(event_id), 0) FROM realtime_events'
-        );
+        //
+        // Guarded: this is the first query the server makes, and if it throws —
+        // a disposable table left corrupt by a database crash, a momentary
+        // "server has gone away" — the daemon must not die on it. Starting from
+        // zero is harmless (the dispatch loop simply catches up), and that loop
+        // guards its own query too, so a database that recovers a moment later
+        // resumes fanning out without anybody restarting this process.
+        try {
+            $this->lastEventId = (int) Database::instance()->scalar(
+                'SELECT COALESCE(MAX(event_id), 0) FROM realtime_events'
+            );
+        } catch (Throwable $e) {
+            Logger::error('Realtime start-tail query failed; starting from zero', ['error' => $e->getMessage()]);
+            $this->lastEventId = 0;
+        }
 
         if (function_exists('pcntl_signal')) {
             pcntl_async_signals(true);
@@ -108,10 +136,20 @@ final class WebSocketServer
         $pollMs = (int) Config::get('realtime.dispatch_poll_ms', 250);
 
         while ($this->running) {
-            $this->acceptConnections();
-            $this->readClients();
-            $this->dispatchEvents();
-            $this->maintain();
+            // A daemon does not get to die on one bad iteration. dispatchEvents()
+            // and maintain() already guard their own queries; this is the outer
+            // net for anything else — a client that misbehaves mid-frame, a
+            // transient database error in acceptConnections/readClients — so one
+            // failed pass is logged and the next one runs, rather than taking the
+            // whole live-update service down until someone restarts it.
+            try {
+                $this->acceptConnections();
+                $this->readClients();
+                $this->dispatchEvents();
+                $this->maintain();
+            } catch (Throwable $e) {
+                Logger::error('Realtime loop iteration failed', ['error' => $e->getMessage()]);
+            }
 
             usleep($pollMs * 1000);
         }
