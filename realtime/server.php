@@ -71,6 +71,7 @@ final class WebSocketServer
     private int $lastEventId = 0;
     private float $lastRevalidate = 0.0;
     private bool $running = true;
+    private bool $tlsEnabled = true;
 
     public function run(): void
     {
@@ -79,12 +80,21 @@ final class WebSocketServer
 
         $context = stream_context_create($this->contextOptions());
 
-        $scheme = Config::get('realtime.tls.enabled', true) && $this->certificateAvailable()
-            ? 'tls'
-            : 'tcp';
+        $this->tlsEnabled = (bool) Config::get('realtime.tls.enabled', true) && $this->certificateAvailable();
 
+        // Bind plain TCP and negotiate TLS on each accepted socket ourselves,
+        // even when TLS is on. A `tls://` listener makes stream_socket_accept()
+        // run the handshake inline, which cannot work on this non-blocking,
+        // single-threaded loop with a zero accept timeout: the socket is handed
+        // back the instant TCP connects — before the client's ClientHello has
+        // arrived — so the handshake never completes. Every browser then saw
+        // the connection close "before it was established" while the server
+        // stayed up and logged nothing, and the dashboards were stuck on
+        // polling. Accepting plain and driving stream_socket_enable_crypto()
+        // across loop iterations is the standard non-blocking pattern; the SSL
+        // options ride on the context below, and accepted sockets inherit them.
         $this->listener = @stream_socket_server(
-            sprintf('%s://%s:%d', $scheme, $host, $port),
+            sprintf('tcp://%s:%d', $host, $port),
             $errorCode,
             $errorMessage,
             STREAM_SERVER_BIND | STREAM_SERVER_LISTEN,
@@ -92,7 +102,7 @@ final class WebSocketServer
         );
 
         if ($this->listener === false) {
-            $this->out(sprintf('Could not bind %s://%s:%d — %s', $scheme, $host, $port, $errorMessage), 'red');
+            $this->out(sprintf('Could not bind tcp://%s:%d — %s', $host, $port, $errorMessage), 'red');
             exit(1);
         }
 
@@ -100,9 +110,9 @@ final class WebSocketServer
 
         $this->out('');
         $this->out('  L-SIAMS realtime server', 'bold');
-        $this->out(sprintf('  Listening on %s://%s:%d', $scheme, $host, $port), 'cyan');
+        $this->out(sprintf('  Listening on %s://%s:%d', $this->tlsEnabled ? 'tls' : 'tcp', $host, $port), 'cyan');
 
-        if ($scheme === 'tcp') {
+        if (!$this->tlsEnabled) {
             $this->out('  ⚠ TLS certificate not found — running plaintext. Do not use in production.', 'yellow');
         }
 
@@ -216,6 +226,10 @@ final class WebSocketServer
         $this->clients[$id] = [
             'socket'      => $socket,
             'peer'        => $peer,
+            // TLS is negotiated in the read loop, not by accept(); a plaintext
+            // server (no certificate) is "secure" immediately in this sense —
+            // there is simply no handshake to complete before reading.
+            'secure'      => !$this->tlsEnabled,
             'handshaken'  => false,
             'buffer'      => '',
             'user_id'     => null,
@@ -231,6 +245,15 @@ final class WebSocketServer
     private function readClients(): void
     {
         foreach ($this->clients as $id => $client) {
+            // Finish the TLS handshake before any application read. On a
+            // non-blocking socket stream_socket_enable_crypto() may need
+            // several passes, so a connection stays here across loop iterations
+            // until the handshake completes (or fails and is dropped).
+            if (!$client['secure']) {
+                $this->negotiateTls($id);
+                continue;
+            }
+
             $data = @fread($client['socket'], 65536);
 
             if ($data === false || ($data === '' && feof($client['socket']))) {
@@ -252,6 +275,38 @@ final class WebSocketServer
 
             $this->consumeFrames($id);
         }
+    }
+
+    private function negotiateTls(int $id): void
+    {
+        $result = @stream_socket_enable_crypto(
+            $this->clients[$id]['socket'],
+            true,
+            STREAM_CRYPTO_METHOD_TLSv1_2_SERVER | STREAM_CRYPTO_METHOD_TLSv1_3_SERVER
+        );
+
+        if ($result === true) {
+            // Handshake complete; the WebSocket upgrade can proceed on the next
+            // read. Refresh last_seen so maintain() does not time out a client
+            // that has only just finished negotiating.
+            $this->clients[$id]['secure']    = true;
+            $this->clients[$id]['last_seen'] = microtime(true);
+
+            return;
+        }
+
+        if ($result === false) {
+            // A genuine handshake failure — an untrusted or wrong certificate on
+            // the client side, an unsupported protocol, or a truncated attempt.
+            // Nothing to send back over a socket whose crypto never came up.
+            $this->closeClient($id, 1015, 'TLS handshake failed', false);
+
+            return;
+        }
+
+        // 0: the handshake needs more round trips. Leave the client in place and
+        // try again next loop; maintain() bounds how long a half-open socket may
+        // sit here.
     }
 
     private function attemptHandshake(int $id): void
