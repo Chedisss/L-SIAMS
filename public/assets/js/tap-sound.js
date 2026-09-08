@@ -112,7 +112,7 @@
 
             function paint() {
                 const icon = el.querySelector('i');
-                if (icon) icon.className = self.muted ? 'fa-solid fa-bell-slash' : 'fa-solid fa-bell';
+                if (icon) icon.className = self.muted ? 'fa-solid fa-volume-xmark' : 'fa-solid fa-volume-high';
                 el.setAttribute('aria-pressed', self.muted ? 'false' : 'true');
                 el.title = self.muted ? 'Tap sound is off' : 'Sound on each recorded tap';
             }
