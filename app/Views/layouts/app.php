@@ -73,7 +73,7 @@ $photo    = $authUser['photo_path'] ?? null;
                              the portal, not just the dashboard. */ ?>
                     <button class="icon-button" id="tap-sound-toggle" type="button"
                             aria-label="Tap sound" aria-pressed="true" title="Sound on each recorded tap">
-                        <i class="fa-solid fa-bell"></i>
+                        <i class="fa-solid fa-volume-high"></i>
                     </button>
                 <?php endif; ?>
 
