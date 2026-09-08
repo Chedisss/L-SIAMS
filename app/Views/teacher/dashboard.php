@@ -292,7 +292,13 @@ foreach ($overview['todays_schedule'] as $slot) {
     <div class="card">
         <div class="card__header">
             <h2 class="card__title">Recent attendance</h2>
-            <a class="btn btn-ghost btn-sm" href="/teacher/attendance">View all</a>
+            <div class="flex gap-1">
+                <button class="btn btn-ghost btn-sm" id="tap-sound-toggle" type="button"
+                        title="Sound on each recorded tap" aria-pressed="true">
+                    <i class="fa-solid fa-bell"></i>
+                </button>
+                <a class="btn btn-ghost btn-sm" href="/teacher/attendance">View all</a>
+            </div>
         </div>
         <div class="card__body--flush live-feed" id="live-feed">
             <?php if ($recent === []): ?>
@@ -356,6 +362,106 @@ $__view->start('scripts');
 (function () {
     const LS = window.LSIAMS;
 
+    /* ---- tap sounds ------------------------------------------------------
+       The terminal gives whoever taps no beep of its own yet, so the teacher
+       had no way to tell a tap from a miss. These are short tones generated
+       in the browser (Web Audio) rather than audio files — nothing to load,
+       nothing blocked by the page's content-security policy. Distinct on
+       purpose: a rising chime means recorded, a low buzz means refused, so
+       the teacher can hear the difference across the room without looking. */
+    const TapSound = {
+        ctx: null,
+        muted: false,
+
+        load() {
+            try { this.muted = localStorage.getItem('lsiams-tap-muted') === '1'; } catch (e) { /* ignore */ }
+        },
+
+        save() {
+            try { localStorage.setItem('lsiams-tap-muted', this.muted ? '1' : '0'); } catch (e) { /* ignore */ }
+        },
+
+        // Browsers keep an AudioContext suspended until the page has had a user
+        // gesture. Creating/resuming it here — called from the first click or
+        // key press, and again on each sound — is what lets it ever play.
+        context() {
+            if (this.ctx === null) {
+                const Ctor = window.AudioContext || window.webkitAudioContext;
+                if (!Ctor) return null;
+                try { this.ctx = new Ctor(); } catch (e) { return null; }
+            }
+            if (this.ctx.state === 'suspended') { this.ctx.resume().catch(() => {}); }
+            return this.ctx;
+        },
+
+        // A short sequence of notes. Each note fades in and out so it reads as
+        // a soft chime rather than a click.
+        play(notes, type, peak) {
+            if (this.muted) return;
+            const ctx = this.context();
+            if (!ctx) return;
+
+            let at = ctx.currentTime;
+
+            notes.forEach((note) => {
+                const osc  = ctx.createOscillator();
+                const gain = ctx.createGain();
+
+                osc.type = type || 'sine';
+                osc.frequency.value = note.f;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+
+                const end = at + note.d;
+                gain.gain.setValueAtTime(0.0001, at);
+                gain.gain.exponentialRampToValueAtTime(peak || 0.16, at + 0.012);
+                gain.gain.exponentialRampToValueAtTime(0.0001, end);
+
+                osc.start(at);
+                osc.stop(end + 0.02);
+
+                at = end;
+            });
+        },
+
+        accepted()  { this.play([{ f: 880, d: 0.10 }, { f: 1320, d: 0.13 }], 'sine', 0.16); },
+        tappedOut() { this.play([{ f: 1175, d: 0.09 }, { f: 880, d: 0.11 }], 'sine', 0.13); },
+        refused()   { this.play([{ f: 233, d: 0.20 }, { f: 175, d: 0.22 }], 'square', 0.12); },
+    };
+
+    TapSound.load();
+
+    // First interaction anywhere unlocks audio for the rest of the visit.
+    function unlockAudio() {
+        TapSound.context();
+        window.removeEventListener('pointerdown', unlockAudio);
+        window.removeEventListener('keydown', unlockAudio);
+    }
+    window.addEventListener('pointerdown', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
+
+    const soundToggle = document.getElementById('tap-sound-toggle');
+
+    function paintToggle() {
+        if (!soundToggle) return;
+        const icon = soundToggle.querySelector('i');
+        if (icon) icon.className = TapSound.muted ? 'fa-solid fa-bell-slash' : 'fa-solid fa-bell';
+        soundToggle.setAttribute('aria-pressed', TapSound.muted ? 'false' : 'true');
+        soundToggle.title = TapSound.muted ? 'Tap sound is off' : 'Sound on each recorded tap';
+    }
+    paintToggle();
+
+    if (soundToggle) {
+        soundToggle.addEventListener('click', function () {
+            TapSound.muted = !TapSound.muted;
+            TapSound.save();
+            paintToggle();
+            // Unmuting plays a sample so the teacher hears the level, and the
+            // click itself is the gesture that unlocks audio.
+            if (!TapSound.muted) TapSound.accepted();
+        });
+    }
+
     const closeButton = document.getElementById('close-session');
 
     if (closeButton) {
@@ -387,13 +493,21 @@ $__view->start('scripts');
     if (LS.realtime) {
         LS.realtime
             .on('attendance.time_in', (data) => {
+                TapSound.accepted();
                 updateCounters(data.counters);
                 LS.toast.success(data.student.name + ' — ' + data.final_status, 'Tapped in');
             })
             .on('attendance.time_out', (data) => {
+                TapSound.tappedOut();
                 updateCounters(data.counters);
             })
             .on('attendance.rejected', (data) => {
+                // Every refused tap now makes a sound — a card that is not on
+                // the roster, a duplicate, a wrong section — because a silent
+                // refusal is exactly the case the teacher could not tell from a
+                // tap that never happened.
+                TapSound.refused();
+
                 if (data.code === 'SECTION_MISMATCH') {
                     LS.toast.warning(
                         data.student_name + ' belongs to ' + data.student_section
