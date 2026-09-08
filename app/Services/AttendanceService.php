@@ -604,6 +604,25 @@ final class AttendanceService
                     sprintf('Dwell %d min, minimum %d min.', $dwellMinutes, $minDwell));
                 self::incrementRejected($db, $sessionId);
 
+                // Tell the dashboard, so a refused tap-out is not silent there.
+                // Deferred like every other rejection notice: the transaction is
+                // about to roll back, and the realtime_events row must outlive it.
+                $channels = self::channelsFor($session);
+                $payload  = [
+                    'session_id'     => (string) $session['session_code'],
+                    'card_uid'       => $cardUid,
+                    'code'           => 'MINIMUM_DWELL_NOT_MET',
+                    'message'        => sprintf('%s tapped out too soon — %d of %d min required.',
+                                                self::fullName($card), $dwellMinutes, $minDwell),
+                    'at'             => Clock::atom(),
+                    'student_id'     => $studentId,
+                    'student_name'   => self::fullName($card),
+                    'student_number' => (string) $card['student_number'],
+                ];
+                self::deferUntilRolledBack(static function (Database $db) use ($channels, $payload): void {
+                    RealtimeService::broadcast($channels, 'attendance.rejected', $payload);
+                });
+
                 throw new BusinessRuleException(
                     'MINIMUM_DWELL_NOT_MET',
                     sprintf('You must stay at least %d minutes before tapping out.', $minDwell),
@@ -620,6 +639,23 @@ final class AttendanceService
                 'time_out_closed', 'time_out', null, null,
                 'Tap-out closed at ' . $closesAt->format('H:i'));
             self::incrementRejected($db, $sessionId);
+
+            // Announce this refusal on the dashboard too (deferred past rollback).
+            $channels = self::channelsFor($session);
+            $payload  = [
+                'session_id'     => (string) $session['session_code'],
+                'card_uid'       => $cardUid,
+                'code'           => 'TIME_OUT_CLOSED',
+                'message'        => sprintf('%s tapped out after tap-out closed at %s.',
+                                            self::fullName($card), $closesAt->format('g:i A')),
+                'at'             => Clock::atom(),
+                'student_id'     => $studentId,
+                'student_name'   => self::fullName($card),
+                'student_number' => (string) $card['student_number'],
+            ];
+            self::deferUntilRolledBack(static function (Database $db) use ($channels, $payload): void {
+                RealtimeService::broadcast($channels, 'attendance.rejected', $payload);
+            });
 
             throw new BusinessRuleException(
                 'TIME_OUT_CLOSED',

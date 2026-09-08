@@ -514,6 +514,11 @@ $__view->start('scripts');
                         + ' and was not recorded in this class.',
                         'Wrong section'
                     );
+                } else if (data.message) {
+                    // A refused tap-out (too soon, tap-out closed) or any other
+                    // rejection that carries a reason: show it so the buzz is
+                    // explained rather than leaving the teacher guessing.
+                    LS.toast.warning(data.message, 'Tap not recorded');
                 }
             })
             .on('session.closed', () => setTimeout(() => window.location.reload(), 1500))
