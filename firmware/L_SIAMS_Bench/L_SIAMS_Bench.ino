@@ -34,17 +34,10 @@
  *     3.3V   -> 3V3
  *     GND    -> GND
  *
- *   Status LEDs (active-low / common anode, each through a 220-330 ohm resistor)
- *     5V -> LED(+) -> LED(-) -> resistor -> GPIO 25   (green)
- *     5V -> LED(+) -> LED(-) -> resistor -> GPIO 26   (red)
- *     LED board ground is shared with the ESP32 ground.
- *
- *   Common on this build is the board's 5V pin — the clear/high-Vf LEDs used
- *   here do not light on 3.3 V. Standard low-Vf red/green LEDs work on 3V3
- *   instead, which is gentler on the pins. NOT GPIO 34/35 (nor 36/39): those
- *   are input-only and cannot drive an LED at all. 25/26 are free output pins
- *   here; good alternates are 32/33, 27/14, 13/4. Polarity lives in
- *   LED_ON/LED_OFF near the pin defines.
+ *   Status: the ESP32's onboard LED (blue, GPIO 2) is the indicator — no extra
+ *   wiring needed. It shows state by blink pattern (see the status-LED section
+ *   further down). The onboard red LED is a hardwired power light and cannot be
+ *   controlled from code.
  *
  *   The sensor pair is the REVERSE of the silkscreen, and that is deliberate:
  *   17/16 is the pair proven working on this hardware. UART2 is not fixed to
@@ -363,128 +356,23 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
 
 #define FP_TEMPLATE_MAX     1024   /* 512 is real; headroom for clones        */
 
-/* ------------------------------------------------------------- status LEDs -- */
+/* ------------------------------------------------------------- status LED -- */
 
-/* Two LEDs on the enclosure: green when something was accepted, red when it
- * was not, plus a boot sequence and a fault indicator. This terminal has no
- * display, so these are the only feedback a person standing at it gets without
- * a phone open to the dashboard.
+/* This terminal has no display, so a single onboard LED is the only feedback a
+ * person standing at it gets without opening the dashboard. (External green/red
+ * LEDs on spare GPIOs were tried and set aside; only the ESP32's own
+ * controllable LED is used now.)
  *
- * NOT GPIO 34/35. Those — with 36 and 39 — are INPUT-ONLY on the ESP32: they
- * have no output driver at all, so pinMode(OUTPUT)/digitalWrite() do nothing
- * and an LED wired to them never lights. 25 and 26 are ordinary output-capable
- * GPIOs, free on this board (the reader is on 5/18/19/22/23, the sensor on
- * 16/17), and clear of the strapping pins (0/2/12/15) and the flash pins
- * (6-11). Good alternates if the routing is awkward: 32/33, 27/14, 13/4.
- *
- * This build is ACTIVE-LOW (common anode): each LED's + leg goes to the common
- * rail and the GPIO is the cathode side, so the pin SINKS current — a LOW pin
- * lights the LED, a HIGH pin turns it off. The LED board's ground is shared
- * with the ESP32's ground.
- *
- *   5V --[common +]-- LED(+) -- LED(-) --[220-330 ohm]-- GPIO 25 (green)
- *   5V --[common +]-- LED(+) -- LED(-) --[220-330 ohm]-- GPIO 26 (red)
- *
- * The common is the board's 5V pin here, because the clear/high-Vf LEDs fitted
- * do not light on 3.3 V. That is workable but has two consequences to know:
- *   - "Off" drives the pin HIGH (3.3 V) against a 5 V anode, so ~1.7 V sits
- *     across the LED. A high-Vf LED (blue/white/most greens) stays fully dark;
- *     a low-Vf red may glow very faintly. Raise the red's resistor if it does.
- *   - At boot, before ledSetup() sets the pin to OUTPUT, the pin is a floating
- *     input and floats up toward (5V - Vf). ledSetup() therefore runs as the
- *     very first line of setup() to drive it off (HIGH) as early as possible.
- * Standard low-Vf red/green LEDs avoid all of this on a 3V3 common. If bright
- * 5 V LEDs are wanted without loading the pin, switch them with a transistor.
- * To rebuild as active-high (GPIO -> resistor -> LED(+) -> LED(-) -> GND), flip
- * LED_ON/LED_OFF below to HIGH/LOW. */
-#define PIN_LED_GREEN      25
-#define PIN_LED_RED        26
-
-/* Wiring polarity in one place. Active-low: LOW lights the LED. */
-#define LED_ON             LOW
-#define LED_OFF            HIGH
-
-#define LED_ACCEPT_MS       800    /* green flash when a tap/scan is accepted  */
-#define LED_REJECT_MS      1500    /* red flash, longer so a refusal is seen   */
-
-/* ONBOARD status LED — the fallback while the external green/red LEDs are not
- * wired. Most ESP32 dev boards have ONE controllable LED (blue) on GPIO 2; the
- * red one is a power indicator hardwired on and cannot be driven from code. So
- * with a single colour, the STATE is told apart by blink PATTERN, not colour:
+ * Most ESP32 dev boards have ONE controllable LED (blue) on GPIO 2 — the red
+ * one is a power indicator hardwired on and cannot be driven from code. With a
+ * single colour the STATE is told apart by blink PATTERN, not colour:
  *   accept -> one short steady blip   refuse -> a burst of fast blinks
- *   connecting -> fast blink          ready -> a brief hold        halt -> slow blink
+ *   connecting -> fast blink          ready -> a brief hold      halt -> slow blink
  * Set USE_ONBOARD_LED to 0 to silence it. If the blue LED is on another pin,
  * change PIN_ONBOARD_LED; if it lights on LOW, set ONBOARD_ACTIVE_HIGH to 0. */
 #define USE_ONBOARD_LED       1
 #define PIN_ONBOARD_LED       2
 #define ONBOARD_ACTIVE_HIGH   1
-
-/* A one-shot flash overrides the steady baseline until it expires, then the
- * baseline (normally off = "ready to scan") is restored. Kept non-blocking so
- * lighting an LED never delays reading the next card. */
-static uint8_t  ledSteady     = 0;   /* 0 off, 1 green, 2 red                  */
-static uint32_t ledFlashOffAt = 0;   /* millis() at which the flash ends       */
-static uint8_t  ledFlashColor = 0;
-
-static void ledApply(uint8_t color) {
-  digitalWrite(PIN_LED_GREEN, color == 1 ? LED_ON : LED_OFF);
-  digitalWrite(PIN_LED_RED,   color == 2 ? LED_ON : LED_OFF);
-}
-
-static void ledSetup() {
-  pinMode(PIN_LED_GREEN, OUTPUT);
-  pinMode(PIN_LED_RED,   OUTPUT);
-  ledApply(0);
-}
-
-/* Light one colour for a fixed time, then fall back to the baseline. */
-static void ledFlash(uint8_t color, uint32_t ms) {
-  ledFlashColor = color;
-  ledFlashOffAt = millis() + ms;
-  ledApply(color);
-}
-
-/* Called every loop turn on the normal (non-halt) path. While a flash is live
- * it is left alone; otherwise the baseline is re-asserted every turn, which is
- * also what clears a stale red the moment a halt recovers and the loop returns
- * to normal service. */
-static void ledService() {
-  if (ledFlashOffAt != 0) {
-    if (millis() >= ledFlashOffAt) {
-      ledFlashOffAt = 0;
-      ledApply(ledSteady);
-    }
-    return;
-  }
-
-  ledApply(ledSteady);
-}
-
-/* A visible power-on check: light green, then red, then off. It proves the two
- * LEDs, their resistors and the polarity are right BEFORE the terminal depends
- * on a card or a finger to light anything — the whole point being that at idle
- * both LEDs are off, so "nothing lit" on its own tells you nothing. If a colour
- * fails to light here it is the wiring, the resistor or a reversed LED, not the
- * software. */
-static void ledSelfTest() {
-  ledApply(1);   /* green on  */
-  delay(600);
-  ledApply(2);   /* red on    */
-  delay(600);
-  ledApply(0);   /* both off  */
-}
-
-/* The health indicator while the terminal is halted: solid red when a human is
- * needed, a slow red blink when the halt can clear itself and the board is
- * still trying. */
-static void ledHaltIndicator(bool transient) {
-  ledFlashOffAt = 0;                       /* no flashes happen during a halt  */
-  if (transient) {
-    ledApply(((millis() / 600) % 2) ? 2 : 0);
-  } else {
-    ledApply(2);
-  }
-}
 
 /* --- onboard single-colour LED: patterns stand in for colours ------------- */
 static uint8_t  obPattern = 0;   /* 0 idle, 1 steady, 2 fast blink            */
@@ -2093,7 +1981,6 @@ static void handleFingerprint() {
 
   if (search == FINGERPRINT_NOTFOUND) {
     Serial.println("\nFinger: NOT RECOGNISED — this print is not enrolled on this terminal.");
-    ledFlash(2, LED_REJECT_MS);   /* red: finger not accepted */
     obStart(2, 1200);             /* onboard: fast-blink burst = not recognised */
     return;
   }
@@ -2135,7 +2022,6 @@ static void handleFingerprint() {
      * into a session everyone has been told is not open. */
     JsonVariantConst session = response["data"]["session"];
 
-    ledFlash(1, LED_ACCEPT_MS);   /* green: the teacher's scan opened the session */
     obStart(1, 600);              /* onboard: one steady blip = session opened */
 
     Serial.printf("        SESSION OPEN — %s with %s, roster %d\n",
@@ -2171,7 +2057,6 @@ static void handleFingerprint() {
 
   const char *code = response["code"] | "-";
 
-  ledFlash(2, LED_REJECT_MS);   /* red: the scan did not open a session */
   obStart(2, 1200);             /* onboard: fast-blink burst = session refused */
 
   Serial.printf("        refused (HTTP %d, %s)\n", status, code);
@@ -2425,7 +2310,6 @@ static void sendTap(const String &uid) {
 
   if (status == 200 || status == 201) {
     Serial.printf("      RECORDED: %s\n", (const char *) (response["message"] | ""));
-    ledFlash(1, LED_ACCEPT_MS);   /* green: this tap was accepted */
     obStart(1, 600);              /* onboard: one steady blip = accepted */
 
     /* The network is evidently up. If anything is waiting, this is the moment
@@ -2436,9 +2320,8 @@ static void sendTap(const String &uid) {
   }
 
   /* Everything past here is "not accepted" from the student's point of view —
-   * either the server refused it or never answered — so the enclosure shows
-   * red whether it was a refusal or a queued-for-later tap. */
-  ledFlash(2, LED_REJECT_MS);
+   * either the server refused it or never answered — so the onboard LED gives
+   * the fast-blink burst whether it was a refusal or a queued-for-later tap. */
   obStart(2, 1200);               /* onboard: fast-blink burst = not accepted */
 
   /* A negative status is not a refusal — the server never answered, so it has
@@ -3034,13 +2917,7 @@ static void checkSubnet() {
 }
 
 void setup() {
-  /* First thing, before anything else runs: drive both LEDs to their OFF level
-   * (HIGH, because the wiring is active-low). Until a pin is set OUTPUT it is a
-   * floating input, and with the common anode on 5 V a floating cathode lets
-   * the LED glow during the boot window. Setting them off here, ahead of
-   * Serial.begin() and the settle delay, is what keeps them dark while the
-   * terminal initialises. */
-  ledSetup();
+  /* Set the onboard status LED to OUTPUT and off before anything else runs. */
   obSetup();
 
   Serial.begin(115200);
@@ -3050,12 +2927,6 @@ void setup() {
   Serial.println();
   Serial.println("L-SIAMS classroom terminal");
   Serial.println("==========================");
-
-  /* Prove the LEDs before anything else can be blamed: green, then red, then
-   * off. Watch the enclosure now — if a colour does not light here, it is the
-   * wiring, not the code. */
-  Serial.println("LED test: green, then red, then both off.");
-  ledSelfTest();
 
   reportBoot();
 
@@ -3185,9 +3056,8 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  /* Green blinks fast while joining — the enclosure shows the board is alive
-   * and working on it, not simply dead. Kept short so it stays a brisk blink
-   * rather than a slow pulse. */
+  /* The onboard LED blinks fast while joining — a sign the board is alive and
+   * working on it, not simply dead. Kept short so it stays a brisk blink. */
   uint32_t started   = millis();
   uint32_t lastBlink = 0;
   bool     blinkOn    = false;
@@ -3196,13 +3066,11 @@ void setup() {
     if (millis() - lastBlink >= 150) {
       lastBlink = millis();
       blinkOn   = !blinkOn;
-      digitalWrite(PIN_LED_GREEN, blinkOn ? LED_ON : LED_OFF);
-      obWrite(blinkOn);                    /* onboard blue blinks along too */
+      obWrite(blinkOn);                    /* onboard blue blinks while joining */
       Serial.print(".");
     }
     delay(20);
   }
-  digitalWrite(PIN_LED_GREEN, LED_OFF);
   obWrite(false);
   Serial.println();
 
@@ -3305,16 +3173,12 @@ void setup() {
     Serial.println("Ready. A teacher scans a finger to open the session; students tap after.");
   }
 
-  /* Connected and ready: hold green steady for a second as the "all good"
-   * signal the user asked for, then off — an unlit pair is the resting state
-   * that means "ready to scan". A flash on the next accept/refusal takes over
-   * from here. */
-  ledApply(1);
+  /* Connected and ready: hold the onboard LED steady for a second as the "all
+   * good" signal, then off — unlit is the resting state that means "ready to
+   * scan". A pattern on the next accept/refusal takes over from here. */
   obWrite(true);
   delay(1000);
-  ledApply(0);
   obWrite(false);
-  ledSteady = 0;
 
   Serial.println();
 }
@@ -3332,11 +3196,8 @@ void loop() {
    * whenever somebody opens the serial monitor, rare enough that it does not
    * bury a line they are trying to read. */
   if (haltReason != nullptr) {
-    /* Red on the enclosure: solid when a person is needed, a slow blink when
-     * the board can recover on its own and is still trying. The onboard blue
-     * slow-blinks either way, as the fault sign while the external LEDs are
-     * unavailable. */
-    ledHaltIndicator(haltIsTransient);
+    /* The onboard LED slow-blinks as the fault sign whether the halt needs a
+     * person or can clear itself. */
     obWrite(((millis() / 500) % 2) != 0);
 
     if (lastHaltNag == 0 || millis() - lastHaltNag >= 10000) {
@@ -3424,10 +3285,9 @@ void loop() {
     return;
   }
 
-  /* Retire a finished accept/refuse flash and hold the resting state (off).
+  /* Advance/expire the onboard LED pattern and hold the resting state (off).
    * First thing on the normal path so it runs even when a poll below returns
    * early. */
-  ledService();
   obService();
 
   /* One module down is not a halt — the other half of the terminal still
