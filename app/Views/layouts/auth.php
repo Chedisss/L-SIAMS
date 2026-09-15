@@ -35,17 +35,9 @@
         .auth-hero > * { position: relative; z-index: 1; }
 
         .auth-hero__lock  { display: flex; flex-direction: column; align-items: center; max-width: 30rem; }
-        /* Logo mark: an L with a fingerprint inside (vector stand-in for the official artwork). */
-        .auth-hero__mark img { width: 150px; height: auto; filter: drop-shadow(0 14px 32px rgba(0,0,0,.32)); }
-        .auth-hero__mark svg { width: 128px; height: 128px; filter: drop-shadow(0 14px 32px rgba(0,0,0,.32)); }
-        .ls-l { fill: url(#lsL); }
-        .ls-print path { fill: none; stroke: #EFF6FF; stroke-width: 2.4; stroke-linecap: round; }
-        .auth-hero__name {
-            margin-top: .55rem; font-size: 46px; font-weight: 800; letter-spacing: .06em; line-height: 1;
-            background: linear-gradient(180deg, #EAF3FF, #8FB8FF);
-            -webkit-background-clip: text; background-clip: text; color: transparent;
-        }
-        .auth-hero__tag  { margin-top: .5rem; font-size: 12.5px; letter-spacing: .2em; color: rgba(219,234,255,.72); }
+        /* Official logo artwork (the PNG already includes the L-SIAMS wordmark). */
+        .auth-hero__mark img { width: 260px; max-width: 68%; height: auto; filter: drop-shadow(0 14px 32px rgba(0,0,0,.30)); }
+        .auth-hero__tag  { margin-top: .3rem; font-size: 12.5px; letter-spacing: .2em; color: rgba(219,234,255,.72); }
         .auth-hero__desc { margin-top: 1.8rem; font-size: 17px; line-height: 1.55; color: rgba(255,255,255,.9); max-width: 24ch; }
 
         .auth-panel { display: flex; align-items: center; justify-content: center; padding: 2.5rem 2rem; }
@@ -63,30 +55,9 @@
 <div class="auth-shell">
     <aside class="auth-hero">
         <div class="auth-hero__lock">
-            <?php /* When the official PNG is added at public/assets/img/lsiams-logo.png,
-                      swap this <div class="auth-hero__mark"> block (svg + name) for:
-                      <div class="auth-hero__mark"><img src="<?= e(asset('img/lsiams-logo.png')) ?>" alt="L-SIAMS"></div>
-                      and drop the auth-hero__name line (the wordmark is in the image). */ ?>
             <div class="auth-hero__mark">
-                <svg viewBox="0 0 100 100" role="img" aria-label="L-SIAMS logo — an L with a fingerprint">
-                    <defs>
-                        <linearGradient id="lsL" x1="0" y1="0" x2="1" y2="1">
-                            <stop offset="0" stop-color="#BFDBFE"/>
-                            <stop offset="1" stop-color="#2563EB"/>
-                        </linearGradient>
-                    </defs>
-                    <rect class="ls-l" x="26" y="14" width="34" height="66" rx="11"/>
-                    <rect class="ls-l" x="26" y="64" width="60" height="16" rx="8"/>
-                    <g class="ls-print">
-                        <path d="M38 46 A5 5 0 0 1 48 46"/>
-                        <path d="M34 46 A9 9 0 0 1 52 46"/>
-                        <path d="M30 46 A13 13 0 0 1 56 46"/>
-                        <path d="M27 46 A16 16 0 0 1 59 46"/>
-                        <path d="M43 46 L43 58"/>
-                    </g>
-                </svg>
+                <img src="<?= e(asset('img/lsiams-logo.png')) ?>" alt="L-SIAMS logo">
             </div>
-            <div class="auth-hero__name">L&#8209;SIAMS</div>
             <div class="auth-hero__tag">Secure Every Entry. Track Every Moment</div>
             <p class="auth-hero__desc">Local IoT-based, multi-layer secured attendance monitoring with RFID and biometric authentication.</p>
         </div>
