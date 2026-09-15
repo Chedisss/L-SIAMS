@@ -34,12 +34,14 @@
  *     3.3V   -> 3V3
  *     GND    -> GND
  *
- *   Status LEDs (active-high, each through a 220-330 ohm resistor to GND)
- *     Green -> GPIO 25              Red -> GPIO 26
+ *   Status LEDs (active-low / common anode, each through a 220-330 ohm resistor)
+ *     3V3 -> LED(+) -> LED(-) -> resistor -> GPIO 25   (green)
+ *     3V3 -> LED(+) -> LED(-) -> resistor -> GPIO 26   (red)
  *
- *   NOT GPIO 34/35 (nor 36/39): those pins are input-only on the ESP32 and
- *   cannot drive an LED at all. 25/26 are free output pins here; good
- *   alternates are 32/33, 27/14 or 13/4.
+ *   Common to 3V3, NOT 5V — the ESP32 pins are not 5 V tolerant. NOT GPIO
+ *   34/35 (nor 36/39) either: those are input-only and cannot drive an LED at
+ *   all. 25/26 are free output pins here; good alternates are 32/33, 27/14,
+ *   13/4. Polarity lives in LED_ON/LED_OFF near the pin defines.
  *
  *   The sensor pair is the REVERSE of the silkscreen, and that is deliberate:
  *   17/16 is the pair proven working on this hardware. UART2 is not fixed to
@@ -372,10 +374,25 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
  * 16/17), and clear of the strapping pins (0/2/12/15) and the flash pins
  * (6-11). Good alternates if the routing is awkward: 32/33, 27/14, 13/4.
  *
- * Wire each as GPIO -> 220-330 ohm resistor -> LED(+) -> LED(-) -> GND. The
- * logic here is active-high: HIGH lights the LED. */
+ * This build is ACTIVE-LOW (common anode): each LED's + leg goes to the 3.3 V
+ * rail and the GPIO is the cathode side, so the pin SINKS current — a LOW pin
+ * lights the LED, a HIGH pin turns it off.
+ *
+ *   3V3 --[common +]-- LED(+) -- LED(-) --[220-330 ohm]-- GPIO 25 (green)
+ *   3V3 --[common +]-- LED(+) -- LED(-) --[220-330 ohm]-- GPIO 26 (red)
+ *
+ * Use 3.3 V for the common, NOT 5 V. An ESP32 pin is not 5 V tolerant (~3.6 V
+ * absolute max), and with 5 V on the anode the pin is pushed above its rating
+ * while "off" (HIGH) and — worse — at boot before pinMode() runs, when the pin
+ * is a floating input. If 5 V is truly required, switch it with a transistor
+ * rather than off the pin. To rebuild as active-high (GPIO -> resistor ->
+ * LED(+) -> LED(-) -> GND), flip LED_ON/LED_OFF below to HIGH/LOW. */
 #define PIN_LED_GREEN      25
 #define PIN_LED_RED        26
+
+/* Wiring polarity in one place. Active-low: LOW lights the LED. */
+#define LED_ON             LOW
+#define LED_OFF            HIGH
 
 #define LED_ACCEPT_MS       800    /* green flash when a tap/scan is accepted  */
 #define LED_REJECT_MS      1500    /* red flash, longer so a refusal is seen   */
@@ -388,8 +405,8 @@ static uint32_t ledFlashOffAt = 0;   /* millis() at which the flash ends       *
 static uint8_t  ledFlashColor = 0;
 
 static void ledApply(uint8_t color) {
-  digitalWrite(PIN_LED_GREEN, color == 1 ? HIGH : LOW);
-  digitalWrite(PIN_LED_RED,   color == 2 ? HIGH : LOW);
+  digitalWrite(PIN_LED_GREEN, color == 1 ? LED_ON : LED_OFF);
+  digitalWrite(PIN_LED_RED,   color == 2 ? LED_ON : LED_OFF);
 }
 
 static void ledSetup() {
@@ -3065,12 +3082,12 @@ void setup() {
     if (millis() - lastBlink >= 150) {
       lastBlink = millis();
       blinkOn   = !blinkOn;
-      digitalWrite(PIN_LED_GREEN, blinkOn ? HIGH : LOW);
+      digitalWrite(PIN_LED_GREEN, blinkOn ? LED_ON : LED_OFF);
       Serial.print(".");
     }
     delay(20);
   }
-  digitalWrite(PIN_LED_GREEN, LOW);
+  digitalWrite(PIN_LED_GREEN, LED_OFF);
   Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
