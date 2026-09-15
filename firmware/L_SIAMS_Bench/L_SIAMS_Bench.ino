@@ -34,6 +34,13 @@
  *     3.3V   -> 3V3
  *     GND    -> GND
  *
+ *   Status LEDs (active-high, each through a 220-330 ohm resistor to GND)
+ *     Green -> GPIO 25              Red -> GPIO 26
+ *
+ *   NOT GPIO 34/35 (nor 36/39): those pins are input-only on the ESP32 and
+ *   cannot drive an LED at all. 25/26 are free output pins here; good
+ *   alternates are 32/33, 27/14 or 13/4.
+ *
  *   The sensor pair is the REVERSE of the silkscreen, and that is deliberate:
  *   17/16 is the pair proven working on this hardware. UART2 is not fixed to
  *   16/17 in either direction — the ESP32 routes any pin to any UART signal —
@@ -350,6 +357,81 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
 #define HTTP_TIMEOUT_MS     8000
 
 #define FP_TEMPLATE_MAX     1024   /* 512 is real; headroom for clones        */
+
+/* ------------------------------------------------------------- status LEDs -- */
+
+/* Two LEDs on the enclosure: green when something was accepted, red when it
+ * was not, plus a boot sequence and a fault indicator. This terminal has no
+ * display, so these are the only feedback a person standing at it gets without
+ * a phone open to the dashboard.
+ *
+ * NOT GPIO 34/35. Those — with 36 and 39 — are INPUT-ONLY on the ESP32: they
+ * have no output driver at all, so pinMode(OUTPUT)/digitalWrite() do nothing
+ * and an LED wired to them never lights. 25 and 26 are ordinary output-capable
+ * GPIOs, free on this board (the reader is on 5/18/19/22/23, the sensor on
+ * 16/17), and clear of the strapping pins (0/2/12/15) and the flash pins
+ * (6-11). Good alternates if the routing is awkward: 32/33, 27/14, 13/4.
+ *
+ * Wire each as GPIO -> 220-330 ohm resistor -> LED(+) -> LED(-) -> GND. The
+ * logic here is active-high: HIGH lights the LED. */
+#define PIN_LED_GREEN      25
+#define PIN_LED_RED        26
+
+#define LED_ACCEPT_MS       800    /* green flash when a tap/scan is accepted  */
+#define LED_REJECT_MS      1500    /* red flash, longer so a refusal is seen   */
+
+/* A one-shot flash overrides the steady baseline until it expires, then the
+ * baseline (normally off = "ready to scan") is restored. Kept non-blocking so
+ * lighting an LED never delays reading the next card. */
+static uint8_t  ledSteady     = 0;   /* 0 off, 1 green, 2 red                  */
+static uint32_t ledFlashOffAt = 0;   /* millis() at which the flash ends       */
+static uint8_t  ledFlashColor = 0;
+
+static void ledApply(uint8_t color) {
+  digitalWrite(PIN_LED_GREEN, color == 1 ? HIGH : LOW);
+  digitalWrite(PIN_LED_RED,   color == 2 ? HIGH : LOW);
+}
+
+static void ledSetup() {
+  pinMode(PIN_LED_GREEN, OUTPUT);
+  pinMode(PIN_LED_RED,   OUTPUT);
+  ledApply(0);
+}
+
+/* Light one colour for a fixed time, then fall back to the baseline. */
+static void ledFlash(uint8_t color, uint32_t ms) {
+  ledFlashColor = color;
+  ledFlashOffAt = millis() + ms;
+  ledApply(color);
+}
+
+/* Called every loop turn on the normal (non-halt) path. While a flash is live
+ * it is left alone; otherwise the baseline is re-asserted every turn, which is
+ * also what clears a stale red the moment a halt recovers and the loop returns
+ * to normal service. */
+static void ledService() {
+  if (ledFlashOffAt != 0) {
+    if (millis() >= ledFlashOffAt) {
+      ledFlashOffAt = 0;
+      ledApply(ledSteady);
+    }
+    return;
+  }
+
+  ledApply(ledSteady);
+}
+
+/* The health indicator while the terminal is halted: solid red when a human is
+ * needed, a slow red blink when the halt can clear itself and the board is
+ * still trying. */
+static void ledHaltIndicator(bool transient) {
+  ledFlashOffAt = 0;                       /* no flashes happen during a halt  */
+  if (transient) {
+    ledApply(((millis() / 600) % 2) ? 2 : 0);
+  } else {
+    ledApply(2);
+  }
+}
 
 /* ----------------------------------------------------------------- state -- */
 
@@ -1898,6 +1980,7 @@ static void handleFingerprint() {
 
   if (search == FINGERPRINT_NOTFOUND) {
     Serial.println("\nFinger: NOT RECOGNISED — this print is not enrolled on this terminal.");
+    ledFlash(2, LED_REJECT_MS);   /* red: finger not accepted */
     return;
   }
 
@@ -1938,6 +2021,8 @@ static void handleFingerprint() {
      * into a session everyone has been told is not open. */
     JsonVariantConst session = response["data"]["session"];
 
+    ledFlash(1, LED_ACCEPT_MS);   /* green: the teacher's scan opened the session */
+
     Serial.printf("        SESSION OPEN — %s with %s, roster %d\n",
                   (const char *) (session["subject_code"]  | "?"),
                   (const char *) (session["section_code"]  | "?"),
@@ -1970,6 +2055,8 @@ static void handleFingerprint() {
   }
 
   const char *code = response["code"] | "-";
+
+  ledFlash(2, LED_REJECT_MS);   /* red: the scan did not open a session */
 
   Serial.printf("        refused (HTTP %d, %s)\n", status, code);
   Serial.printf("        %s\n", (const char *) (response["message"] | ""));
@@ -2222,6 +2309,7 @@ static void sendTap(const String &uid) {
 
   if (status == 200 || status == 201) {
     Serial.printf("      RECORDED: %s\n", (const char *) (response["message"] | ""));
+    ledFlash(1, LED_ACCEPT_MS);   /* green: this tap was accepted */
 
     /* The network is evidently up. If anything is waiting, this is the moment
      * to send it, rather than leaving it for the next timer. */
@@ -2229,6 +2317,11 @@ static void sendTap(const String &uid) {
 
     return;
   }
+
+  /* Everything past here is "not accepted" from the student's point of view —
+   * either the server refused it or never answered — so the enclosure shows
+   * red whether it was a refusal or a queued-for-later tap. */
+  ledFlash(2, LED_REJECT_MS);
 
   /* A negative status is not a refusal — the server never answered, so it has
    * no opinion about this tap and the student is standing there having been
@@ -2827,6 +2920,8 @@ void setup() {
   delay(600);
   bootMillis = millis();
 
+  ledSetup();   /* both off until the connect sequence begins */
+
   Serial.println();
   Serial.println("L-SIAMS classroom terminal");
   Serial.println("==========================");
@@ -2959,11 +3054,23 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  uint32_t started = millis();
+  /* Green blinks fast while joining — the enclosure shows the board is alive
+   * and working on it, not simply dead. Kept short so it stays a brisk blink
+   * rather than a slow pulse. */
+  uint32_t started   = millis();
+  uint32_t lastBlink = 0;
+  bool     blinkOn    = false;
+
   while (WiFi.status() != WL_CONNECTED && millis() - started < 20000) {
-    delay(400);
-    Serial.print(".");
+    if (millis() - lastBlink >= 150) {
+      lastBlink = millis();
+      blinkOn   = !blinkOn;
+      digitalWrite(PIN_LED_GREEN, blinkOn ? HIGH : LOW);
+      Serial.print(".");
+    }
+    delay(20);
   }
+  digitalWrite(PIN_LED_GREEN, LOW);
   Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
@@ -3065,6 +3172,15 @@ void setup() {
     Serial.println("Ready. A teacher scans a finger to open the session; students tap after.");
   }
 
+  /* Connected and ready: hold green steady for a second as the "all good"
+   * signal the user asked for, then off — an unlit pair is the resting state
+   * that means "ready to scan". A flash on the next accept/refusal takes over
+   * from here. */
+  ledApply(1);
+  delay(1000);
+  ledApply(0);
+  ledSteady = 0;
+
   Serial.println();
 }
 
@@ -3081,6 +3197,10 @@ void loop() {
    * whenever somebody opens the serial monitor, rare enough that it does not
    * bury a line they are trying to read. */
   if (haltReason != nullptr) {
+    /* Red on the enclosure: solid when a person is needed, a slow blink when
+     * the board can recover on its own and is still trying. */
+    ledHaltIndicator(haltIsTransient);
+
     if (lastHaltNag == 0 || millis() - lastHaltNag >= 10000) {
       lastHaltNag = millis();
       Serial.printf("%s: %s\n", haltIsTransient ? "PAUSED" : "HALTED", haltReason);
@@ -3165,6 +3285,11 @@ void loop() {
     delay(200);
     return;
   }
+
+  /* Retire a finished accept/refuse flash and hold the resting state (off).
+   * First thing on the normal path so it runs even when a poll below returns
+   * early. */
+  ledService();
 
   /* One module down is not a halt — the other half of the terminal still
    * works — but it must not be silent either. Each poll below begins by
