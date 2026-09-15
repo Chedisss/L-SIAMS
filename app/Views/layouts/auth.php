@@ -25,6 +25,7 @@
             color: #fff; padding: 3rem; display: flex; flex-direction: column;
             align-items: center; justify-content: center; text-align: center;
             position: relative; overflow: hidden;
+            font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
         }
         /* Subtle grid motif, kept under the logo lockup. */
         .auth-hero::after {
@@ -34,11 +35,16 @@
         }
         .auth-hero > * { position: relative; z-index: 1; }
 
-        .auth-hero__lock  { display: flex; flex-direction: column; align-items: center; max-width: 30rem; }
+        .auth-hero__lock  { display: flex; flex-direction: column; align-items: center; max-width: 38rem; }
         /* Official logo artwork (the PNG already includes the L-SIAMS wordmark). */
-        .auth-hero__mark img { width: 260px; max-width: 68%; height: auto; filter: drop-shadow(0 14px 32px rgba(0,0,0,.30)); }
-        .auth-hero__tag  { margin-top: .3rem; font-size: 12.5px; letter-spacing: .2em; color: rgba(219,234,255,.72); }
-        .auth-hero__desc { margin-top: 1.8rem; font-size: 17px; line-height: 1.55; color: rgba(255,255,255,.9); max-width: 24ch; }
+        .auth-hero__mark img { width: 250px; max-width: 66%; height: auto; filter: drop-shadow(0 14px 32px rgba(0,0,0,.30)); }
+        .auth-hero__tag  { margin-top: .35rem; font-size: 13px; font-weight: 500; letter-spacing: .16em;
+                           color: rgba(224,236,255,.82); }
+        /* Divider between the tagline and the description, to settle the spacing. */
+        .auth-hero__rule { width: 54px; height: 2px; border-radius: 2px; margin: 1.5rem 0 1.35rem;
+                           background: rgba(255,255,255,.28); }
+        .auth-hero__desc { font-size: 16.5px; font-weight: 400; line-height: 1.75; letter-spacing: .005em;
+                           color: rgba(255,255,255,.9); max-width: 42ch; }
 
         .auth-panel { display: flex; align-items: center; justify-content: center; padding: 2.5rem 2rem; }
         .auth-card { width: 100%; max-width: 360px; }
@@ -59,6 +65,7 @@
                 <img src="<?= e(asset('img/lsiams-logo.png')) ?>" alt="L-SIAMS logo">
             </div>
             <div class="auth-hero__tag">Secure Every Entry. Track Every Moment</div>
+            <span class="auth-hero__rule"></span>
             <p class="auth-hero__desc">Local IoT-based, multi-layer secured attendance monitoring with RFID and biometric authentication.</p>
         </div>
     </aside>
