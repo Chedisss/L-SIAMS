@@ -19,25 +19,44 @@
         }
         .auth-hero {
             background: linear-gradient(150deg, #1E3A8A 0%, #2563EB 55%, #3B82F6 100%);
-            color: #fff; padding: 3rem; display: flex; flex-direction: column; justify-content: center;
+            color: #fff; padding: 3.25rem; display: flex; flex-direction: column; justify-content: space-between;
             position: relative; overflow: hidden;
         }
         /* Subtle grid motif — evokes the classroom terminals without a bitmap. */
         .auth-hero::after {
-            content: ''; position: absolute; inset: 0; opacity: .09;
+            content: ''; position: absolute; inset: 0; opacity: .09; z-index: 0;
             background-image: linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px);
             background-size: 44px 44px;
         }
         .auth-hero > * { position: relative; z-index: 1; }
-        /* A single centered logo lockup — nothing else on the panel. */
-        .auth-logo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1.1rem; }
-        .auth-logo__mark { width: 148px; height: 148px; filter: drop-shadow(0 12px 30px rgba(0,0,0,.30)); }
-        .auth-logo__badge { fill: url(#lsBadge); stroke: rgba(255,255,255,.9); stroke-width: 2.5; }
-        .auth-logo__lstem { fill: #ffffff; }
-        .auth-logo__lfoot { fill: #FBBF24; }
-        .auth-logo__word   { font-size: 52px; font-weight: 800; letter-spacing: .04em; line-height: 1; margin-top: .3rem; }
-        .auth-logo__rule   { width: 60px; height: 3px; border-radius: 2px; background: #FBBF24; opacity: .95; }
-        .auth-logo__sub    { font-size: 14px; color: rgba(255,255,255,.72); max-width: 30ch; line-height: 1.5; }
+
+        /* Diagonal light streaks, kept over the grid so the panel is not flat. */
+        .auth-hero__streaks { position: absolute; inset: 0; overflow: hidden; z-index: 0; pointer-events: none; }
+        .auth-hero__streaks span {
+            position: absolute; height: 8px; border-radius: 8px; opacity: .5;
+            background: linear-gradient(90deg, rgba(251,191,36,0), rgba(251,191,36,.85));
+            transform: rotate(-32deg); transform-origin: left center;
+        }
+        .auth-hero__streaks span:nth-child(1) { left: -4%; bottom: 30%; width: 46%; }
+        .auth-hero__streaks span:nth-child(2) { left:  8%; bottom: 21%; width: 30%; height: 6px; opacity: .38; }
+        .auth-hero__streaks span:nth-child(3) { left: -2%; bottom: 11%; width: 56%; height: 10px; }
+        .auth-hero__streaks span:nth-child(4) { left: 22%; bottom: 36%; width: 20%; height: 5px; opacity: .32; }
+        .auth-hero__streaks span:nth-child(5) { left:  2%; bottom: 24%; width: 26%; opacity: .3;
+            background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.45)); }
+        .auth-hero__streaks span:nth-child(6) { left: 30%; bottom: 15%; width: 34%; opacity: .4; }
+
+        /* Logo mark: an L with a fingerprint inside (the official concept, as vector). */
+        .auth-hero__brand { display: flex; align-items: center; gap: .85rem; }
+        .auth-hero__brand svg { width: 62px; height: 62px; filter: drop-shadow(0 8px 20px rgba(0,0,0,.30)); }
+        .auth-hero__name { font-size: 22px; font-weight: 800; letter-spacing: .04em; }
+        .ls-l { fill: url(#lsL); }
+        .ls-print path { fill: none; stroke: #EFF6FF; stroke-width: 2.4; stroke-linecap: round; }
+
+        .auth-hero__body h1 { font-size: 40px; line-height: 1.14; max-width: 15ch; font-weight: 800; }
+        .auth-hero__body h1 .ls-accent { color: #FBBF24; }
+        .auth-hero__body p  { color: rgba(255,255,255,.82); font-size: 15px; max-width: 40ch;
+                              margin-top: .9rem; line-height: 1.6; }
+        .auth-hero__foot    { font-size: 12.5px; color: rgba(255,255,255,.58); }
 
         .auth-panel { display: flex; align-items: center; justify-content: center; padding: 2.5rem 2rem; }
         .auth-card { width: 100%; max-width: 360px; }
@@ -53,23 +72,37 @@
 <body>
 <div class="auth-shell">
     <aside class="auth-hero">
-        <div class="auth-logo">
-            <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS monogram logo">
+        <div class="auth-hero__streaks" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+
+        <div class="auth-hero__brand">
+            <svg viewBox="0 0 100 100" role="img" aria-label="L-SIAMS logo — an L with a fingerprint">
                 <defs>
-                    <linearGradient id="lsBadge" x1="0" y1="0" x2="1" y2="1">
-                        <stop offset="0" stop-color="#ffffff" stop-opacity=".22"/>
-                        <stop offset="1" stop-color="#ffffff" stop-opacity=".06"/>
+                    <linearGradient id="lsL" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#BFDBFE"/>
+                        <stop offset="1" stop-color="#2563EB"/>
                     </linearGradient>
                 </defs>
-                <rect class="auth-logo__badge" x="16" y="16" width="68" height="68" rx="20"/>
-                <rect class="auth-logo__lfoot" x="37" y="58" width="36" height="13" rx="6"/>
-                <rect class="auth-logo__lstem" x="37" y="27" width="13" height="44" rx="6"/>
+                <rect class="ls-l" x="26" y="14" width="34" height="66" rx="11"/>
+                <rect class="ls-l" x="26" y="64" width="60" height="16" rx="8"/>
+                <g class="ls-print">
+                    <path d="M38 46 A5 5 0 0 1 48 46"/>
+                    <path d="M34 46 A9 9 0 0 1 52 46"/>
+                    <path d="M30 46 A13 13 0 0 1 56 46"/>
+                    <path d="M27 46 A16 16 0 0 1 59 46"/>
+                    <path d="M43 46 L43 58"/>
+                </g>
             </svg>
-
-            <div class="auth-logo__word">L&#8209;SIAMS</div>
-            <span class="auth-logo__rule"></span>
-            <div class="auth-logo__sub">Secure, verified attendance for every classroom.</div>
+            <span class="auth-hero__name">L&#8209;SIAMS</span>
         </div>
+
+        <div class="auth-hero__body">
+            <h1>Secure Every Entry.<br><span class="ls-accent">Track Every Moment.</span></h1>
+            <p>Local IoT-based, multi-layer secured attendance monitoring with RFID and biometric authentication.</p>
+        </div>
+
+        <div class="auth-hero__foot">&copy; <?= e(date('Y')) ?> L&#8209;SIAMS. All rights reserved.</div>
     </aside>
 
     <main class="auth-panel">
