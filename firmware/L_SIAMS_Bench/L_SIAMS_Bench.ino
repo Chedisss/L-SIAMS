@@ -438,6 +438,20 @@ static void ledService() {
   ledApply(ledSteady);
 }
 
+/* A visible power-on check: light green, then red, then off. It proves the two
+ * LEDs, their resistors and the polarity are right BEFORE the terminal depends
+ * on a card or a finger to light anything — the whole point being that at idle
+ * both LEDs are off, so "nothing lit" on its own tells you nothing. If a colour
+ * fails to light here it is the wiring, the resistor or a reversed LED, not the
+ * software. */
+static void ledSelfTest() {
+  ledApply(1);   /* green on  */
+  delay(600);
+  ledApply(2);   /* red on    */
+  delay(600);
+  ledApply(0);   /* both off  */
+}
+
 /* The health indicator while the terminal is halted: solid red when a human is
  * needed, a slow red blink when the halt can clear itself and the board is
  * still trying. */
@@ -2948,6 +2962,12 @@ void setup() {
   Serial.println();
   Serial.println("L-SIAMS classroom terminal");
   Serial.println("==========================");
+
+  /* Prove the LEDs before anything else can be blamed: green, then red, then
+   * off. Watch the enclosure now — if a colour does not light here, it is the
+   * wiring, not the code. */
+  Serial.println("LED test: green, then red, then both off.");
+  ledSelfTest();
 
   reportBoot();
 
