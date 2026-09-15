@@ -236,6 +236,16 @@ $teacherHidden = ['audit', 'security', 'device_uptime'];
                 <button type="button" class="btn btn-primary btn-block" id="q-run">
                     <i class="fa-solid fa-chart-simple"></i> Preview summary
                 </button>
+
+                <?php if (!$isTeacher): ?>
+                    <button type="button" class="btn btn-secondary btn-block mt-1" id="q-cards">
+                        <i class="fa-solid fa-id-card"></i> Printable student cards (PDF)
+                    </button>
+                    <p class="field-help mt-1">
+                        One page per student — each summary expanded into their day-by-day
+                        attendance. Best run for a section or a grade at report-card time.
+                    </p>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -624,6 +634,30 @@ $__view->start('scripts');
         setTimeout(() => post.remove(), 1000);
     }
 
+    // Post the given params to any download endpoint (used for the per-student
+    // card booklet, which is a plain PDF stream rather than a built report).
+    function postDownload(action, params) {
+        const fields = Object.assign({}, params, { _csrf: LS.config.csrfToken });
+
+        const post = document.createElement('form');
+        post.method = 'post';
+        post.action = BASE + action;
+        post.style.display = 'none';
+
+        Object.entries(fields).forEach(([key, value]) => {
+            if (value === '' || value === null || value === undefined) return;
+            const input = document.createElement('input');
+            input.type  = 'hidden';
+            input.name  = key;
+            input.value = value;
+            post.appendChild(input);
+        });
+
+        document.body.appendChild(post);
+        post.submit();
+        setTimeout(() => post.remove(), 1000);
+    }
+
     /* ==================================================================== *
      *  Tab switching
      * ==================================================================== */
@@ -806,6 +840,20 @@ $__view->start('scripts');
         activeTab = 'quick';
         runPreview(quickParams(), this);
     });
+
+    const cardsBtn = document.getElementById('q-cards');
+    if (cardsBtn) {
+        cardsBtn.addEventListener('click', function () {
+            if (qScope === 'student' && !qStudent.value) {
+                qSummary.innerHTML = '<span class="text-danger">Pick a student first, or switch to “A section”.</span>';
+                return;
+            }
+            // The card booklet ignores the report "type" — it is always the
+            // per-student expansion — but quickParams() carries the same scope
+            // (year, grade, section or one student) the summary uses.
+            postDownload('/reports/student-cards', quickParams());
+        });
+    }
 
     syncQuickSections();
     updateSummary();

@@ -12,6 +12,7 @@ use App\Core\Exceptions\HttpException;
 use App\Core\Request;
 use App\Core\Response;
 use App\Services\AcademicStructureService;
+use App\Services\AuditService;
 use App\Services\ReportService;
 use App\Services\SchoolYearService;
 use App\Services\StudentService;
@@ -98,6 +99,40 @@ final class ReportController extends Controller
         }
 
         $rendered = ReportService::export($report, $format);
+
+        return Response::attachment($rendered['content'], $rendered['filename'], $rendered['mime']);
+    }
+
+    /**
+     * Printable per-student attendance cards — one page per student, the
+     * summary row expanded into their day-by-day detail.
+     *
+     * Administrator-only: it can span a whole grade or school year, which is
+     * not a teacher's to print. Teachers have the Section Daily sheet for the
+     * same job scoped to their own room.
+     */
+    public function studentCards(Request $request): Response
+    {
+        if (!Auth::isAdmin()) {
+            throw new AuthorizationException('Only administrators can print student attendance cards.');
+        }
+
+        $filters  = $this->filters($request);
+        $rendered = ReportService::studentCards($filters);
+
+        AuditService::log(
+            AuditService::REPORT_GENERATED,
+            'reports',
+            'student_cards',
+            null,
+            null,
+            [
+                'students' => $rendered['count'],
+                'from'     => $filters['date_from'] ?? null,
+                'to'       => $filters['date_to'] ?? null,
+            ],
+            sprintf('Printed %d student attendance card(s).', $rendered['count'])
+        );
 
         return Response::attachment($rendered['content'], $rendered['filename'], $rendered['mime']);
     }
