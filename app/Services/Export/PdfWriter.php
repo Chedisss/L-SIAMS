@@ -94,6 +94,78 @@ final class PdfWriter
         return $writer->render();
     }
 
+    /**
+     * A booklet: one titled sheet per entity, each starting on its own page.
+     *
+     * The single-table `table()` renderer answers "one report, many rows"; this
+     * answers "many little reports, one page each" — a per-student attendance
+     * card for report-card season, where every student's page carries their own
+     * header, their own summary chips and their own day-by-day table, and a
+     * student whose record runs long simply continues onto a second page that
+     * repeats their name. Every sheet reuses the same drawing primitives as the
+     * table renderer, so the two never drift apart in look.
+     *
+     * @param list<array{
+     *     title:string,
+     *     subtitle?:string,
+     *     meta?:array<string,string>,
+     *     statistics?:array<string,string|int|float>,
+     *     headers:list<string>,
+     *     rows:list<array<int|string,mixed>>
+     * }> $sheets
+     */
+    public static function booklet(array $sheets, string $schoolName = 'L-SIAMS'): string
+    {
+        $writer = new self('', '', [], $schoolName);
+
+        if ($sheets === []) {
+            $writer->setHeaders(['']);
+            $writer->startPage();
+            $writer->drawEmptyState();
+            $writer->finishPage();
+
+            return $writer->render();
+        }
+
+        foreach ($sheets as $sheet) {
+            $writer->title    = $sheet['title'];
+            $writer->subtitle = $sheet['subtitle'] ?? '';
+            $writer->meta     = $sheet['meta'] ?? [];
+            $writer->setHeaders($sheet['headers']);
+
+            // Each sheet begins on a fresh page: startPage() redraws the brand
+            // bar and this student's header block.
+            $writer->startPage();
+
+            if (!empty($sheet['statistics'])) {
+                $writer->drawStatistics($sheet['statistics']);
+            }
+
+            $writer->drawTableHeader();
+
+            $striped = false;
+
+            foreach ($sheet['rows'] as $row) {
+                if ($writer->cursorY < self::MARGIN + 40) {
+                    $writer->finishPage();
+                    $writer->startPage();
+                    $writer->drawTableHeader();
+                }
+
+                $writer->drawRow(array_values($row), $striped);
+                $striped = !$striped;
+            }
+
+            if ($sheet['rows'] === []) {
+                $writer->drawEmptyState();
+            }
+
+            $writer->finishPage();
+        }
+
+        return $writer->render();
+    }
+
     /** @param list<string> $headers */
     private function setHeaders(array $headers): void
     {

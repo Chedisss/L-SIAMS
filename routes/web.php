@@ -223,6 +223,7 @@ $router->group('/admin', $adminChain, static function ($router): void {
     $router->get('/reports', ReportController::class . '@index', [], 'admin.reports');
     $router->post('/reports/preview', ReportController::class . '@preview');
     $router->post('/reports/generate', ReportController::class . '@generate');
+    $router->post('/reports/student-cards', ReportController::class . '@studentCards');
     $router->get('/reports/students/search', ReportController::class . '@searchStudents');
     $router->get('/reports/{id:\d+}/download', ReportController::class . '@download');
 

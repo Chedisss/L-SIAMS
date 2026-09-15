@@ -744,6 +744,26 @@ final class AcademicStructureService
         );
     }
 
+    /**
+     * A flat section list carrying school year and grade, for cascading
+     * pickers (choose year → grade → section). v_section_summary omits the
+     * school year, so the report wizard could not scope sections to a year
+     * without this — it reads the columns straight from the base table.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function sectionsForPicker(): array
+    {
+        return Database::instance()->select(
+            "SELECT sec.section_id, sec.section_code, sec.section_name,
+                    sec.grade_level_id, sec.school_year_id, gl.numeric_level
+               FROM sections sec
+               JOIN grade_levels gl ON gl.grade_level_id = sec.grade_level_id
+              WHERE sec.deleted_at IS NULL AND sec.status = 'active'
+              ORDER BY gl.numeric_level, sec.section_code"
+        );
+    }
+
     /** @return list<array<string,mixed>> */
     public static function sectionRoster(int $sectionId): array
     {

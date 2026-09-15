@@ -21,6 +21,7 @@ use App\Services\Export\XlsxWriter;
 final class ReportService
 {
     public const TYPES = [
+        'student_summary'       => 'Student Attendance Summary',
         'daily'                 => 'Daily Attendance',
         'weekly'                => 'Weekly Attendance',
         'monthly'               => 'Monthly Attendance',
@@ -54,6 +55,7 @@ final class ReportService
         $to   = (string) ($filters['date_to'] ?? Clock::today());
 
         return match ($type) {
+            'student_summary'            => self::studentSummaryReport($filters, $from, $to),
             'daily', 'weekly', 'monthly' => self::attendanceReport($type, $filters, $from, $to),
             'student'                    => self::studentReport($filters, $from, $to),
             'teacher'                    => self::teacherReport($filters, $from, $to),
@@ -120,6 +122,389 @@ final class ReportService
             ], $rows),
             'statistics' => self::statisticsFor($rows, 'final_status'),
             'meta'       => self::describeFilters($filters, $from, $to),
+        ];
+    }
+
+    /**
+     * Student Attendance Summary — one row per student over a period, scoped to
+     * a school year and optionally a grade level or a single section.
+     *
+     * This is the report that answers "how is every student doing" at a glance:
+     * the roster is the base (a LEFT JOIN onto attendance), so a student who
+     * never tapped once still appears with zeroes rather than vanishing — the
+     * opposite of what a summary that only listed students with records would
+     * do, which is hide precisely the pupils an attendance report exists to
+     * surface. The date range decides which sessions are counted, so the same
+     * report is "for today", "for this month" or "for the whole school year"
+     * depending only on the period the caller chose.
+     *
+     * @param  array<string,mixed> $filters
+     * @return array<string,mixed>
+     */
+    private static function studentSummaryReport(array $filters, string $from, string $to): array
+    {
+        $schoolYearId = (int) ($filters['school_year_id'] ?? 0) ?: null;
+        $sectionId    = (int) ($filters['section_id'] ?? 0) ?: null;
+        $gradeLevelId = (int) ($filters['grade_level_id'] ?? 0) ?: null;
+
+        // The roster is scoped by the student's *current* section — which is
+        // what ties a student to a school year — so "every student in
+        // 2026-2027" means every pupil enrolled in a section of that year.
+        $where    = ['st.deleted_at IS NULL', "st.status = 'active'"];
+        $bindings = ['from' => $from, 'to' => $to];
+
+        if ($schoolYearId !== null) {
+            $where[]            = 'sec.school_year_id = :sy';
+            $bindings['sy']     = $schoolYearId;
+        }
+        if ($sectionId !== null) {
+            $where[]             = 'st.section_id = :section';
+            $bindings['section'] = $sectionId;
+        }
+        if ($gradeLevelId !== null) {
+            $where[]            = 'sec.grade_level_id = :grade';
+            $bindings['grade']  = $gradeLevelId;
+        }
+
+        $whereSql = implode(' AND ', $where);
+
+        // Counts come from v_attendance_detail (which resolves the attendance
+        // date across live, offline and auto-closed records the same way every
+        // other report sees it); the display columns come from the student's
+        // current section so the row reads as a roster entry, not a snapshot of
+        // wherever they happened to tap.
+        $rows = Database::instance()->select(
+            "SELECT st.student_id,
+                    st.student_number,
+                    CONCAT(st.last_name, ', ', st.first_name) AS student_name,
+                    sec.section_code,
+                    gl.grade_level_code,
+                    COUNT(v.attendance_id) AS records,
+                    SUM(v.final_status = 'Present')    AS present,
+                    SUM(v.final_status = 'Late')       AS late,
+                    SUM(v.final_status = 'Left Early') AS left_early,
+                    SUM(v.final_status = 'Incomplete') AS incomplete,
+                    SUM(v.final_status = 'Excused')    AS excused,
+                    SUM(v.final_status = 'Absent')     AS absent,
+                    SUM(v.final_status IN ('Present','Late','Left Early','Incomplete')) AS attended
+               FROM students st
+               JOIN sections sec    ON sec.section_id     = st.section_id
+               JOIN grade_levels gl ON gl.grade_level_id  = sec.grade_level_id
+               LEFT JOIN v_attendance_detail v
+                      ON v.student_id = st.student_id
+                     AND v.attendance_date BETWEEN :from AND :to
+              WHERE {$whereSql}
+              GROUP BY st.student_id, st.student_number, student_name,
+                       sec.section_code, gl.grade_level_code, gl.numeric_level
+              ORDER BY gl.numeric_level, sec.section_code, st.last_name, st.first_name
+              LIMIT 20000",
+            $bindings
+        );
+
+        $threshold = (float) Config::get('attendance.chronic_absence_threshold_percent', 80.0);
+        $atRiskAt  = max(0.0, $threshold - 15.0);
+
+        $totRecords = 0;
+        $totPresent = 0;
+        $totLate    = 0;
+        $totAbsent  = 0;
+        $flagged    = 0;
+
+        $mapped = array_map(static function (array $r) use ($threshold, $atRiskAt, &$totRecords, &$totPresent, &$totLate, &$totAbsent, &$flagged): array {
+            $records  = (int) $r['records'];
+            $attended = (int) $r['attended'];
+            $pct      = $records === 0 ? 0.0 : round($attended / $records * 100, 1);
+
+            // Standing turns the percentage into something a reader acts on
+            // without doing the arithmetic: below the chronic threshold is a
+            // pupil to chase, the band above it a pupil to watch.
+            if ($records === 0) {
+                $standing = 'No data';
+            } elseif ($pct >= $threshold) {
+                $standing = 'Good';
+            } elseif ($pct >= $atRiskAt) {
+                $standing = 'At risk';
+            } else {
+                $standing = 'Chronic';
+            }
+
+            $totRecords += $records;
+            $totPresent += (int) $r['present'];
+            $totLate    += (int) $r['late'];
+            $totAbsent  += (int) $r['absent'];
+            if ($standing === 'Chronic') {
+                $flagged++;
+            }
+
+            return [
+                $r['student_number'],
+                $r['student_name'],
+                $r['section_code'],
+                $r['grade_level_code'],
+                $records,
+                (int) $r['present'],
+                (int) $r['late'],
+                (int) $r['absent'],
+                (int) $r['excused'],
+                $pct . '%',
+                $standing,
+            ];
+        }, $rows);
+
+        $overall = $totRecords === 0
+            ? '0%'
+            : round(($totPresent + $totLate + array_sum(array_map(static fn (array $r): int => (int) $r['left_early'] + (int) $r['incomplete'], $rows))) / $totRecords * 100, 1) . '%';
+
+        return [
+            'title'    => 'Student Attendance Summary',
+            'subtitle' => self::studentSummarySubtitle($schoolYearId, $from, $to),
+            'headers'  => ['Student No.', 'Student', 'Section', 'Grade', 'Sessions', 'Present', 'Late', 'Absent', 'Excused', 'Attendance %', 'Standing'],
+            'rows'     => $mapped,
+            'statistics' => [
+                'Students'   => count($rows),
+                'Sessions'   => $totRecords,
+                'Present'    => $totPresent,
+                'Late'       => $totLate,
+                'Absent'     => $totAbsent,
+                'Attendance' => $overall,
+                'Chronic'    => $flagged,
+            ],
+            'meta' => self::describeFilters($filters, $from, $to)
+                + ['School year' => self::schoolYearLabel($schoolYearId) ?? 'All years'],
+        ];
+    }
+
+    private static function studentSummarySubtitle(?int $schoolYearId, string $from, string $to): string
+    {
+        $label = self::schoolYearLabel($schoolYearId);
+        $range = $from === $to ? self::humanDate($from) : self::humanDate($from) . ' – ' . self::humanDate($to);
+
+        return $label === null ? $range : sprintf('S.Y. %s  ·  %s', $label, $range);
+    }
+
+    private static function schoolYearLabel(?int $schoolYearId): ?string
+    {
+        if ($schoolYearId === null) {
+            return null;
+        }
+
+        $label = Database::instance()->scalar(
+            'SELECT year_label FROM school_years WHERE school_year_id = :id',
+            ['id' => $schoolYearId]
+        );
+
+        return $label === null ? null : (string) $label;
+    }
+
+    /**
+     * A run of one student is never a booklet worth guarding, but a run of the
+     * whole school is thousands of pages the server has to hold in memory at
+     * once. The cap turns that into a clear "narrow your scope" message instead
+     * of an out-of-memory 500.
+     */
+    private const MAX_STUDENT_CARDS = 500;
+
+    /**
+     * Printable per-student attendance cards — the Student Attendance Summary,
+     * one page per student, each summary row expanded into that student's
+     * day-by-day detail. This is the report-card-season artefact: hand a
+     * homeroom adviser a stack of pages, one per pupil.
+     *
+     * Scoping matches the summary (school year, grade, section, or a single
+     * student), so the same choice that previews a section on screen prints
+     * that section as a booklet. A student with no attendance in the period
+     * still gets a page — a card that silently omitted the pupils who never
+     * showed up would be the worst possible one to omit.
+     *
+     * @param  array<string,mixed> $filters
+     * @return array{content:string,filename:string,mime:string,count:int}
+     */
+    public static function studentCards(array $filters): array
+    {
+        $from = (string) ($filters['date_from'] ?? Clock::now()->modify('-30 days')->format('Y-m-d'));
+        $to   = (string) ($filters['date_to'] ?? Clock::today());
+
+        $schoolYearId = (int) ($filters['school_year_id'] ?? 0) ?: null;
+        $sectionId    = (int) ($filters['section_id'] ?? 0) ?: null;
+        $gradeLevelId = (int) ($filters['grade_level_id'] ?? 0) ?: null;
+        $studentId    = (int) ($filters['student_id'] ?? 0) ?: null;
+
+        $where    = ['st.deleted_at IS NULL', "st.status = 'active'"];
+        $bindings = ['from' => $from, 'to' => $to];
+
+        if ($studentId !== null) {
+            // Naming one student is the single-card case; the other scopers are
+            // ignored so a stale section from the form cannot exclude them.
+            $where[]             = 'st.student_id = :student';
+            $bindings['student'] = $studentId;
+        } else {
+            if ($schoolYearId !== null) {
+                $where[]        = 'sec.school_year_id = :sy';
+                $bindings['sy'] = $schoolYearId;
+            }
+            if ($sectionId !== null) {
+                $where[]             = 'st.section_id = :section';
+                $bindings['section'] = $sectionId;
+            }
+            if ($gradeLevelId !== null) {
+                $where[]           = 'sec.grade_level_id = :grade';
+                $bindings['grade'] = $gradeLevelId;
+            }
+        }
+
+        $whereSql = implode(' AND ', $where);
+        $db       = Database::instance();
+
+        // Count first, so an over-broad scope fails cheaply and clearly rather
+        // than after loading every record it would have printed.
+        $rosterBindings = $bindings;
+        unset($rosterBindings['from'], $rosterBindings['to']);
+
+        $studentCount = (int) $db->scalar(
+            "SELECT COUNT(*)
+               FROM students st
+               JOIN sections sec ON sec.section_id = st.section_id
+              WHERE {$whereSql}",
+            $rosterBindings
+        );
+
+        if ($studentCount === 0) {
+            throw new ValidationException(['filters' => ['No students match the selected scope, so there is nothing to print.']]);
+        }
+
+        if ($studentCount > self::MAX_STUDENT_CARDS) {
+            throw new ValidationException(['filters' => [sprintf(
+                'That scope is %d students — too many for one booklet. Narrow it to a grade level or a section (at most %d).',
+                $studentCount,
+                self::MAX_STUDENT_CARDS
+            )]]);
+        }
+
+        // One pass: every rostered student, each with their detail rows in the
+        // period (or none), ordered so grouping in PHP preserves reading order.
+        $rows = $db->select(
+            "SELECT st.student_id, st.student_number,
+                    CONCAT(st.last_name, ', ', st.first_name) AS student_name,
+                    sec.section_code, gl.grade_level_name, sec.school_year_id,
+                    v.attendance_date, v.subject_code, v.teacher_name, v.room_number,
+                    v.time_in, v.time_out, v.duration_minutes, v.final_status
+               FROM students st
+               JOIN sections sec    ON sec.section_id    = st.section_id
+               JOIN grade_levels gl ON gl.grade_level_id = sec.grade_level_id
+               LEFT JOIN v_attendance_detail v
+                      ON v.student_id = st.student_id
+                     AND v.attendance_date BETWEEN :from AND :to
+              WHERE {$whereSql}
+              ORDER BY gl.numeric_level, sec.section_code, st.last_name, st.first_name,
+                       v.attendance_date, v.time_in
+              LIMIT 200000",
+            $bindings
+        );
+
+        $yearLabels = [];
+        foreach ($db->select('SELECT school_year_id, year_label FROM school_years') as $year) {
+            $yearLabels[(int) $year['school_year_id']] = (string) $year['year_label'];
+        }
+
+        $threshold = (float) Config::get('attendance.chronic_absence_threshold_percent', 80.0);
+        $atRiskAt  = max(0.0, $threshold - 15.0);
+
+        // Group the flat result into one sheet per student.
+        $students = [];
+        foreach ($rows as $row) {
+            $id = (int) $row['student_id'];
+
+            if (!isset($students[$id])) {
+                $students[$id] = [
+                    'number'  => (string) $row['student_number'],
+                    'name'    => (string) $row['student_name'],
+                    'section' => (string) $row['section_code'],
+                    'grade'   => (string) $row['grade_level_name'],
+                    'year'    => $yearLabels[(int) $row['school_year_id']] ?? '—',
+                    'detail'  => [],
+                ];
+            }
+
+            if ($row['attendance_date'] !== null) {
+                $students[$id]['detail'][] = $row;
+            }
+        }
+
+        $period = self::humanDate($from) . ' – ' . self::humanDate($to);
+        $sheets = [];
+
+        foreach ($students as $student) {
+            $present = $late = $leftEarly = $incomplete = $excused = $absent = 0;
+            $detailRows = [];
+
+            foreach ($student['detail'] as $r) {
+                switch ((string) $r['final_status']) {
+                    case 'Present':    $present++;    break;
+                    case 'Late':       $late++;       break;
+                    case 'Left Early': $leftEarly++;  break;
+                    case 'Incomplete': $incomplete++; break;
+                    case 'Excused':    $excused++;    break;
+                    case 'Absent':     $absent++;     break;
+                }
+
+                $detailRows[] = [
+                    self::humanDate((string) $r['attendance_date']),
+                    $r['subject_code'] ?? '—',
+                    $r['teacher_name'] ?? '—',
+                    $r['room_number'] ?? '—',
+                    self::humanTime($r['time_in']),
+                    self::humanTime($r['time_out']),
+                    $r['duration_minutes'] === null ? '—' : $r['duration_minutes'] . ' min',
+                    $r['final_status'] ?? 'No record',
+                ];
+            }
+
+            $records  = count($detailRows);
+            $attended = $present + $late + $leftEarly + $incomplete;
+            $pct      = $records === 0 ? 0.0 : round($attended / $records * 100, 1);
+
+            if ($records === 0) {
+                $standing = 'No data';
+            } elseif ($pct >= $threshold) {
+                $standing = 'Good';
+            } elseif ($pct >= $atRiskAt) {
+                $standing = 'At risk';
+            } else {
+                $standing = 'Chronic';
+            }
+
+            $sheets[] = [
+                'title'    => $student['name'],
+                'subtitle' => sprintf(
+                    '%s  ·  %s  ·  %s  ·  S.Y. %s',
+                    $student['number'],
+                    $student['section'],
+                    $student['grade'],
+                    $student['year']
+                ),
+                'meta' => [
+                    'Period'     => $period,
+                    'Attendance' => $pct . '%',
+                    'Standing'   => $standing,
+                ],
+                'statistics' => [
+                    'Sessions'   => $records,
+                    'Present'    => $present,
+                    'Late'       => $late,
+                    'Absent'     => $absent,
+                    'Excused'    => $excused,
+                    'Attendance' => $pct . '%',
+                ],
+                'headers' => ['Date', 'Subject', 'Teacher', 'Room', 'Time In', 'Time Out', 'Duration', 'Status'],
+                'rows'    => $detailRows,
+            ];
+        }
+
+        return [
+            'content'  => PdfWriter::booklet($sheets, SettingsService::schoolName()),
+            'filename' => sprintf('student-cards-%s.pdf', Clock::now()->format('Ymd-His')),
+            'mime'     => 'application/pdf',
+            'count'    => count($sheets),
         ];
     }
 
