@@ -42,8 +42,6 @@
         .auth-logo__check  { fill: none; stroke: #FBBF24; stroke-width: 8;
                              stroke-linecap: round; stroke-linejoin: round; }
         .auth-logo__word   { font-size: 46px; font-weight: 800; letter-spacing: .04em; line-height: 1; }
-        .auth-logo__tag    { font-size: 12.5px; letter-spacing: .2em; text-transform: uppercase;
-                             color: #FBBF24; font-weight: 600; }
         .auth-logo__sub    { font-size: 13.5px; color: rgba(255,255,255,.7); max-width: 34ch; }
         .auth-hero__footer { font-size: 12px; color: rgba(255,255,255,.6); }
 
@@ -85,7 +83,6 @@
             </svg>
 
             <div class="auth-logo__word">L&#8209;SIAMS</div>
-            <div class="auth-logo__tag"><?= e($schoolName ?? 'Attendance Monitoring System') ?></div>
             <div class="auth-logo__sub">Secured in-classroom attendance monitoring</div>
         </div>
 
