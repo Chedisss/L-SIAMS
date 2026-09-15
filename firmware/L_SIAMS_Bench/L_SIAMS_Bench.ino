@@ -380,8 +380,8 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
  * flash, not a flicker; the count (2 vs 5) is what tells accepted from refused. */
 #define OB_ACCEPT_BLINKS      2
 #define OB_ACCEPT_MS        150    /* ms per on/off phase -> accept ~0.6 s total */
-#define OB_REFUSE_BLINKS      4
-#define OB_REFUSE_MS        150    /* refuse ~1.2 s total; count (2 vs 4) tells them apart */
+#define OB_REFUSE_BLINKS      5
+#define OB_REFUSE_MS        150    /* refuse ~1.5 s total; count (2 vs 5) tells them apart */
 
 /* --- onboard single-colour LED: a counted blink burst stands in for colour - */
 static void obWrite(bool on) {
