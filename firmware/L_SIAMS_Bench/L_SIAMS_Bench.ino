@@ -2933,11 +2933,17 @@ static void checkSubnet() {
 }
 
 void setup() {
+  /* First thing, before anything else runs: drive both LEDs to their OFF level
+   * (HIGH, because the wiring is active-low). Until a pin is set OUTPUT it is a
+   * floating input, and with the common anode on 5 V a floating cathode lets
+   * the LED glow during the boot window. Setting them off here, ahead of
+   * Serial.begin() and the settle delay, is what keeps them dark while the
+   * terminal initialises. */
+  ledSetup();
+
   Serial.begin(115200);
   delay(600);
   bootMillis = millis();
-
-  ledSetup();   /* both off until the connect sequence begins */
 
   Serial.println();
   Serial.println("L-SIAMS classroom terminal");
