@@ -19,7 +19,7 @@
         }
         .auth-hero {
             background: linear-gradient(150deg, #1E3A8A 0%, #2563EB 55%, #3B82F6 100%);
-            color: #fff; padding: 3rem; display: flex; flex-direction: column; justify-content: space-between;
+            color: #fff; padding: 3rem; display: flex; flex-direction: column; justify-content: center;
             position: relative; overflow: hidden;
         }
         /* Subtle grid motif — evokes the classroom terminals without a bitmap. */
@@ -29,21 +29,15 @@
             background-size: 44px 44px;
         }
         .auth-hero > * { position: relative; z-index: 1; }
-        .auth-hero__brand { display: flex; align-items: center; gap: .85rem; }
-        .auth-hero__logo {
-            width: 46px; height: 46px; border-radius: 12px;
-            background: rgba(255,255,255,.18); display: grid; place-items: center;
-            font-weight: 700; font-size: 20px;
-        }
-        /* Centered logo lockup in place of the old marketing copy. */
-        .auth-logo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1.05rem; }
-        .auth-logo__mark { width: 132px; height: 132px; filter: drop-shadow(0 10px 26px rgba(0,0,0,.28)); }
+        /* A single centered logo lockup — nothing else on the panel. */
+        .auth-logo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1.1rem; }
+        .auth-logo__mark { width: 148px; height: 148px; filter: drop-shadow(0 12px 30px rgba(0,0,0,.30)); }
         .auth-logo__shield { fill: url(#lsShield); stroke: rgba(255,255,255,.92); stroke-width: 2.5; }
         .auth-logo__check  { fill: none; stroke: #FBBF24; stroke-width: 8;
                              stroke-linecap: round; stroke-linejoin: round; }
-        .auth-logo__word   { font-size: 46px; font-weight: 800; letter-spacing: .04em; line-height: 1; }
-        .auth-logo__sub    { font-size: 13.5px; color: rgba(255,255,255,.7); max-width: 34ch; }
-        .auth-hero__footer { font-size: 12px; color: rgba(255,255,255,.6); }
+        .auth-logo__word   { font-size: 52px; font-weight: 800; letter-spacing: .04em; line-height: 1; margin-top: .3rem; }
+        .auth-logo__rule   { width: 60px; height: 3px; border-radius: 2px; background: #FBBF24; opacity: .95; }
+        .auth-logo__sub    { font-size: 14px; color: rgba(255,255,255,.72); max-width: 30ch; line-height: 1.5; }
 
         .auth-panel { display: flex; align-items: center; justify-content: center; padding: 2.5rem 2rem; }
         .auth-card { width: 100%; max-width: 360px; }
@@ -59,16 +53,6 @@
 <body>
 <div class="auth-shell">
     <aside class="auth-hero">
-        <div class="auth-hero__brand">
-            <span class="auth-hero__logo">L</span>
-            <div>
-                <div style="font-weight:700;font-size:17px">L-SIAMS</div>
-                <div style="font-size:11px;letter-spacing:.07em;text-transform:uppercase;opacity:.75">
-                    <?= e($schoolName ?? 'Attendance Monitoring') ?>
-                </div>
-            </div>
-        </div>
-
         <div class="auth-logo">
             <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS logo">
                 <defs>
@@ -83,11 +67,8 @@
             </svg>
 
             <div class="auth-logo__word">L&#8209;SIAMS</div>
+            <span class="auth-logo__rule"></span>
             <div class="auth-logo__sub">Secured in-classroom attendance monitoring</div>
-        </div>
-
-        <div class="auth-hero__footer">
-            
         </div>
     </aside>
 
