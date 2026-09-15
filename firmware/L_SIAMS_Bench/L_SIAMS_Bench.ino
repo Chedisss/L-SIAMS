@@ -407,6 +407,18 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
 #define LED_ACCEPT_MS       800    /* green flash when a tap/scan is accepted  */
 #define LED_REJECT_MS      1500    /* red flash, longer so a refusal is seen   */
 
+/* ONBOARD status LED — the fallback while the external green/red LEDs are not
+ * wired. Most ESP32 dev boards have ONE controllable LED (blue) on GPIO 2; the
+ * red one is a power indicator hardwired on and cannot be driven from code. So
+ * with a single colour, the STATE is told apart by blink PATTERN, not colour:
+ *   accept -> one short steady blip   refuse -> a burst of fast blinks
+ *   connecting -> fast blink          ready -> a brief hold        halt -> slow blink
+ * Set USE_ONBOARD_LED to 0 to silence it. If the blue LED is on another pin,
+ * change PIN_ONBOARD_LED; if it lights on LOW, set ONBOARD_ACTIVE_HIGH to 0. */
+#define USE_ONBOARD_LED       1
+#define PIN_ONBOARD_LED       2
+#define ONBOARD_ACTIVE_HIGH   1
+
 /* A one-shot flash overrides the steady baseline until it expires, then the
  * baseline (normally off = "ready to scan") is restored. Kept non-blocking so
  * lighting an LED never delays reading the next card. */
@@ -472,6 +484,66 @@ static void ledHaltIndicator(bool transient) {
   } else {
     ledApply(2);
   }
+}
+
+/* --- onboard single-colour LED: patterns stand in for colours ------------- */
+static uint8_t  obPattern = 0;   /* 0 idle, 1 steady, 2 fast blink            */
+static uint32_t obUntil   = 0;   /* millis() at which the current pattern ends */
+static uint32_t obPhase   = 0;
+static bool     obOn      = false;
+
+static void obWrite(bool on) {
+#if USE_ONBOARD_LED
+  const bool level = ONBOARD_ACTIVE_HIGH ? on : !on;
+  digitalWrite(PIN_ONBOARD_LED, level ? HIGH : LOW);
+#else
+  (void) on;
+#endif
+}
+
+static void obSetup() {
+#if USE_ONBOARD_LED
+  pinMode(PIN_ONBOARD_LED, OUTPUT);
+  obWrite(false);
+#endif
+}
+
+/* Play a pattern for a fixed time: 1 = steady blip, 2 = fast blink burst. */
+static void obStart(uint8_t pattern, uint32_t ms) {
+#if USE_ONBOARD_LED
+  obPattern = pattern;
+  obUntil   = millis() + ms;
+  obPhase   = millis();
+  obOn      = true;
+  obWrite(true);
+#else
+  (void) pattern; (void) ms;
+#endif
+}
+
+/* Called each normal loop turn: advance/expire the onboard pattern. Kept
+ * non-blocking so it never delays reading the next card. */
+static void obService() {
+#if USE_ONBOARD_LED
+  if (obPattern == 0) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (now >= obUntil) {
+    obPattern = 0;
+    obWrite(false);
+    return;
+  }
+  if (obPattern == 1) {          /* steady hold */
+    obWrite(true);
+    return;
+  }
+  if (now - obPhase >= 120) {    /* fast blink */
+    obPhase = now;
+    obOn    = !obOn;
+    obWrite(obOn);
+  }
+#endif
 }
 
 /* ----------------------------------------------------------------- state -- */
@@ -2022,6 +2094,7 @@ static void handleFingerprint() {
   if (search == FINGERPRINT_NOTFOUND) {
     Serial.println("\nFinger: NOT RECOGNISED — this print is not enrolled on this terminal.");
     ledFlash(2, LED_REJECT_MS);   /* red: finger not accepted */
+    obStart(2, 1200);             /* onboard: fast-blink burst = not recognised */
     return;
   }
 
@@ -2063,6 +2136,7 @@ static void handleFingerprint() {
     JsonVariantConst session = response["data"]["session"];
 
     ledFlash(1, LED_ACCEPT_MS);   /* green: the teacher's scan opened the session */
+    obStart(1, 600);              /* onboard: one steady blip = session opened */
 
     Serial.printf("        SESSION OPEN — %s with %s, roster %d\n",
                   (const char *) (session["subject_code"]  | "?"),
@@ -2098,6 +2172,7 @@ static void handleFingerprint() {
   const char *code = response["code"] | "-";
 
   ledFlash(2, LED_REJECT_MS);   /* red: the scan did not open a session */
+  obStart(2, 1200);             /* onboard: fast-blink burst = session refused */
 
   Serial.printf("        refused (HTTP %d, %s)\n", status, code);
   Serial.printf("        %s\n", (const char *) (response["message"] | ""));
@@ -2351,6 +2426,7 @@ static void sendTap(const String &uid) {
   if (status == 200 || status == 201) {
     Serial.printf("      RECORDED: %s\n", (const char *) (response["message"] | ""));
     ledFlash(1, LED_ACCEPT_MS);   /* green: this tap was accepted */
+    obStart(1, 600);              /* onboard: one steady blip = accepted */
 
     /* The network is evidently up. If anything is waiting, this is the moment
      * to send it, rather than leaving it for the next timer. */
@@ -2363,6 +2439,7 @@ static void sendTap(const String &uid) {
    * either the server refused it or never answered — so the enclosure shows
    * red whether it was a refusal or a queued-for-later tap. */
   ledFlash(2, LED_REJECT_MS);
+  obStart(2, 1200);               /* onboard: fast-blink burst = not accepted */
 
   /* A negative status is not a refusal — the server never answered, so it has
    * no opinion about this tap and the student is standing there having been
@@ -2964,6 +3041,7 @@ void setup() {
    * Serial.begin() and the settle delay, is what keeps them dark while the
    * terminal initialises. */
   ledSetup();
+  obSetup();
 
   Serial.begin(115200);
   delay(600);
@@ -3119,11 +3197,13 @@ void setup() {
       lastBlink = millis();
       blinkOn   = !blinkOn;
       digitalWrite(PIN_LED_GREEN, blinkOn ? LED_ON : LED_OFF);
+      obWrite(blinkOn);                    /* onboard blue blinks along too */
       Serial.print(".");
     }
     delay(20);
   }
   digitalWrite(PIN_LED_GREEN, LED_OFF);
+  obWrite(false);
   Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
@@ -3230,8 +3310,10 @@ void setup() {
    * that means "ready to scan". A flash on the next accept/refusal takes over
    * from here. */
   ledApply(1);
+  obWrite(true);
   delay(1000);
   ledApply(0);
+  obWrite(false);
   ledSteady = 0;
 
   Serial.println();
@@ -3251,8 +3333,11 @@ void loop() {
    * bury a line they are trying to read. */
   if (haltReason != nullptr) {
     /* Red on the enclosure: solid when a person is needed, a slow blink when
-     * the board can recover on its own and is still trying. */
+     * the board can recover on its own and is still trying. The onboard blue
+     * slow-blinks either way, as the fault sign while the external LEDs are
+     * unavailable. */
     ledHaltIndicator(haltIsTransient);
+    obWrite(((millis() / 500) % 2) != 0);
 
     if (lastHaltNag == 0 || millis() - lastHaltNag >= 10000) {
       lastHaltNag = millis();
@@ -3343,6 +3428,7 @@ void loop() {
    * First thing on the normal path so it runs even when a poll below returns
    * early. */
   ledService();
+  obService();
 
   /* One module down is not a halt — the other half of the terminal still
    * works — but it must not be silent either. Each poll below begins by
