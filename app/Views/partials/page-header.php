@@ -3,7 +3,7 @@
  * @var string                       $title
  * @var list<array{0:string,1:string}> $breadcrumbs  [[label, href], …]
  * @var string                       $actions      pre-rendered HTML
- * @var string                       $subtitle
+ * @var string                       $subtitle      accepted for compatibility but no longer shown
  */
 ?>
 <div class="page-header">
@@ -22,10 +22,6 @@
         <?php endif; ?>
 
         <h1><?= e($title) ?></h1>
-
-        <?php if (!empty($subtitle)): ?>
-            <p class="text-muted text-sm mb-0"><?= e($subtitle) ?></p>
-        <?php endif; ?>
     </div>
 
     <?php if (!empty($actions)): ?>
