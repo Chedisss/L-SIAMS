@@ -35,11 +35,16 @@
             background: rgba(255,255,255,.18); display: grid; place-items: center;
             font-weight: 700; font-size: 20px;
         }
-        .auth-hero h1 { font-size: 34px; line-height: 1.2; max-width: 15ch; margin-bottom: .75rem; }
-        .auth-hero p { color: rgba(255,255,255,.82); max-width: 46ch; font-size: 15px; }
-        .auth-features { display: grid; gap: .85rem; margin-top: 2rem; }
-        .auth-feature { display: flex; gap: .75rem; align-items: flex-start; font-size: 13.5px; color: rgba(255,255,255,.9); }
-        .auth-feature i { margin-top: .18rem; opacity: .85; }
+        /* Centered logo lockup in place of the old marketing copy. */
+        .auth-logo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1.05rem; }
+        .auth-logo__mark { width: 132px; height: 132px; filter: drop-shadow(0 10px 26px rgba(0,0,0,.28)); }
+        .auth-logo__shield { fill: url(#lsShield); stroke: rgba(255,255,255,.92); stroke-width: 2.5; }
+        .auth-logo__check  { fill: none; stroke: #FBBF24; stroke-width: 8;
+                             stroke-linecap: round; stroke-linejoin: round; }
+        .auth-logo__word   { font-size: 46px; font-weight: 800; letter-spacing: .04em; line-height: 1; }
+        .auth-logo__tag    { font-size: 12.5px; letter-spacing: .2em; text-transform: uppercase;
+                             color: #FBBF24; font-weight: 600; }
+        .auth-logo__sub    { font-size: 13.5px; color: rgba(255,255,255,.7); max-width: 34ch; }
         .auth-hero__footer { font-size: 12px; color: rgba(255,255,255,.6); }
 
         .auth-panel { display: flex; align-items: center; justify-content: center; padding: 2.5rem 2rem; }
@@ -66,32 +71,22 @@
             </div>
         </div>
 
-        <div>
-            <h1>Attendance that happens in the classroom.</h1>
-            <p>
-                Local IoT-based, multi-layer secured attendance monitoring with RFID and
-                biometric authentication. No cloud, no queues at the gate — just the
-                right students, in the right room, verified by the right teacher.
-            </p>
+        <div class="auth-logo">
+            <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS logo">
+                <defs>
+                    <linearGradient id="lsShield" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stop-color="#ffffff" stop-opacity=".24"/>
+                        <stop offset="1" stop-color="#ffffff" stop-opacity=".06"/>
+                    </linearGradient>
+                </defs>
+                <path class="auth-logo__shield"
+                      d="M50 7 L86 21 L86 48 C86 71 70 87 50 94 C30 87 14 71 14 48 L14 21 Z"/>
+                <path class="auth-logo__check" d="M33 50 L45 62 L68 36"/>
+            </svg>
 
-            <div class="auth-features">
-                <div class="auth-feature">
-                    <i class="fa-solid fa-fingerprint"></i>
-                    <span>Attendance opens only after the assigned teacher verifies their fingerprint.</span>
-                </div>
-                <div class="auth-feature">
-                    <i class="fa-solid fa-id-card"></i>
-                    <span>Section-aware RFID: a card only counts in that student's own class.</span>
-                </div>
-                <div class="auth-feature">
-                    <i class="fa-solid fa-shield-halved"></i>
-                    <span>Signed device requests, replay protection and a permanent audit trail.</span>
-                </div>
-                <div class="auth-feature">
-                    <i class="fa-solid fa-wifi"></i>
-                    <span>Runs entirely on the school LAN, and keeps recording when the network drops.</span>
-                </div>
-            </div>
+            <div class="auth-logo__word">L&#8209;SIAMS</div>
+            <div class="auth-logo__tag"><?= e($schoolName ?? 'Attendance Monitoring System') ?></div>
+            <div class="auth-logo__sub">Secured in-classroom attendance monitoring</div>
         </div>
 
         <div class="auth-hero__footer">
