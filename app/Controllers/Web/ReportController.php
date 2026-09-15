@@ -13,31 +13,55 @@ use App\Core\Request;
 use App\Core\Response;
 use App\Services\AcademicStructureService;
 use App\Services\ReportService;
+use App\Services\SchoolYearService;
 use App\Services\StudentService;
 use App\Services\TeacherService;
 
 final class ReportController extends Controller
 {
+    /**
+     * The only report types a teacher may build. The teacher view offers
+     * exactly this set, but the preview/generate endpoints are shared with the
+     * admin, so the whitelist has to be enforced here as well — otherwise a
+     * hand-crafted POST could ask for a school-wide student summary or the
+     * audit log, neither of which is a teacher's to see.
+     */
+    private const TEACHER_TYPES = [
+        'daily', 'weekly', 'monthly', 'teacher', 'section_daily', 'section_summary',
+    ];
+
     public function index(Request $request): Response
     {
+        // A school not yet through Academic Setup has no current year; the
+        // Reports page must still open, so this degrades to "no year selected"
+        // rather than propagating the exception SchoolYearService throws.
+        try {
+            $currentYear = SchoolYearService::currentId();
+        } catch (\Throwable) {
+            $currentYear = 0;
+        }
+
         return $this->view('admin.reports.index', [
-            'pageTitle'   => 'Reports',
-            'types'       => ReportService::TYPES,
-            'sections'    => AcademicStructureService::sections(['status' => 'active']),
-            'gradeLevels' => AcademicStructureService::gradeLevels(),
-            'subjects'    => AcademicStructureService::subjects(['status' => 'active']),
-            'teachers'    => TeacherService::paginate(['status' => 'active'], 1, 500)['rows'],
-            'classrooms'  => AcademicStructureService::classrooms(true),
-            'history'     => ReportService::history(20),
-            'defaultFrom' => Clock::now()->modify('-30 days')->format('Y-m-d'),
-            'defaultTo'   => Clock::today(),
+            'pageTitle'    => 'Reports',
+            'types'        => ReportService::TYPES,
+            'sections'     => AcademicStructureService::sections(['status' => 'active']),
+            'pickerSections' => AcademicStructureService::sectionsForPicker(),
+            'gradeLevels'  => AcademicStructureService::gradeLevels(),
+            'subjects'     => AcademicStructureService::subjects(['status' => 'active']),
+            'teachers'     => TeacherService::paginate(['status' => 'active'], 1, 500)['rows'],
+            'classrooms'   => AcademicStructureService::classrooms(true),
+            'schoolYears'  => SchoolYearService::all(),
+            'currentYear'  => $currentYear,
+            'history'      => ReportService::history(20),
+            'defaultFrom'  => Clock::now()->modify('-30 days')->format('Y-m-d'),
+            'defaultTo'    => Clock::today(),
         ]);
     }
 
     /** Preview before export (Part 7: "Preview before export"). */
     public function preview(Request $request): Response
     {
-        $type    = $request->string('type', 'daily');
+        $type    = $this->resolveType($request);
         $filters = $this->filters($request);
 
         $report = ReportService::build($type, $filters);
@@ -58,7 +82,7 @@ final class ReportController extends Controller
 
     public function generate(Request $request): Response
     {
-        $type   = $request->string('type', 'daily');
+        $type   = $this->resolveType($request);
         $format = $request->string('format', 'pdf');
 
         if (!in_array($format, ['pdf', 'xlsx'], true)) {
@@ -141,6 +165,21 @@ final class ReportController extends Controller
         ]);
     }
 
+    /**
+     * The requested report type, refused if the caller is a teacher asking for
+     * something outside their whitelist.
+     */
+    private function resolveType(Request $request): string
+    {
+        $type = $request->string('type', 'daily');
+
+        if (Auth::isTeacher() && !in_array($type, self::TEACHER_TYPES, true)) {
+            throw new AuthorizationException('This report is not available to teacher accounts.');
+        }
+
+        return $type;
+    }
+
     /** @return array<string,mixed> */
     private function filters(Request $request): array
     {
@@ -149,6 +188,7 @@ final class ReportController extends Controller
             'date_from'      => $request->string('date_from', ''),
             'date_to'        => $request->string('date_to', ''),
             'section_id'     => $request->int('section_id', 0) ?: null,
+            'school_year_id' => $request->int('school_year_id', 0) ?: null,
             'grade_level_id' => $request->int('grade_level_id', 0) ?: null,
             'subject_id'     => $request->int('subject_id', 0) ?: null,
             'teacher_id'     => $request->int('teacher_id', 0) ?: null,
