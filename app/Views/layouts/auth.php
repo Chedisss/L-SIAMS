@@ -18,29 +18,27 @@
             background: var(--bg);
         }
         .auth-hero {
-            background: linear-gradient(150deg, #1E3A8A 0%, #2563EB 55%, #3B82F6 100%);
-            color: #fff; padding: 3rem; display: flex; flex-direction: column; justify-content: space-between;
+            background:
+                repeating-radial-gradient(circle at 112% 4%, rgba(255,255,255,.055) 0 1.5px, transparent 1.5px 100px),
+                repeating-radial-gradient(circle at -12% 98%, rgba(255,255,255,.05) 0 1.5px, transparent 1.5px 100px),
+                linear-gradient(160deg, #1B4FCB 0%, #2464E6 58%, #2E74F2 100%);
+            color: #fff; padding: 3rem; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; text-align: center;
             position: relative; overflow: hidden;
         }
-        /* Subtle grid motif — evokes the classroom terminals without a bitmap. */
+        /* Subtle grid motif, kept under the logo lockup. */
         .auth-hero::after {
-            content: ''; position: absolute; inset: 0; opacity: .09;
+            content: ''; position: absolute; inset: 0; opacity: .07; z-index: 0;
             background-image: linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px);
-            background-size: 44px 44px;
+            background-size: 46px 46px;
         }
         .auth-hero > * { position: relative; z-index: 1; }
-        .auth-hero__brand { display: flex; align-items: center; gap: .85rem; }
-        .auth-hero__logo {
-            width: 46px; height: 46px; border-radius: 12px;
-            background: rgba(255,255,255,.18); display: grid; place-items: center;
-            font-weight: 700; font-size: 20px;
-        }
-        .auth-hero h1 { font-size: 34px; line-height: 1.2; max-width: 15ch; margin-bottom: .75rem; }
-        .auth-hero p { color: rgba(255,255,255,.82); max-width: 46ch; font-size: 15px; }
-        .auth-features { display: grid; gap: .85rem; margin-top: 2rem; }
-        .auth-feature { display: flex; gap: .75rem; align-items: flex-start; font-size: 13.5px; color: rgba(255,255,255,.9); }
-        .auth-feature i { margin-top: .18rem; opacity: .85; }
-        .auth-hero__footer { font-size: 12px; color: rgba(255,255,255,.6); }
+
+        .auth-hero__lock  { display: flex; flex-direction: column; align-items: center; max-width: 30rem; }
+        /* Official logo artwork (the PNG already includes the L-SIAMS wordmark). */
+        .auth-hero__mark img { width: 260px; max-width: 68%; height: auto; filter: drop-shadow(0 14px 32px rgba(0,0,0,.30)); }
+        .auth-hero__tag  { margin-top: .3rem; font-size: 12.5px; letter-spacing: .2em; color: rgba(219,234,255,.72); }
+        .auth-hero__desc { margin-top: 1.8rem; font-size: 17px; line-height: 1.55; color: rgba(255,255,255,.9); max-width: 24ch; }
 
         .auth-panel { display: flex; align-items: center; justify-content: center; padding: 2.5rem 2rem; }
         .auth-card { width: 100%; max-width: 360px; }
@@ -56,46 +54,12 @@
 <body>
 <div class="auth-shell">
     <aside class="auth-hero">
-        <div class="auth-hero__brand">
-            <span class="auth-hero__logo">L</span>
-            <div>
-                <div style="font-weight:700;font-size:17px">L-SIAMS</div>
-                <div style="font-size:11px;letter-spacing:.07em;text-transform:uppercase;opacity:.75">
-                    <?= e($schoolName ?? 'Attendance Monitoring') ?>
-                </div>
+        <div class="auth-hero__lock">
+            <div class="auth-hero__mark">
+                <img src="<?= e(asset('img/lsiams-logo.png')) ?>" alt="L-SIAMS logo">
             </div>
-        </div>
-
-        <div>
-            <h1>Attendance that happens in the classroom.</h1>
-            <p>
-                Local IoT-based, multi-layer secured attendance monitoring with RFID and
-                biometric authentication. No cloud, no queues at the gate — just the
-                right students, in the right room, verified by the right teacher.
-            </p>
-
-            <div class="auth-features">
-                <div class="auth-feature">
-                    <i class="fa-solid fa-fingerprint"></i>
-                    <span>Attendance opens only after the assigned teacher verifies their fingerprint.</span>
-                </div>
-                <div class="auth-feature">
-                    <i class="fa-solid fa-id-card"></i>
-                    <span>Section-aware RFID: a card only counts in that student's own class.</span>
-                </div>
-                <div class="auth-feature">
-                    <i class="fa-solid fa-shield-halved"></i>
-                    <span>Signed device requests, replay protection and a permanent audit trail.</span>
-                </div>
-                <div class="auth-feature">
-                    <i class="fa-solid fa-wifi"></i>
-                    <span>Runs entirely on the school LAN, and keeps recording when the network drops.</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="auth-hero__footer">
-            
+            <div class="auth-hero__tag">Secure Every Entry. Track Every Moment</div>
+            <p class="auth-hero__desc">Local IoT-based, multi-layer secured attendance monitoring with RFID and biometric authentication.</p>
         </div>
     </aside>
 

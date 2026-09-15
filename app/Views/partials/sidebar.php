@@ -53,7 +53,7 @@ $adminMenu = [
         ['/admin/fingerprints', 'fa-fingerprint', 'Fingerprints'],
         ['/admin/devices',      'fa-microchip',  'Classroom Terminals'],
     ],
-    'Governance' => [
+    'Oversight' => [
         ['/admin/reports',  'fa-file-lines',    'Reports'],
         ['/admin/security', 'fa-shield-halved', 'Security Center'],
         ['/admin/audit',    'fa-list-check',    'Audit Logs'],
