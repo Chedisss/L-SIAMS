@@ -32,10 +32,9 @@
         /* A single centered logo lockup — nothing else on the panel. */
         .auth-logo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1.1rem; }
         .auth-logo__mark { width: 148px; height: 148px; filter: drop-shadow(0 12px 30px rgba(0,0,0,.30)); }
-        .auth-logo__bldg      { fill: #ffffff; }
-        .auth-logo__accent    { fill: #FBBF24; }
-        .auth-logo__flag      { fill: none; stroke: #ffffff; stroke-width: 2; stroke-linecap: round; }
-        .auth-logo__flagcloth { fill: #FBBF24; }
+        .auth-logo__badge { fill: url(#lsBadge); stroke: rgba(255,255,255,.9); stroke-width: 2.5; }
+        .auth-logo__lstem { fill: #ffffff; }
+        .auth-logo__lfoot { fill: #FBBF24; }
         .auth-logo__word   { font-size: 52px; font-weight: 800; letter-spacing: .04em; line-height: 1; margin-top: .3rem; }
         .auth-logo__rule   { width: 60px; height: 3px; border-radius: 2px; background: #FBBF24; opacity: .95; }
         .auth-logo__sub    { font-size: 14px; color: rgba(255,255,255,.72); max-width: 30ch; line-height: 1.5; }
@@ -55,21 +54,21 @@
 <div class="auth-shell">
     <aside class="auth-hero">
         <div class="auth-logo">
-            <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS school building logo">
-                <path class="auth-logo__flag" d="M50 21 L50 10"/>
-                <path class="auth-logo__flagcloth" d="M50 11 L61 13.5 L50 16 Z"/>
-                <path class="auth-logo__bldg" d="M12 44 L50 21 L88 44 Z"/>
-                <path class="auth-logo__bldg" d="M22 44 L78 44 L78 78 L22 78 Z"/>
-                <path class="auth-logo__bldg" d="M16 78 L84 78 L84 83 L16 83 Z"/>
-                <circle class="auth-logo__accent" cx="50" cy="36" r="3.4"/>
-                <rect class="auth-logo__accent" x="29" y="53" width="9" height="10" rx="1.5"/>
-                <rect class="auth-logo__accent" x="62" y="53" width="9" height="10" rx="1.5"/>
-                <path class="auth-logo__accent" d="M44 78 L44 61 Q44 55 50 55 Q56 55 56 61 L56 78 Z"/>
+            <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS monogram logo">
+                <defs>
+                    <linearGradient id="lsBadge" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#ffffff" stop-opacity=".22"/>
+                        <stop offset="1" stop-color="#ffffff" stop-opacity=".06"/>
+                    </linearGradient>
+                </defs>
+                <rect class="auth-logo__badge" x="16" y="16" width="68" height="68" rx="20"/>
+                <rect class="auth-logo__lfoot" x="37" y="58" width="36" height="13" rx="6"/>
+                <rect class="auth-logo__lstem" x="37" y="27" width="13" height="44" rx="6"/>
             </svg>
 
             <div class="auth-logo__word">L&#8209;SIAMS</div>
             <span class="auth-logo__rule"></span>
-            <div class="auth-logo__sub">Smart attendance for every classroom.</div>
+            <div class="auth-logo__sub">Secure, verified attendance for every classroom.</div>
         </div>
     </aside>
 
