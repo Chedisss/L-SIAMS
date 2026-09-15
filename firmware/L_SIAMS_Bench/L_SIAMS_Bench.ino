@@ -365,20 +365,29 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
  *
  * Most ESP32 dev boards have ONE controllable LED (blue) on GPIO 2 — the red
  * one is a power indicator hardwired on and cannot be driven from code. With a
- * single colour the STATE is told apart by blink PATTERN, not colour:
- *   accept -> one short steady blip   refuse -> a burst of fast blinks
- *   connecting -> fast blink          ready -> a brief hold      halt -> slow blink
+ * single colour the STATE is told apart by how MANY times it blinks (counting
+ * is far easier to read than "fast vs slow"), at a deliberately slow, visible
+ * rate:
+ *   accepted -> 2 blinks            refused / not recognised -> 5 blinks
+ *   connecting -> steady blinking   ready -> one long hold     halt -> slow blink
  * Set USE_ONBOARD_LED to 0 to silence it. If the blue LED is on another pin,
  * change PIN_ONBOARD_LED; if it lights on LOW, set ONBOARD_ACTIVE_HIGH to 0. */
 #define USE_ONBOARD_LED       1
 #define PIN_ONBOARD_LED       2
 #define ONBOARD_ACTIVE_HIGH   1
 
-/* --- onboard single-colour LED: patterns stand in for colours ------------- */
-static uint8_t  obPattern = 0;   /* 0 idle, 1 steady, 2 fast blink            */
-static uint32_t obUntil   = 0;   /* millis() at which the current pattern ends */
-static uint32_t obPhase   = 0;
-static bool     obOn      = false;
+/* How the two event patterns look. Slow enough that each blink is a distinct
+ * flash, not a flicker; the count (2 vs 5) is what tells accepted from refused. */
+#define OB_ACCEPT_BLINKS      2
+#define OB_ACCEPT_MS        260    /* ms per on/off phase for an accept blink   */
+#define OB_REFUSE_BLINKS      5
+#define OB_REFUSE_MS        220    /* a touch quicker + more blinks = "alarm"   */
+
+/* --- onboard single-colour LED: a counted blink burst stands in for colour - */
+static uint16_t obHalf   = 0;    /* on/off phases left to play; 0 = idle       */
+static uint32_t obPeriod = 0;    /* ms per phase                               */
+static uint32_t obPhase  = 0;    /* millis() of the last phase change          */
+static bool     obOn     = false;
 
 static void obWrite(bool on) {
 #if USE_ONBOARD_LED
@@ -396,41 +405,38 @@ static void obSetup() {
 #endif
 }
 
-/* Play a pattern for a fixed time: 1 = steady blip, 2 = fast blink burst. */
-static void obStart(uint8_t pattern, uint32_t ms) {
+/* Blink `blinks` times at `periodMs` per phase, then leave the LED off. */
+static void obBlink(uint8_t blinks, uint32_t periodMs) {
 #if USE_ONBOARD_LED
-  obPattern = pattern;
-  obUntil   = millis() + ms;
-  obPhase   = millis();
-  obOn      = true;
+  obHalf   = (uint16_t) blinks * 2;
+  obPeriod = periodMs;
+  obPhase  = millis();
+  obOn     = true;
   obWrite(true);
 #else
-  (void) pattern; (void) ms;
+  (void) blinks; (void) periodMs;
 #endif
 }
 
-/* Called each normal loop turn: advance/expire the onboard pattern. Kept
- * non-blocking so it never delays reading the next card. */
+/* Called each normal loop turn: advance the blink burst. Non-blocking, so
+ * lighting the LED never delays reading the next card. */
 static void obService() {
 #if USE_ONBOARD_LED
-  if (obPattern == 0) {
+  if (obHalf == 0) {
     return;
   }
   const uint32_t now = millis();
-  if (now >= obUntil) {
-    obPattern = 0;
+  if (now - obPhase < obPeriod) {
+    return;
+  }
+  obPhase = now;
+  obHalf--;
+  if (obHalf == 0) {           /* burst finished — rest dark */
     obWrite(false);
     return;
   }
-  if (obPattern == 1) {          /* steady hold */
-    obWrite(true);
-    return;
-  }
-  if (now - obPhase >= 120) {    /* fast blink */
-    obPhase = now;
-    obOn    = !obOn;
-    obWrite(obOn);
-  }
+  obOn = !obOn;
+  obWrite(obOn);
 #endif
 }
 
@@ -1981,7 +1987,7 @@ static void handleFingerprint() {
 
   if (search == FINGERPRINT_NOTFOUND) {
     Serial.println("\nFinger: NOT RECOGNISED — this print is not enrolled on this terminal.");
-    obStart(2, 1200);             /* onboard: fast-blink burst = not recognised */
+    obBlink(OB_REFUSE_BLINKS, OB_REFUSE_MS);   /* onboard: 5 blinks = not recognised */
     return;
   }
 
@@ -2022,7 +2028,7 @@ static void handleFingerprint() {
      * into a session everyone has been told is not open. */
     JsonVariantConst session = response["data"]["session"];
 
-    obStart(1, 600);              /* onboard: one steady blip = session opened */
+    obBlink(OB_ACCEPT_BLINKS, OB_ACCEPT_MS);   /* onboard: 2 blinks = session opened */
 
     Serial.printf("        SESSION OPEN — %s with %s, roster %d\n",
                   (const char *) (session["subject_code"]  | "?"),
@@ -2057,7 +2063,7 @@ static void handleFingerprint() {
 
   const char *code = response["code"] | "-";
 
-  obStart(2, 1200);             /* onboard: fast-blink burst = session refused */
+  obBlink(OB_REFUSE_BLINKS, OB_REFUSE_MS);     /* onboard: 5 blinks = session refused */
 
   Serial.printf("        refused (HTTP %d, %s)\n", status, code);
   Serial.printf("        %s\n", (const char *) (response["message"] | ""));
@@ -2310,7 +2316,7 @@ static void sendTap(const String &uid) {
 
   if (status == 200 || status == 201) {
     Serial.printf("      RECORDED: %s\n", (const char *) (response["message"] | ""));
-    obStart(1, 600);              /* onboard: one steady blip = accepted */
+    obBlink(OB_ACCEPT_BLINKS, OB_ACCEPT_MS);   /* onboard: 2 blinks = accepted */
 
     /* The network is evidently up. If anything is waiting, this is the moment
      * to send it, rather than leaving it for the next timer. */
@@ -2322,7 +2328,7 @@ static void sendTap(const String &uid) {
   /* Everything past here is "not accepted" from the student's point of view —
    * either the server refused it or never answered — so the onboard LED gives
    * the fast-blink burst whether it was a refusal or a queued-for-later tap. */
-  obStart(2, 1200);               /* onboard: fast-blink burst = not accepted */
+  obBlink(OB_REFUSE_BLINKS, OB_REFUSE_MS);       /* onboard: 5 blinks = not accepted */
 
   /* A negative status is not a refusal — the server never answered, so it has
    * no opinion about this tap and the student is standing there having been
@@ -3063,7 +3069,7 @@ void setup() {
   bool     blinkOn    = false;
 
   while (WiFi.status() != WL_CONNECTED && millis() - started < 20000) {
-    if (millis() - lastBlink >= 150) {
+    if (millis() - lastBlink >= 250) {
       lastBlink = millis();
       blinkOn   = !blinkOn;
       obWrite(blinkOn);                    /* onboard blue blinks while joining */
@@ -3197,8 +3203,9 @@ void loop() {
    * bury a line they are trying to read. */
   if (haltReason != nullptr) {
     /* The onboard LED slow-blinks as the fault sign whether the halt needs a
-     * person or can clear itself. */
-    obWrite(((millis() / 500) % 2) != 0);
+     * person or can clear itself. Slower than any event burst so it never reads
+     * as an accept/refuse. */
+    obWrite(((millis() / 700) % 2) != 0);
 
     if (lastHaltNag == 0 || millis() - lastHaltNag >= 10000) {
       lastHaltNag = millis();
