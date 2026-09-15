@@ -32,9 +32,10 @@
         /* A single centered logo lockup — nothing else on the panel. */
         .auth-logo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1.1rem; }
         .auth-logo__mark { width: 148px; height: 148px; filter: drop-shadow(0 12px 30px rgba(0,0,0,.30)); }
-        .auth-logo__shield { fill: url(#lsShield); stroke: rgba(255,255,255,.92); stroke-width: 2.5; }
-        .auth-logo__check  { fill: none; stroke: #FBBF24; stroke-width: 8;
-                             stroke-linecap: round; stroke-linejoin: round; }
+        .auth-logo__cap    { fill: rgba(255,255,255,.14); stroke: rgba(255,255,255,.9); stroke-width: 2.5; stroke-linejoin: round; }
+        .auth-logo__board  { fill: #ffffff; }
+        .auth-logo__tassel { fill: none; stroke: #FBBF24; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+        .auth-logo__bob, .auth-logo__button { fill: #FBBF24; }
         .auth-logo__word   { font-size: 52px; font-weight: 800; letter-spacing: .04em; line-height: 1; margin-top: .3rem; }
         .auth-logo__rule   { width: 60px; height: 3px; border-radius: 2px; background: #FBBF24; opacity: .95; }
         .auth-logo__sub    { font-size: 14px; color: rgba(255,255,255,.72); max-width: 30ch; line-height: 1.5; }
@@ -54,21 +55,17 @@
 <div class="auth-shell">
     <aside class="auth-hero">
         <div class="auth-logo">
-            <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS logo">
-                <defs>
-                    <linearGradient id="lsShield" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0" stop-color="#ffffff" stop-opacity=".24"/>
-                        <stop offset="1" stop-color="#ffffff" stop-opacity=".06"/>
-                    </linearGradient>
-                </defs>
-                <path class="auth-logo__shield"
-                      d="M50 7 L86 21 L86 48 C86 71 70 87 50 94 C30 87 14 71 14 48 L14 21 Z"/>
-                <path class="auth-logo__check" d="M33 50 L45 62 L68 36"/>
+            <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS graduation cap logo">
+                <path class="auth-logo__cap"    d="M28 42 L28 58 Q28 65 50 65 Q72 65 72 58 L72 42 Z"/>
+                <path class="auth-logo__board"  d="M50 20 L90 37 L50 54 L10 37 Z"/>
+                <path class="auth-logo__tassel" d="M50 37 L82 39 L82 56"/>
+                <circle class="auth-logo__bob"    cx="82" cy="59" r="3.6"/>
+                <circle class="auth-logo__button" cx="50" cy="37" r="2.6"/>
             </svg>
 
             <div class="auth-logo__word">L&#8209;SIAMS</div>
             <span class="auth-logo__rule"></span>
-            <div class="auth-logo__sub">Secured in-classroom attendance monitoring</div>
+            <div class="auth-logo__sub">Smart attendance for every classroom.</div>
         </div>
     </aside>
 
