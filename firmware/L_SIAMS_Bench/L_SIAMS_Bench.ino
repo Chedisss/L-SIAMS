@@ -379,16 +379,11 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
 /* How the two event patterns look. Slow enough that each blink is a distinct
  * flash, not a flicker; the count (2 vs 5) is what tells accepted from refused. */
 #define OB_ACCEPT_BLINKS      2
-#define OB_ACCEPT_MS        260    /* ms per on/off phase for an accept blink   */
-#define OB_REFUSE_BLINKS      5
-#define OB_REFUSE_MS        220    /* a touch quicker + more blinks = "alarm"   */
+#define OB_ACCEPT_MS        150    /* ms per on/off phase -> accept ~0.6 s total */
+#define OB_REFUSE_BLINKS      4
+#define OB_REFUSE_MS        150    /* refuse ~1.2 s total; count (2 vs 4) tells them apart */
 
 /* --- onboard single-colour LED: a counted blink burst stands in for colour - */
-static uint16_t obHalf   = 0;    /* on/off phases left to play; 0 = idle       */
-static uint32_t obPeriod = 0;    /* ms per phase                               */
-static uint32_t obPhase  = 0;    /* millis() of the last phase change          */
-static bool     obOn     = false;
-
 static void obWrite(bool on) {
 #if USE_ONBOARD_LED
   const bool level = ONBOARD_ACTIVE_HIGH ? on : !on;
@@ -405,38 +400,25 @@ static void obSetup() {
 #endif
 }
 
-/* Blink `blinks` times at `periodMs` per phase, then leave the LED off. */
+/* Blink `blinks` times at `periodMs` per phase, then leave the LED off.
+ *
+ * Deliberately BLOCKING. It is called the instant a tap or scan is decided, and
+ * the burst must show exactly that many blinks at an even interval. A
+ * loop-serviced blinker could not: the main loop spends whole seconds inside
+ * blocking network polls, so its phases advanced only when the loop came round
+ * — uneven, and far longer than asked (a 1.5 s burst stretched to ~4 s). A
+ * student has just tapped and the card debounce is 2.5 s, so pausing here to
+ * blink cleanly costs nothing, and every blink is now exactly periodMs. */
 static void obBlink(uint8_t blinks, uint32_t periodMs) {
 #if USE_ONBOARD_LED
-  obHalf   = (uint16_t) blinks * 2;
-  obPeriod = periodMs;
-  obPhase  = millis();
-  obOn     = true;
-  obWrite(true);
+  for (uint8_t i = 0; i < blinks; i++) {
+    obWrite(true);
+    delay(periodMs);
+    obWrite(false);
+    delay(periodMs);
+  }
 #else
   (void) blinks; (void) periodMs;
-#endif
-}
-
-/* Called each normal loop turn: advance the blink burst. Non-blocking, so
- * lighting the LED never delays reading the next card. */
-static void obService() {
-#if USE_ONBOARD_LED
-  if (obHalf == 0) {
-    return;
-  }
-  const uint32_t now = millis();
-  if (now - obPhase < obPeriod) {
-    return;
-  }
-  obPhase = now;
-  obHalf--;
-  if (obHalf == 0) {           /* burst finished — rest dark */
-    obWrite(false);
-    return;
-  }
-  obOn = !obOn;
-  obWrite(obOn);
 #endif
 }
 
@@ -3292,10 +3274,6 @@ void loop() {
     return;
   }
 
-  /* Advance/expire the onboard LED pattern and hold the resting state (off).
-   * First thing on the normal path so it runs even when a poll below returns
-   * early. */
-  obService();
 
   /* One module down is not a halt — the other half of the terminal still
    * works — but it must not be silent either. Each poll below begins by
