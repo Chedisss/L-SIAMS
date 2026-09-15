@@ -35,13 +35,16 @@
  *     GND    -> GND
  *
  *   Status LEDs (active-low / common anode, each through a 220-330 ohm resistor)
- *     3V3 -> LED(+) -> LED(-) -> resistor -> GPIO 25   (green)
- *     3V3 -> LED(+) -> LED(-) -> resistor -> GPIO 26   (red)
+ *     5V -> LED(+) -> LED(-) -> resistor -> GPIO 25   (green)
+ *     5V -> LED(+) -> LED(-) -> resistor -> GPIO 26   (red)
+ *     LED board ground is shared with the ESP32 ground.
  *
- *   Common to 3V3, NOT 5V — the ESP32 pins are not 5 V tolerant. NOT GPIO
- *   34/35 (nor 36/39) either: those are input-only and cannot drive an LED at
- *   all. 25/26 are free output pins here; good alternates are 32/33, 27/14,
- *   13/4. Polarity lives in LED_ON/LED_OFF near the pin defines.
+ *   Common on this build is the board's 5V pin — the clear/high-Vf LEDs used
+ *   here do not light on 3.3 V. Standard low-Vf red/green LEDs work on 3V3
+ *   instead, which is gentler on the pins. NOT GPIO 34/35 (nor 36/39): those
+ *   are input-only and cannot drive an LED at all. 25/26 are free output pins
+ *   here; good alternates are 32/33, 27/14, 13/4. Polarity lives in
+ *   LED_ON/LED_OFF near the pin defines.
  *
  *   The sensor pair is the REVERSE of the silkscreen, and that is deliberate:
  *   17/16 is the pair proven working on this hardware. UART2 is not fixed to
@@ -374,19 +377,26 @@ static const char *CLAIM_TOKEN = LS_CLAIM_TOKEN;
  * 16/17), and clear of the strapping pins (0/2/12/15) and the flash pins
  * (6-11). Good alternates if the routing is awkward: 32/33, 27/14, 13/4.
  *
- * This build is ACTIVE-LOW (common anode): each LED's + leg goes to the 3.3 V
+ * This build is ACTIVE-LOW (common anode): each LED's + leg goes to the common
  * rail and the GPIO is the cathode side, so the pin SINKS current — a LOW pin
- * lights the LED, a HIGH pin turns it off.
+ * lights the LED, a HIGH pin turns it off. The LED board's ground is shared
+ * with the ESP32's ground.
  *
- *   3V3 --[common +]-- LED(+) -- LED(-) --[220-330 ohm]-- GPIO 25 (green)
- *   3V3 --[common +]-- LED(+) -- LED(-) --[220-330 ohm]-- GPIO 26 (red)
+ *   5V --[common +]-- LED(+) -- LED(-) --[220-330 ohm]-- GPIO 25 (green)
+ *   5V --[common +]-- LED(+) -- LED(-) --[220-330 ohm]-- GPIO 26 (red)
  *
- * Use 3.3 V for the common, NOT 5 V. An ESP32 pin is not 5 V tolerant (~3.6 V
- * absolute max), and with 5 V on the anode the pin is pushed above its rating
- * while "off" (HIGH) and — worse — at boot before pinMode() runs, when the pin
- * is a floating input. If 5 V is truly required, switch it with a transistor
- * rather than off the pin. To rebuild as active-high (GPIO -> resistor ->
- * LED(+) -> LED(-) -> GND), flip LED_ON/LED_OFF below to HIGH/LOW. */
+ * The common is the board's 5V pin here, because the clear/high-Vf LEDs fitted
+ * do not light on 3.3 V. That is workable but has two consequences to know:
+ *   - "Off" drives the pin HIGH (3.3 V) against a 5 V anode, so ~1.7 V sits
+ *     across the LED. A high-Vf LED (blue/white/most greens) stays fully dark;
+ *     a low-Vf red may glow very faintly. Raise the red's resistor if it does.
+ *   - At boot, before ledSetup() sets the pin to OUTPUT, the pin is a floating
+ *     input and floats up toward (5V - Vf). ledSetup() therefore runs as the
+ *     very first line of setup() to drive it off (HIGH) as early as possible.
+ * Standard low-Vf red/green LEDs avoid all of this on a 3V3 common. If bright
+ * 5 V LEDs are wanted without loading the pin, switch them with a transistor.
+ * To rebuild as active-high (GPIO -> resistor -> LED(+) -> LED(-) -> GND), flip
+ * LED_ON/LED_OFF below to HIGH/LOW. */
 #define PIN_LED_GREEN      25
 #define PIN_LED_RED        26
 
