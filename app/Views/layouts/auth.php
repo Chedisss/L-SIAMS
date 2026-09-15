@@ -32,10 +32,10 @@
         /* A single centered logo lockup — nothing else on the panel. */
         .auth-logo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1.1rem; }
         .auth-logo__mark { width: 148px; height: 148px; filter: drop-shadow(0 12px 30px rgba(0,0,0,.30)); }
-        .auth-logo__cap    { fill: rgba(255,255,255,.14); stroke: rgba(255,255,255,.9); stroke-width: 2.5; stroke-linejoin: round; }
-        .auth-logo__board  { fill: #ffffff; }
-        .auth-logo__tassel { fill: none; stroke: #FBBF24; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
-        .auth-logo__bob, .auth-logo__button { fill: #FBBF24; }
+        .auth-logo__bldg      { fill: #ffffff; }
+        .auth-logo__accent    { fill: #FBBF24; }
+        .auth-logo__flag      { fill: none; stroke: #ffffff; stroke-width: 2; stroke-linecap: round; }
+        .auth-logo__flagcloth { fill: #FBBF24; }
         .auth-logo__word   { font-size: 52px; font-weight: 800; letter-spacing: .04em; line-height: 1; margin-top: .3rem; }
         .auth-logo__rule   { width: 60px; height: 3px; border-radius: 2px; background: #FBBF24; opacity: .95; }
         .auth-logo__sub    { font-size: 14px; color: rgba(255,255,255,.72); max-width: 30ch; line-height: 1.5; }
@@ -55,12 +55,16 @@
 <div class="auth-shell">
     <aside class="auth-hero">
         <div class="auth-logo">
-            <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS graduation cap logo">
-                <path class="auth-logo__cap"    d="M28 42 L28 58 Q28 65 50 65 Q72 65 72 58 L72 42 Z"/>
-                <path class="auth-logo__board"  d="M50 20 L90 37 L50 54 L10 37 Z"/>
-                <path class="auth-logo__tassel" d="M50 37 L82 39 L82 56"/>
-                <circle class="auth-logo__bob"    cx="82" cy="59" r="3.6"/>
-                <circle class="auth-logo__button" cx="50" cy="37" r="2.6"/>
+            <svg class="auth-logo__mark" viewBox="0 0 100 100" role="img" aria-label="L-SIAMS school building logo">
+                <path class="auth-logo__flag" d="M50 21 L50 10"/>
+                <path class="auth-logo__flagcloth" d="M50 11 L61 13.5 L50 16 Z"/>
+                <path class="auth-logo__bldg" d="M12 44 L50 21 L88 44 Z"/>
+                <path class="auth-logo__bldg" d="M22 44 L78 44 L78 78 L22 78 Z"/>
+                <path class="auth-logo__bldg" d="M16 78 L84 78 L84 83 L16 83 Z"/>
+                <circle class="auth-logo__accent" cx="50" cy="36" r="3.4"/>
+                <rect class="auth-logo__accent" x="29" y="53" width="9" height="10" rx="1.5"/>
+                <rect class="auth-logo__accent" x="62" y="53" width="9" height="10" rx="1.5"/>
+                <path class="auth-logo__accent" d="M44 78 L44 61 Q44 55 50 55 Q56 55 56 61 L56 78 Z"/>
             </svg>
 
             <div class="auth-logo__word">L&#8209;SIAMS</div>
