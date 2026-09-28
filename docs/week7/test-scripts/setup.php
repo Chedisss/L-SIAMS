@@ -12,6 +12,9 @@ $db->execute("UPDATE api_keys SET status='revoked' WHERE device_row_id=4 AND sta
 $db->execute("UPDATE users SET locked_until=NULL, failed_login_count=0");
 $db->execute("DELETE FROM rate_limits"); $db->execute("DELETE FROM login_attempts");
 $db->execute("UPDATE user_sessions SET terminated_at=NOW(), termination_reason='logout' WHERE terminated_at IS NULL");
+foreach (['student_subject_enrolments', 'student_section_history'] as $t) {
+    $db->execute("DELETE FROM $t WHERE student_id IN (SELECT student_id FROM students WHERE student_number='2026-IT-0001')");
+}
 $db->execute("DELETE FROM students WHERE student_number='2026-IT-0001'");
 $k = ApiKeyService::generateForDevice(4, 1);
 $db->execute("UPDATE devices SET last_heartbeat_at=NOW(), status='active', claim_status='claimed' WHERE id=4");

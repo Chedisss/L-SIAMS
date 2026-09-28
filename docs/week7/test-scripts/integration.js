@@ -247,6 +247,22 @@ async function closeTemp() { for (const c of temp) await c.close().catch(() => {
         `close HTTP ${end.status} → student ${st}; reopen HTTP ${re.status} ${re.code}; tap HTTP ${t.status} → ${after}`];
     });
 
+
+  await test('IT-23', 'Security ↔ Dashboard', 'Teacher opens the class by password (fingerprint failover)',
+    'Session opened by password; admin dashboard shows the override count and a Needs-attention entry', async () => {
+      await device('POST', '/api/attendance/end', {});
+      const t = await newPage(); await login(t, 'lbautista', PW);
+      const tok = await t.getAttribute('meta[name="csrf-token"]', 'content');
+      const r = await t.request.post(B + '/teacher/start-session', { headers: { 'X-CSRF-Token': tok, Accept: 'application/json' }, form: { password: PW, password_confirmation: PW } });
+      const method = sql("SELECT opened_method FROM attendance_sessions WHERE schedule_id=18 AND session_date=CURDATE()");
+      await admin.goto(B + '/admin', { waitUntil: 'load' }); await admin.waitForTimeout(800);
+      const body = await admin.textContent('body');
+      const tile = (body.match(/(\d+) fingerprint override\(s\) this week/) || [])[1];
+      await shot(admin, 'override-on-dashboard');
+      return [r.status() === 200 && method === 'password' && +tile >= 1 && body.includes('opened by password instead of fingerprint'),
+        `HTTP ${r.status()}; opened_method=${method}; tile shows ${tile} override(s); Needs-attention entry: ${body.includes('opened by password instead of fingerprint')}`];
+    });
+
   // ================= Reports <-> Database =================
   const today = sql('SELECT CURDATE()');
   await test('IT-10', 'Reports ↔ Database', 'Daily Attendance report returns the stored records',
