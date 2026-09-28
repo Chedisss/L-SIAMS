@@ -1,0 +1,178 @@
+[
+  {
+    "id": "IT-01",
+    "group": "UI ↔ Authentication",
+    "name": "Administrator signs in with valid credentials",
+    "expected": "Redirected to the Administrator Dashboard",
+    "actual": "Landed on /admin (\"Dashboard · L-SIAMS\")",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-02",
+    "group": "UI ↔ Authentication",
+    "name": "Sign-in with a wrong password",
+    "expected": "Access denied; error message shown; stays on the sign-in page",
+    "actual": "Stayed on /login; message: \"Invalid username or password.\"",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-03",
+    "group": "UI ↔ Authentication",
+    "name": "Opening an admin page without signing in",
+    "expected": "Redirected to the sign-in page",
+    "actual": "Redirected to /login",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-04",
+    "group": "UI ↔ Authentication",
+    "name": "Teacher account opens an administrator page",
+    "expected": "Access refused (role-based access control)",
+    "actual": "HTTP 403 at /admin/users",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-05",
+    "group": "Authentication ↔ Database",
+    "name": "Successful sign-in is recorded",
+    "expected": "New login_history row (success) and an active user_sessions row",
+    "actual": "login_history +1; 1 active session(s)",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-06",
+    "group": "Authentication ↔ Database",
+    "name": "Five wrong passwords lock the account",
+    "expected": "users.locked_until set ~15 min ahead; the correct password is then refused",
+    "actual": "locked_until = now + 14 min; correct password refused",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-07",
+    "group": "Authentication ↔ Database",
+    "name": "Signing out ends the session",
+    "expected": "user_sessions row gets terminated_at; protected pages redirect to sign-in",
+    "actual": "terminated (logout); /teacher now → /login",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-08",
+    "group": "UI ↔ Database",
+    "name": "Add Student form saves a new student",
+    "expected": "New row in students table with the entered details",
+    "actual": "Saved: 147 | Integration Tester | section 2",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-09",
+    "group": "UI ↔ Database",
+    "name": "Dashboard figures match the database",
+    "expected": "Students and Teachers counts on the dashboard equal the database counts",
+    "actual": "Students UI 147 / DB 147; Teachers UI 7 / DB 7 (page http://127.0.0.1:8081/admin)",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-12",
+    "group": "Terminal ↔ Server",
+    "name": "Request without a signature",
+    "expected": "Refused with HTTP 401; nothing recorded",
+    "actual": "HTTP 401 DEVICE_UNKNOWN",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-13",
+    "group": "Terminal ↔ Server",
+    "name": "Request with a tampered signature",
+    "expected": "Refused (SIGNATURE_INVALID)",
+    "actual": "HTTP 401 SIGNATURE_INVALID",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-14",
+    "group": "Terminal ↔ Database",
+    "name": "Terminal heartbeat",
+    "expected": "Accepted; devices.last_heartbeat_at and a device_heartbeats row written",
+    "actual": "HTTP 200; heartbeat rows +1; last heartbeat 0s ago",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-15",
+    "group": "Terminal ↔ Database",
+    "name": "Student taps before the teacher opens the session",
+    "expected": "Refused (SESSION_NOT_OPEN); no attendance row",
+    "actual": "HTTP 409 SESSION_NOT_OPEN",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-16",
+    "group": "Terminal ↔ Database",
+    "name": "Teacher fingerprint opens the scheduled class",
+    "expected": "Session opened in attendance_sessions for the scheduled subject/section/room",
+    "actual": "HTTP 201 SESSION_OPENED; ATT-2026-000101 | status open | roster 32",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-17",
+    "group": "Terminal ↔ Database",
+    "name": "Student RFID tap after the session opens",
+    "expected": "Time-in recorded in attendance_records with status",
+    "actual": "HTTP 201: \"Time in recorded for Ocampo, Adrian.\"; DB time_in 12:53:24 | present",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-18",
+    "group": "Terminal ↔ Database",
+    "name": "Same tap re-sent (network retry)",
+    "expected": "Accepted as a duplicate; still exactly one attendance row",
+    "actual": "HTTP 201 TIME_IN_RECORDED; rows for student = 1",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-19",
+    "group": "Terminal ↔ Database",
+    "name": "Card of a student from another section",
+    "expected": "Refused; not recorded in this class",
+    "actual": "HTTP 403 SECTION_MISMATCH; rows written 0",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-20",
+    "group": "Terminal ↔ Server",
+    "name": "Replayed request (same nonce reused)",
+    "expected": "Second copy refused as a replay",
+    "actual": "first HTTP 200; replay HTTP 409 REPLAY_DETECTED",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-21",
+    "group": "Terminal ↔ Web UI",
+    "name": "Tap appears on the teacher dashboard",
+    "expected": "Teacher sees the open session and the tapped student",
+    "actual": "\"Session open\" shown: true; Ocampo listed: true",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-22",
+    "group": "Terminal ↔ Database",
+    "name": "Class closed early, reopened by fingerprint, absent student taps",
+    "expected": "Session reopens; the student marked Absent at close is recorded as present/late",
+    "actual": "close HTTP 200 → student Absent; reopen HTTP 201 SESSION_OPENED; tap HTTP 201 → Present at 12:53:26",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-10",
+    "group": "Reports ↔ Database",
+    "name": "Daily Attendance report returns the stored records",
+    "expected": "Report row count equals attendance records in the database for the day",
+    "actual": "Report 32 rows; database 32 records",
+    "status": "Pass"
+  },
+  {
+    "id": "IT-11",
+    "group": "Reports ↔ Database",
+    "name": "Export the report as PDF and Excel and save it",
+    "expected": "Valid PDF and XLSX files downloaded; generated_reports row saved",
+    "actual": "PDF 32 KB (%PDF), XLSX 5 KB (zip), generated_reports +1",
+    "status": "Pass"
+  }
+]
