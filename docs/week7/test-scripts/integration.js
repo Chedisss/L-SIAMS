@@ -1,8 +1,8 @@
 // L-SIAMS integration tests: drives the real web app and device API on the
+// test copy (port 8081, database lsiams_test) and checks the database directly.
 // How it was run (Week 7): a full copy of the project served on 127.0.0.1:8081 with its own
 // database (lsiams_test) and realtime port, prepared by setup.php, whose JSON output was
 // saved to /tmp/claude-0/it_cfg.json. Run with Playwright: node integration.js
-// test copy (port 8081, database lsiams_test) and checks the database directly.
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
 const crypto = require('crypto');
