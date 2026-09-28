@@ -436,6 +436,22 @@ return static function (Database $db): void {
         ]);
     }
 
+    // A template only opens a session on a terminal whose sensor is recorded
+    // as holding it (fingerprint_slots, per device). Without these rows every
+    // "enrolled" demo teacher was refused as FINGERPRINT_UNKNOWN on every
+    // terminal. Each demo sensor holds every teacher at the same slot, as a
+    // full sync would leave it.
+    $db->execute(
+        "INSERT INTO fingerprint_slots
+            (fingerprint_id, device_row_id, sensor_template_id, source, status, synced_at, created_at)
+         SELECT fp.fingerprint_id, d.id, fp.sensor_template_id, 'synced', 'present', :now, :now2
+           FROM fingerprint_templates fp
+           JOIN teachers t ON t.teacher_id = fp.teacher_id
+           JOIN devices d  ON d.device_id LIKE 'DEMO-DEV-%'
+          WHERE t.employee_number LIKE 'DEMO-T-%'",
+        ['now' => $now, 'now2' => $now]
+    );
+
     // No API keys are seeded. A key can only be shown once, at creation, and a
     // seeder cannot show anything to anybody — a key written here would be a
     // credential nobody holds and nobody can use. Register the terminals from
