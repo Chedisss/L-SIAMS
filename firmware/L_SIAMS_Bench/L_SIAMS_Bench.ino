@@ -2168,13 +2168,53 @@ static void pollCardEnrollment() {
  * discarded because of a router.
  *
  * Held in RTC memory so a watchdog reset or a brownout does not take the
- * queue with it. That memory survives a reset but not a power cut, which is
- * the honest limit of this: forty taps through a network outage, not through
- * a mains failure.
+ * queue with it. That memory survives a reset but not a power cut, so every
+ * change is also written to flash (NVS) and read back at boot when RTC memory
+ * comes up empty. Forty taps now survive a mains failure as well as a network
+ * outage. A power cut between a successful send and the flash update can
+ * resend a batch; the server's request_id check records each tap once.
  * ========================================================================= */
+
+static Preferences queueStore;
 
 static void sanityCheckQueue() {
   if (tapQueueCount > TAP_QUEUE_MAX) tapQueueCount = 0;
+}
+
+/* Mirror the queue to flash. Written only when it changes (a held tap or a
+ * flush), so an ordinary day with the server reachable writes nothing. */
+static void persistQueue() {
+  if (!queueStore.begin("lsiams-queue", false)) {
+    Serial.println("      (flash copy of the queue could not be opened; RTC copy only)");
+    return;
+  }
+
+  if (tapQueueCount == 0) {
+    queueStore.remove("taps");
+    queueStore.putUShort("count", 0);
+  } else {
+    queueStore.putBytes("taps", tapQueue, sizeof(QueuedTap) * tapQueueCount);
+    queueStore.putUShort("count", tapQueueCount);
+  }
+
+  queueStore.end();
+}
+
+/* After a power cut RTC memory is zeroed; the flash copy is what is left. */
+static void restoreQueueFromFlash() {
+  if (tapQueueCount > 0) return;  /* a reset kept the RTC copy: it is current */
+  if (!queueStore.begin("lsiams-queue", true)) return;
+
+  uint16_t count = queueStore.getUShort("count", 0);
+  size_t   bytes = queueStore.getBytesLength("taps");
+
+  if (count > 0 && count <= TAP_QUEUE_MAX && bytes == sizeof(QueuedTap) * count
+      && queueStore.getBytes("taps", tapQueue, bytes) == bytes) {
+    tapQueueCount = count;
+    Serial.printf("Queue: %u tap(s) restored from flash after a power loss\n", (unsigned) count);
+  }
+
+  queueStore.end();
 }
 
 static void queueTap(const String &uid, const String &requestId, uint32_t at) {
@@ -2201,6 +2241,7 @@ static void queueTap(const String &uid, const String &requestId, uint32_t at) {
 
   slot.at = at;
   tapQueueCount++;
+  persistQueue();
 
   Serial.printf("      HELD: the server could not be reached, so this tap is stored\n");
   Serial.printf("      on the terminal (%u waiting) and will be sent with its own\n",
@@ -2269,6 +2310,7 @@ static void flushTapQueue() {
   /* The server has now seen every record in the batch, whatever it decided
    * about each, so none of them should be sent again. */
   tapQueueCount = 0;
+  persistQueue();
 }
 
 static void sendTap(const String &uid) {
@@ -2922,6 +2964,7 @@ void setup() {
    * 1970 rejects its own server's certificate as not yet valid. */
   seedClockForTls();
   sanityCheckQueue();
+  restoreQueueFromFlash();
 
   if (tapQueueCount > 0) {
     Serial.printf("Queue: %u tap(s) held from before this restart — they will be sent\n",

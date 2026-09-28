@@ -11,4 +11,10 @@ public:
     void     end() {}
     uint32_t getULong(const char*, uint32_t defaultValue = 0) { return defaultValue; }
     size_t   putULong(const char*, uint32_t) { return 4; }
+    uint16_t getUShort(const char*, uint16_t defaultValue = 0) { return defaultValue; }
+    size_t   putUShort(const char*, uint16_t) { return 2; }
+    size_t   getBytesLength(const char*) { return 0; }
+    size_t   getBytes(const char*, void*, size_t) { return 0; }
+    size_t   putBytes(const char*, const void*, size_t len) { return len; }
+    bool     remove(const char*) { return true; }
 };

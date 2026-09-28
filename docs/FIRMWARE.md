@@ -515,9 +515,11 @@ lost, the terminal retries with the same `request_id`, the server recognises it,
 and the original response is replayed instead of recording the tap twice.
 
 - Queue limit: **40 entries** in the shipping sketch (`TAP_QUEUE_MAX`), held in
-  RTC memory. That survives a reset or a watchdog reboot but **not a power cut** —
-  the honest limit of it is forty taps through a network outage, not through a
-  mains failure.
+  RTC memory and mirrored to flash (NVS namespace `lsiams-queue`) every time it
+  changes. RTC memory survives a reset or a watchdog reboot; after a power cut it
+  comes up empty and the flash copy is restored at boot, so forty taps survive a
+  mains failure as well as a network outage. The flash is written only when a tap
+  is held or the queue is sent, never on an ordinary online tap.
 - Depth is reported on every heartbeat, so the server raises its queue warning
   from real data.
 - At the limit the shipping sketch **refuses the new tap** and says so, rather
@@ -630,8 +632,8 @@ are in the binary.
 
 **The terminal holds no roster.** No student data is stored on the device — a
 stolen terminal yields its own credentials and nothing about any person. Held
-taps are the exception: up to 40 card UIDs live in RTC memory until they are
-sent, and they are lost on a power cut.
+taps are the exception: up to 40 card UIDs live in RTC memory and flash until
+they are sent, and the flash copy is cleared as soon as they are.
 
 **Templates stay on the sensor.** The server stores an encrypted copy for
 cross-terminal sync; the terminal keeps only slot numbers.
