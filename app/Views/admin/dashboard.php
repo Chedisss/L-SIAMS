@@ -138,6 +138,13 @@ $riskColour = [
             <div class="stat__label">Security risk</div>
             <div class="stat__value" style="font-size:20px;text-transform:capitalize"><?= e($security['risk_level']) ?></div>
             <div class="stat__meta"><?= e($security['open_events']) ?> open event(s)</div>
+            <div class="stat__meta">
+                <a class="<?= $overview['overrides']['week'] > 0 ? 'text-warning' : 'text-muted' ?>"
+                   href="/admin/security/logs?event=BIOMETRIC_OVERRIDE_USED"
+                   title="Sessions opened by password because the fingerprint could not be used">
+                    <?= e($overview['overrides']['week']) ?> fingerprint override(s) this week
+                </a>
+            </div>
         </div>
     </div>
 </div>

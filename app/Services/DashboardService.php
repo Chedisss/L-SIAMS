@@ -91,6 +91,7 @@ final class DashboardService
             ],
             'devices'  => DeviceService::fleetSummary(),
             'security' => SecurityLogService::dashboardSummary(),
+            'overrides' => self::biometricOverrides(),
             'average_processing_seconds' => $processing['avg_seconds'] === null
                 ? null
                 : round((float) $processing['avg_seconds'], 1),
@@ -347,10 +348,50 @@ final class DashboardService
      *
      * @return list<array<string,mixed>>
      */
+    /**
+     * Sessions opened by the teacher's password instead of a fingerprint.
+     *
+     * Each one already writes a BIOMETRIC_OVERRIDE_USED security event, but
+     * one at a time in the security log nobody notices that the same teacher
+     * has used it every morning this week. Counted from the sessions
+     * themselves, which record how they were opened.
+     *
+     * @return array{today:int,week:int,teachers:int}
+     */
+    public static function biometricOverrides(): array
+    {
+        $row = Database::instance()->selectOne(
+            "SELECT SUM(session_date = :today) AS today,
+                    COUNT(*)                   AS week,
+                    COUNT(DISTINCT teacher_id) AS teachers
+               FROM attendance_sessions
+              WHERE opened_method = 'password'
+                AND session_date > DATE_SUB(:today2, INTERVAL 7 DAY)",
+            ['today' => Clock::today(), 'today2' => Clock::today()]
+        ) ?? [];
+
+        return [
+            'today'    => (int) ($row['today'] ?? 0),
+            'week'     => (int) ($row['week'] ?? 0),
+            'teachers' => (int) ($row['teachers'] ?? 0),
+        ];
+    }
+
     public static function actionItems(): array
     {
         $db    = Database::instance();
         $items = [];
+
+        $overrides = self::biometricOverrides();
+
+        if ($overrides['week'] > 0) {
+            $items[] = [
+                'severity' => 'warning',
+                'title'    => sprintf('%d session(s) opened by password instead of fingerprint in the last 7 days', $overrides['week']),
+                'detail'   => sprintf('%d teacher(s). Frequent use can mean a failing sensor or a finger that needs re-enrolling.', $overrides['teachers']),
+                'link'     => '/admin/security/logs?event=' . SecurityLogService::BIOMETRIC_OVERRIDE_USED,
+            ];
+        }
 
         $noGradeLevel = TeacherService::withoutGradeLevel();
 

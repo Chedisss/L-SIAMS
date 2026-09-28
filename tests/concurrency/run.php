@@ -4050,6 +4050,30 @@ try {
     }
 
     /* =====================================================================
+     * 25j. Password openings are counted on the dashboard
+     *
+     * Each one writes a BIOMETRIC_OVERRIDE_USED security event, but nothing
+     * added them up, so a teacher using the failover every day went unnoticed.
+     * ===================================================================== */
+    if ($want('override-count')) {
+        $runner->group('25j. Sessions opened by password are counted on the dashboard');
+
+        $fixture->build(1, 1, 1);
+        $before = \App\Services\DashboardService::biometricOverrides();
+
+        AttendanceSessionService::open($fixture->device(0), $fixture->teacher(), $fixture->schedule(0), null, null, 'password');
+        $after = \App\Services\DashboardService::biometricOverrides();
+
+        $runner->assertEquals('a password opening adds one to this week', $before['week'] + 1, $after['week']);
+        $runner->assertEquals('and one to today', $before['today'] + 1, $after['today']);
+
+        $items = array_column(\App\Services\DashboardService::actionItems(), 'title');
+        $runner->assert('and it is listed under Needs attention',
+            (bool) array_filter($items, static fn (string $t): bool => str_contains($t, 'opened by password')),
+            implode(' | ', $items));
+    }
+
+    /* =====================================================================
      * 26. Sustained soak (opt-in, 30 minutes)
      * ===================================================================== */
     if (($options['load'] ?? false) && $want('load')) {
