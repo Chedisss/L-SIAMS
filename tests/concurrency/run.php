@@ -463,6 +463,14 @@ final class Fixture
 
         $db->execute('DELETE FROM fingerprint_logs WHERE teacher_id IN
             (SELECT teacher_id FROM teachers WHERE employee_number LIKE :prefix)', ['prefix' => $prefix]);
+        // Slots go before their templates and devices; without this they were
+        // left behind pointing at fingerprints and terminals that no longer exist.
+        $db->execute('DELETE FROM fingerprint_slots WHERE fingerprint_id IN
+            (SELECT ft.fingerprint_id FROM fingerprint_templates ft
+               JOIN teachers t ON t.teacher_id = ft.teacher_id
+              WHERE t.employee_number LIKE :prefix)', ['prefix' => $prefix]);
+        $db->execute('DELETE FROM fingerprint_slots WHERE device_row_id IN
+            (SELECT id FROM devices WHERE device_id LIKE :prefix)', ['prefix' => $prefix]);
         $db->execute('DELETE FROM fingerprint_templates WHERE teacher_id IN
             (SELECT teacher_id FROM teachers WHERE employee_number LIKE :prefix)', ['prefix' => $prefix]);
 
@@ -3229,8 +3237,14 @@ try {
     if ($want('archive-restore')) {
         $runner->group('25b. An archived section or department can be found and restored');
 
-        $section = $db->selectOne('SELECT section_id, section_code FROM sections WHERE deleted_at IS NULL LIMIT 1');
-        $sectionId = (int) $section['section_id'];
+        // The fixture's own section and department. Picking "LIMIT 1" of the
+        // real ones deactivated a live section's students, soft-deleted a
+        // live department's subjects and moved its teachers, and none of it
+        // was put back.
+        $fixture->build(1, 2, 1);
+
+        $sectionId = (int) $fixture->ids['sections'][0];
+        $section   = $db->selectOne('SELECT section_id, section_code FROM sections WHERE section_id = :i', ['i' => $sectionId]);
         $code      = (string) $section['section_code'];
 
         // archiveSection refuses while students are enrolled, which is its own
@@ -3288,7 +3302,8 @@ try {
 
         // --- departments ---
         $department = $db->selectOne(
-            'SELECT department_id, department_name FROM departments WHERE deleted_at IS NULL LIMIT 1'
+            'SELECT department_id, department_name FROM departments WHERE department_id = :i',
+            ['i' => (int) $fixture->ids['department_id']]
         );
         $departmentId = (int) $department['department_id'];
         $departmentName = (string) $department['department_name'];
@@ -3360,13 +3375,14 @@ try {
             'SELECT COUNT(*) FROM schedules WHERE subject_id = :i', ['i' => $subjectId]);
 
         \App\Services\AcademicStructureService::updateSubject($subjectId, [
-            'subject_code'  => 'lstest-ren',
+            // Keeps the fixture prefix once upper-cased, so teardown still finds it.
+            'subject_code'  => 'test-conc-ren',
             'subject_name'  => 'Renamed Subject',
             'department_id' => $departmentId,
         ]);
 
         $runner->assertEquals('the code is written, and upper-cased as it is on creation',
-            'LSTEST-REN', (string) $db->scalar(
+            'TEST-CONC-REN', (string) $db->scalar(
                 'SELECT subject_code FROM subjects WHERE subject_id = :i', ['i' => $subjectId]));
 
         // The reason this is safe: nothing joined on the code in the first
@@ -3399,7 +3415,7 @@ try {
         $runner->assert('a code already in use is refused', $refused, 'the duplicate was accepted');
 
         $runner->assertEquals('and the subject keeps its own code after the refusal',
-            'LSTEST-REN', (string) $db->scalar(
+            'TEST-CONC-REN', (string) $db->scalar(
                 'SELECT subject_code FROM subjects WHERE subject_id = :i', ['i' => $subjectId]));
 
         // Every other caller of updateSubject() omits the code. It must not be
@@ -3410,7 +3426,7 @@ try {
         ]);
 
         $runner->assertEquals('omitting the code leaves it alone',
-            'LSTEST-REN', (string) $db->scalar(
+            'TEST-CONC-REN', (string) $db->scalar(
                 'SELECT subject_code FROM subjects WHERE subject_id = :i', ['i' => $subjectId]));
 
         // Renaming reference data has to be answerable for afterwards.
@@ -3422,7 +3438,7 @@ try {
 
         $rename = array_values(array_filter(
             $audited,
-            static fn (array $r): bool => str_contains((string) $r['new_value'], 'LSTEST-REN')
+            static fn (array $r): bool => str_contains((string) $r['new_value'], 'TEST-CONC-REN')
         ));
 
         $runner->assert('the rename is in the audit log', $rename !== [], 'no audit row named the new code');
@@ -3634,15 +3650,23 @@ try {
 
         // Another teacher's template, sitting in a slot on this terminal - the
         // "sensor holds a template we have no record of" case, made explicit.
-        $other = $db->selectOne(
-            'SELECT teacher_id, first_name, last_name FROM teachers
-              WHERE teacher_id <> :i AND deleted_at IS NULL LIMIT 1',
-            ['i' => $assignedId]
-        );
-        $otherId   = (int) $other['teacher_id'];
-        $otherName = trim($other['first_name'] . ' ' . $other['last_name']);
+        //
+        // The other teacher is created here, under the fixture prefix. Borrowing
+        // an existing teacher deleted that person's real fingerprint enrolment
+        // and left it deleted, because teardown only cleans prefixed rows.
+        $otherName = 'Second Tester';
+        $otherId   = (int) $db->insert('teachers', [
+            'employee_number'    => Fixture::PREFIX . 'T2',
+            'department_id'      => $db->scalar('SELECT department_id FROM teachers WHERE teacher_id = :i', ['i' => $assignedId]),
+            'first_name'         => 'Second',
+            'last_name'          => 'Tester',
+            'email'              => 'second.tester@' . strtolower(Fixture::PREFIX) . 'test.local',
+            'status'             => 'active',
+            'fingerprint_status' => 'enrolled',
+            'created_at'         => Clock::nowString(),
+            'updated_at'         => Clock::nowString(),
+        ]);
 
-        $db->execute('DELETE FROM fingerprint_templates WHERE teacher_id = :t', ['t' => $otherId]);
         $strayFp = (int) $db->insert('fingerprint_templates', [
             'teacher_id'         => $otherId,
             'sensor_template_id' => 7,
@@ -3950,6 +3974,79 @@ try {
         $runner->assert('restoring brings it back',
             in_array($roomId, array_column(\App\Services\AcademicStructureService::classrooms(), 'classroom_id'), true),
             'it did not come back');
+    }
+
+    /* =====================================================================
+     * 25i. A reopened class still admits the students it marked absent
+     *
+     * Closing writes an Absent row for everyone who had not tapped. A scan
+     * reopens a class closed early by mistake, but the tap logic read that
+     * Absent row as a finished visit and refused the student with
+     * "Attendance already recorded", so the reopen rescued nobody who was
+     * still outside the door.
+     * ===================================================================== */
+    if ($want('reopen-absent')) {
+        $runner->group('25i. A reopened class still admits the students it marked absent');
+
+        $fixture->build(1, 3, 1);
+        $device    = $fixture->device(0);
+        $sectionId = $fixture->ids['sections'][0];
+        [$early, $lateComer, $excused] = $fixture->ids['cards'][$sectionId];
+
+        $session = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+        AttendanceService::tap($device, $early);
+        AttendanceSessionService::close((int) $session['session_id'], 'teacher', null);
+
+        $rowFor = static fn (string $card): array => $db->selectOne(
+            'SELECT ar.* FROM attendance_records ar
+               JOIN rfid_cards r ON r.student_id = ar.student_id AND r.card_uid = :c
+              WHERE ar.session_id = :s',
+            ['c' => $card, 's' => $session['session_id']]
+        ) ?? [];
+
+        $runner->assertEquals('closing marks the student who had not tapped absent',
+            'Absent', $rowFor($lateComer)['final_status'] ?? null);
+
+        // An administrator excuses the third student before the reopen.
+        $db->execute(
+            "UPDATE attendance_records SET arrival_status = 'excused', final_status = 'Excused'
+              WHERE attendance_id = :a",
+            ['a' => $rowFor($excused)['attendance_id']]
+        );
+
+        $reopened = AttendanceSessionService::open($device, $fixture->teacher(), $fixture->schedule(0), 0);
+        $runner->assertEquals('the scan reopens the same session',
+            (int) $session['session_id'], (int) $reopened['session_id']);
+
+        $code = null;
+        try {
+            $code = AttendanceService::tap($device, $lateComer)['code'];
+        } catch (BusinessRuleException $e) {
+            $code = $e->errorCode();
+        }
+
+        $runner->assertEquals('the absent student can now tap in', 'TIME_IN_RECORDED', $code);
+
+        $row = $rowFor($lateComer);
+        $runner->assert('their absence becomes the arrival, not a second row',
+            $row['time_in'] !== null && $row['final_status'] !== 'Absent'
+            && 1 === (int) $db->scalar(
+                'SELECT COUNT(*) FROM attendance_records WHERE session_id = :s AND student_id = :st',
+                ['s' => $session['session_id'], 'st' => $row['student_id']]),
+            json_encode($row));
+
+        $excusedCode = null;
+        try {
+            AttendanceService::tap($device, $excused);
+        } catch (BusinessRuleException $e) {
+            $excusedCode = $e->errorCode();
+        }
+
+        $runner->assert('an excused student is left as the administrator set it',
+            $excusedCode !== null && ($rowFor($excused)['final_status'] ?? null) === 'Excused',
+            (string) $excusedCode);
+
+        AttendanceSessionService::close((int) $session['session_id'], 'teacher', null);
     }
 
     /* =====================================================================

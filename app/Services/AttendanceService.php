@@ -363,7 +363,8 @@ final class AttendanceService
         ) ?? [];
 
         return match ($intent) {
-            self::INTENT_TIME_IN  => self::recordTimeIn($db, $session, $schedule, $device, $card, $cardUid, $requestId, $now),
+            self::INTENT_TIME_IN  => self::recordTimeIn($db, $session, $schedule, $device, $card, $cardUid, $requestId, $now,
+                self::isUnclaimedAbsence($record) ? $record : null),
             self::INTENT_TIME_OUT => self::recordTimeOut($db, $session, $schedule, $device, $card, $record ?? [], $cardUid, $now),
             default               => self::rejectComplete($db, $session, $card, $deviceRowId, $cardUid, $record ?? []),
         };
@@ -383,6 +384,12 @@ final class AttendanceService
      */
     private static function resolveIntent(?array $record, array $device, ?string $forcedIntent): string
     {
+        // An absence written when the session closed is not a visit. If the
+        // session has since been reopened, the student's tap is their arrival.
+        if (self::isUnclaimedAbsence($record)) {
+            $record = null;
+        }
+
         $role = (string) ($device['device_role'] ?? 'both');
 
         if ($role === 'entry') {
@@ -420,13 +427,30 @@ final class AttendanceService
         return self::INTENT_COMPLETE;
     }
 
+    /**
+     * The row close() writes for a student who never tapped: Absent, no time
+     * in. Closing an open session is reversible (a scan reopens it), so this
+     * row must not lock the student out of a class that is running again.
+     * Excused and official-business rows are an administrator's decision and
+     * are left alone.
+     *
+     * @param array<string,mixed>|null $record
+     */
+    private static function isUnclaimedAbsence(?array $record): bool
+    {
+        return $record !== null
+            && $record['time_in'] === null
+            && (string) $record['arrival_status'] === AttendanceStatusResolver::ARRIVAL_ABSENT;
+    }
+
     // ------------------------------------------------------------ time in --
 
     /**
-     * @param array<string,mixed> $session
-     * @param array<string,mixed> $schedule
-     * @param array<string,mixed> $device
-     * @param array<string,mixed> $card
+     * @param array<string,mixed>      $session
+     * @param array<string,mixed>      $schedule
+     * @param array<string,mixed>      $device
+     * @param array<string,mixed>      $card
+     * @param array<string,mixed>|null $absence the close-time Absent row to claim, if any
      * @return array<string,mixed>
      */
     private static function recordTimeIn(
@@ -437,7 +461,8 @@ final class AttendanceService
         array $card,
         string $cardUid,
         ?string $requestId,
-        DateTimeImmutable $now
+        DateTimeImmutable $now,
+        ?array $absence = null
     ): array {
         $sessionId = (int) $session['session_id'];
         $studentId = (int) $card['student_id'];
@@ -488,16 +513,7 @@ final class AttendanceService
             AttendanceStatusResolver::DEPARTURE_PENDING
         );
 
-        $attendanceId = (int) $db->insert('attendance_records', [
-            'session_id'     => $sessionId,
-            'student_id'     => $studentId,
-            // Denormalised at write time, permanently (Part 15.4).
-            'section_id'     => (int) $card['student_section_id'],
-            'grade_level_id' => (int) $card['grade_level_id'],
-            'subject_id'     => (int) $session['subject_id'],
-            'teacher_id'     => (int) $session['teacher_id'],
-            'classroom_id'   => (int) $session['classroom_id'],
-            'rfid_uid'       => $cardUid,
+        $arrival = [
             'time_in'           => $now->format('Y-m-d H:i:s'),
             'time_in_device_id' => (string) $device['device_id'],
             'time_in_ip'        => RequestContext::ip(),
@@ -505,10 +521,30 @@ final class AttendanceService
             'arrival_status'    => $arrivalStatus,
             'departure_status'  => AttendanceStatusResolver::DEPARTURE_PENDING,
             'final_status'      => $finalStatus,
-            'request_id'        => $requestId,
-            'created_at'        => Clock::nowString(),
             'updated_at'        => Clock::nowString(),
-        ]);
+        ];
+
+        if ($absence !== null) {
+            // The row's identity (card, request id, creation time) is fixed by
+            // trg_attendance_immutable_identity, so only the arrival is filled
+            // in; processed_requests still makes a retried tap land once.
+            $attendanceId = (int) $absence['attendance_id'];
+            $db->update('attendance_records', $arrival, ['attendance_id' => $attendanceId]);
+        } else {
+            $attendanceId = (int) $db->insert('attendance_records', [
+                'session_id'     => $sessionId,
+                'student_id'     => $studentId,
+                // Denormalised at write time, permanently (Part 15.4).
+                'section_id'     => (int) $card['student_section_id'],
+                'grade_level_id' => (int) $card['grade_level_id'],
+                'subject_id'     => (int) $session['subject_id'],
+                'teacher_id'     => (int) $session['teacher_id'],
+                'classroom_id'   => (int) $session['classroom_id'],
+                'rfid_uid'       => $cardUid,
+                'request_id'     => $requestId,
+                'created_at'     => Clock::nowString(),
+            ] + $arrival);
+        }
 
         $counters = self::updateSessionCounters($db, $sessionId);
 
@@ -533,7 +569,7 @@ final class AttendanceService
             'attendance',
             'attendance_record',
             $attendanceId,
-            null,
+            $absence === null ? null : ['status' => (string) $absence['final_status']],
             ['intent' => 'time_in', 'status' => $finalStatus, 'student_id' => $studentId],
             sprintf('Time in recorded for %s (%s).', self::shortName($card), $finalStatus)
         );
