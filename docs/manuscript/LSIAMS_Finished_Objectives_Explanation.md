@@ -58,9 +58,13 @@ own internal certificate authority.
 
 > **3.2 Preventing unauthorized access through authentication and role-based access control;**
 
-Users must log in (Figure 13), passwords are stored as bcrypt hashes, accounts
-lock after repeated failed attempts, and each role only sees what it is allowed
-to.
+Users must log in through a single sign-in page (Figure 13). Passwords are
+stored as bcrypt hashes, must be strong (at least twelve characters), and accounts
+are locked after repeated failed attempts, which stops password guessing. Each
+account is given a role, such as administrator or teacher, that decides which
+pages and actions it can use (Figure 14), so a teacher cannot open admin
+functions and only sees their own classes (Figure 21). Sessions also expire
+automatically, and the admin can end any active session if it looks suspicious.
 
 > **3.3 Restricting unauthorized system interaction through controlled network access;**
 
