@@ -27,6 +27,7 @@ final class ReportService
         'monthly'               => 'Monthly Attendance',
         'student'               => 'Student Attendance',
         'teacher'               => 'Teacher Attendance',
+        'teacher_attendance'    => 'Teacher Time In / Out',
         'subject'               => 'Subject Attendance',
         'section_daily'         => 'Section Daily Attendance Sheet',
         'section_summary'       => 'Section Attendance Summary',
@@ -59,6 +60,7 @@ final class ReportService
             'daily', 'weekly', 'monthly' => self::attendanceReport($type, $filters, $from, $to),
             'student'                    => self::studentReport($filters, $from, $to),
             'teacher'                    => self::teacherReport($filters, $from, $to),
+            'teacher_attendance'         => self::teacherAttendanceReport($filters, $from, $to),
             'subject'                    => self::subjectReport($filters, $from, $to),
             'section_daily'              => self::sectionDailySheet($filters),
             'section_summary'            => self::sectionSummary($filters, $from, $to),
@@ -626,6 +628,114 @@ final class ReportService
                 'Students'   => $totalRoster,
                 'Attended'   => $totalPresent,
                 'Attendance' => $totalRoster === 0 ? '0%' : round($totalPresent / $totalRoster * 100, 1) . '%',
+            ],
+            'meta' => self::describeFilters($filters, $from, $to),
+        ];
+    }
+
+    /**
+     * Teacher Time In / Out (Part 15.5, stakeholder enhancement).
+     *
+     * A teacher's "time in" is the moment they opened the class session with
+     * their fingerprint (attendance_sessions.opened_at); their "time out" is
+     * when the session was closed (closed_at). Punctuality is measured against
+     * the schedule's scheduled_start. Unlike teacherReport(), this spans every
+     * teacher in the range unless one is selected, so an administrator can see
+     * who signed in, when, and whether they were on time.
+     *
+     * @param  array<string,mixed> $filters
+     * @return array<string,mixed>
+     */
+    private static function teacherAttendanceReport(array $filters, string $from, string $to): array
+    {
+        $teacherId    = (int) ($filters['teacher_id'] ?? 0) ?: null;
+        $departmentId = (int) ($filters['department_id'] ?? 0) ?: null;
+
+        $where    = ['s.session_date BETWEEN :from AND :to'];
+        $bindings = ['from' => $from, 'to' => $to];
+
+        if ($teacherId !== null) {
+            $where[]             = 's.teacher_id = :teacher';
+            $bindings['teacher'] = $teacherId;
+        }
+        if ($departmentId !== null) {
+            $where[]          = 't.department_id = :dept';
+            $bindings['dept'] = $departmentId;
+        }
+
+        $whereSql = implode(' AND ', $where);
+
+        $rows = Database::instance()->select(
+            "SELECT s.session_date,
+                    CONCAT(t.last_name, ', ', t.first_name) AS teacher_name,
+                    t.employee_number,
+                    sub.subject_code, sec.section_code, c.room_number,
+                    s.scheduled_start, s.opened_at, s.closed_at, s.status, s.opened_method,
+                    TIMESTAMPDIFF(MINUTE, s.scheduled_start, s.opened_at) AS late_minutes,
+                    TIMESTAMPDIFF(MINUTE, s.opened_at, s.closed_at)       AS duration_minutes
+               FROM attendance_sessions s
+               JOIN teachers   t   ON t.teacher_id   = s.teacher_id
+               JOIN subjects   sub ON sub.subject_id = s.subject_id
+               JOIN sections   sec ON sec.section_id = s.section_id
+               JOIN classrooms c   ON c.classroom_id = s.classroom_id
+              WHERE {$whereSql}
+              ORDER BY s.session_date DESC, teacher_name ASC, s.opened_at ASC",
+            $bindings
+        );
+
+        $onTime = 0;
+        $late = 0;
+        $notClosed = 0;
+        $lateMinutesTotal = 0;
+
+        $display = array_map(static function (array $r) use (&$onTime, &$late, &$notClosed, &$lateMinutesTotal): array {
+            $lateMin = $r['late_minutes'] === null ? 0 : (int) $r['late_minutes'];
+
+            if ((string) $r['status'] === 'aborted') {
+                $inStatus = 'Aborted';
+            } elseif ($lateMin > 0) {
+                $inStatus = 'Late ' . $lateMin . ' min';
+                $late++;
+                $lateMinutesTotal += $lateMin;
+            } else {
+                $inStatus = 'On time';
+                $onTime++;
+            }
+
+            if ($r['closed_at'] === null) {
+                $notClosed++;
+                $timeOut = '— not closed';
+            } else {
+                $timeOut = self::humanTime($r['closed_at']);
+            }
+
+            return [
+                self::humanDate((string) $r['session_date']),
+                $r['teacher_name'],
+                $r['employee_number'],
+                $r['subject_code'],
+                $r['section_code'],
+                $r['room_number'],
+                self::humanTime($r['scheduled_start']),
+                self::humanTime($r['opened_at']),
+                $inStatus,
+                $timeOut,
+                $r['duration_minutes'] === null ? '—' : (int) $r['duration_minutes'] . ' min',
+                ucfirst((string) $r['opened_method']),
+            ];
+        }, $rows);
+
+        return [
+            'title'    => 'Teacher Attendance — Time In / Out',
+            'subtitle' => 'Each teacher\'s sign-in (session opened) and sign-out (session closed), measured against the scheduled start.',
+            'headers'  => ['Date', 'Teacher', 'Emp. No.', 'Subject', 'Section', 'Room', 'Scheduled In', 'Time In', 'In Status', 'Time Out', 'Duration', 'Opened By'],
+            'rows'     => $display,
+            'statistics' => [
+                'Sessions'       => count($rows),
+                'On time'        => $onTime,
+                'Late'           => $late,
+                'Avg late (min)' => $late === 0 ? '0' : round($lateMinutesTotal / $late, 1),
+                'Not closed'     => $notClosed,
             ],
             'meta' => self::describeFilters($filters, $from, $to),
         ];

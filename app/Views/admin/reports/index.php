@@ -65,7 +65,7 @@ $typeDescriptions = [
  * most-used report leads each group.
  */
 $typeGroups = [
-    'Attendance'   => ['student_summary', 'daily', 'weekly', 'monthly', 'student', 'teacher', 'subject'],
+    'Attendance'   => ['student_summary', 'daily', 'weekly', 'monthly', 'student', 'teacher', 'teacher_attendance', 'subject'],
     'By section'   => ['section_daily', 'section_summary', 'section_comparison', 'adviser', 'section_roster_rfid', 'chronic_absence'],
     'Operations'   => ['device_uptime', 'audit', 'security'],
 ];

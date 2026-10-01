@@ -28,7 +28,7 @@ final class ReportController extends Controller
      * audit log, neither of which is a teacher's to see.
      */
     private const TEACHER_TYPES = [
-        'daily', 'weekly', 'monthly', 'teacher', 'section_daily', 'section_summary',
+        'daily', 'weekly', 'monthly', 'teacher', 'teacher_attendance', 'section_daily', 'section_summary',
     ];
 
     public function index(Request $request): Response
