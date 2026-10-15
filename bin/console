@@ -19,6 +19,7 @@ declare(strict_types=1);
  *   php bin/console time:shift "+2 hours" Move the clock for schedule testing
  *   php bin/console user:create-admin    Create an administrator interactively
  *   php bin/console user:create-teachers Issue logins to teachers who have none
+ *   php bin/console report:evaluation    Evaluation figures from the logs, for Chapter IV
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -132,6 +133,7 @@ try {
         'fingerprint:reset'   => commandFingerprintReset($flags),
         'students:sample'     => commandSampleStudents($flags),
         'rfid:release'        => commandRfidRelease($flags),
+        'report:evaluation'   => commandReportEvaluation($flags),
         default               => commandHelp(),
     };
 } catch (Throwable $e) {
@@ -176,6 +178,7 @@ function commandHelp(): void
     out('    db:import <file.sql>    Import a .sql file or phpMyAdmin export (--fresh drops first)');
     out('    backup:decrypt <file>   Turn a backup archive back into readable SQL');
     out('    time:shift ["+2 hours"]  Move the clock to test a schedule (--clear to undo)');
+    out('    report:evaluation       Chapter IV figures from the logs (--from=YYYY-MM-DD --to=)');
     out('');
     out('  HTTPS', 'cyan');
     out('    tls:generate            Issue the server certificate (--host= --ip= --new-ca)');
@@ -4864,4 +4867,235 @@ function commandScheduleGradeThree(array $flags): void
     }
 
     $failed === [] ? ok('Timetable built.') : fail(sprintf('%d period(s) refused - see above.', count($failed)));
+}
+
+/**
+ * Print the figures Chapter IV needs, read straight from the database, and
+ * write the per-session lists a researcher compares with the manual roll call.
+ *
+ * Read-only: every statement is a SELECT. Pass --from and --to to cover only
+ * the evaluation days, so demo data and earlier testing are left out.
+ *
+ *   php bin/console report:evaluation --from=2026-10-13 --to=2026-10-14
+ */
+function commandReportEvaluation(array $flags): void
+{
+    $db   = Database::instance();
+    $opts = [];
+
+    foreach ($flags as $flag) {
+        if (preg_match('/^--(from|to)=(.+)$/', $flag, $m) === 1) {
+            $opts[$m[1]] = $m[2];
+        }
+    }
+
+    foreach (['from', 'to'] as $key) {
+        if (isset($opts[$key]) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $opts[$key]) !== 1) {
+            fail(sprintf('--%s must be a date like 2026-10-13.', $key));
+        }
+    }
+
+    $from = $opts['from'] ?? '1970-01-01';
+    $to   = $opts['to'] ?? '2999-12-31';
+
+    // Native prepares cannot reuse a placeholder, so each query gets its own pair.
+    $range = static function (string $column, int $n) use ($from, $to): array {
+        return [
+            sprintf('%1$s >= :f%2$d AND %1$s < DATE_ADD(:t%2$d, INTERVAL 1 DAY)', $column, $n),
+            ["f$n" => $from, "t$n" => $to],
+        ];
+    };
+    $pct = static fn (int $part, int $whole): string => $whole === 0 ? '—' : sprintf('%.2f%%', 100 * $part / $whole);
+
+    heading('L-SIAMS evaluation report');
+    out(sprintf('  Period: %s to %s%s', $from, $to,
+        isset($opts['from']) ? '' : '   (no --from/--to: every record, demo data included)'), 'grey');
+
+    // ---------------------------------------------------- sessions ----
+    [$w, $b] = $range('s.session_date', 1);
+    $sessions = $db->select(
+        "SELECT s.session_id, s.session_code, s.session_date, s.opened_at, s.opened_method, s.status,
+                s.roster_count, sec.section_code, c.room_number
+           FROM attendance_sessions s
+           JOIN sections sec ON sec.section_id = s.section_id
+           LEFT JOIN classrooms c ON c.classroom_id = s.classroom_id
+          WHERE $w
+          ORDER BY s.opened_at",
+        $b
+    );
+
+    heading('1. Sessions and teacher verification (SOP 4)');
+    $byMethod = ['fingerprint' => 0, 'password' => 0];
+    foreach ($sessions as $s) {
+        $byMethod[(string) $s['opened_method']] = ($byMethod[(string) $s['opened_method']] ?? 0) + 1;
+    }
+    out(sprintf('  Sessions opened: %d  (fingerprint %d, password failover %d)',
+        count($sessions), $byMethod['fingerprint'], $byMethod['password']));
+
+    [$w, $b] = $range('created_at', 2);
+    $fp = [];
+    foreach ($db->select("SELECT result, COUNT(*) AS n FROM fingerprint_logs WHERE $w GROUP BY result", $b) as $r) {
+        $fp[(string) $r['result']] = (int) $r['n'];
+    }
+    $verified = $fp['verified'] ?? 0;
+    $attempts = $verified + ($fp['failed'] ?? 0) + ($fp['unknown'] ?? 0);
+    out(sprintf('  Fingerprint checks: %d verified, %d failed, %d unmatched  ->  success rate %s',
+        $verified, $fp['failed'] ?? 0, $fp['unknown'] ?? 0, $pct($verified, $attempts)));
+    $refused = ($fp['not_assigned'] ?? 0) + ($fp['no_schedule'] ?? 0) + ($fp['teacher_inactive'] ?? 0);
+    out(sprintf('  Verified teacher refused because the class was not theirs or not scheduled: %d', $refused), 'grey');
+
+    // ------------------------------------------- processing time ----
+    heading('2. Recording time per session (SOP 1)');
+    out('  Gap = median time between consecutive taps: the time per student while a queue is tapping.', 'grey');
+    out('  Span = first to last tap; it includes late arrivals, so it is an upper bound only.', 'grey');
+    $gaps = [];
+    $rows = [];
+    $median = static function (array $v): ?float {
+        if ($v === []) {
+            return null;
+        }
+        sort($v);
+        $mid = intdiv(count($v), 2);
+
+        return count($v) % 2 === 1 ? (float) $v[$mid] : ($v[$mid - 1] + $v[$mid]) / 2;
+    };
+    foreach ($sessions as $s) {
+        $times = array_map(
+            static fn (array $r): int => strtotime((string) $r['time_in']),
+            $db->select(
+                'SELECT time_in FROM attendance_records
+                  WHERE session_id = :id AND time_in IS NOT NULL AND carried_from_session_id IS NULL
+                  ORDER BY time_in',
+                ['id' => (int) $s['session_id']]
+            )
+        );
+        $offline = (int) $db->scalar(
+            'SELECT COALESCE(SUM(synced_offline), 0) FROM attendance_records WHERE session_id = :id',
+            ['id' => (int) $s['session_id']]
+        );
+        $n    = count($times);
+        $span = $n > 1 ? end($times) - $times[0] : 0;
+        $diff = [];
+        for ($i = 1; $i < $n; $i++) {
+            $diff[] = $times[$i] - $times[$i - 1];
+        }
+        $gap = $median($diff);
+        if ($gap !== null) {
+            $gaps[] = $gap;
+        }
+        $rows[] = [$s['session_code'], $s['session_date'], $s['section_code'], $s['room_number'] ?? '',
+                   (int) $s['roster_count'], $n,
+                   $n > 0 ? date('Y-m-d H:i:s', $times[0]) : '', $n > 0 ? date('Y-m-d H:i:s', end($times)) : '',
+                   $span, $gap ?? '', $offline, $s['opened_method']];
+        out(sprintf('  %-16s %s %-10s tapped %3d/%-3d  median gap %s  span %ds',
+            $s['session_code'], $s['session_date'], $s['section_code'], $n, (int) $s['roster_count'],
+            $gap === null ? '—' : sprintf('%.1fs', $gap), $span), 'grey');
+    }
+    if ($gaps !== []) {
+        $mean = array_sum($gaps) / count($gaps);
+        $sd   = count($gaps) > 1
+            ? sqrt(array_sum(array_map(static fn ($x) => ($x - $mean) ** 2, $gaps)) / (count($gaps) - 1))
+            : 0.0;
+        out(sprintf('  Time per student (mean of session median gaps): %.2f s, SD %.2f, over %d sessions',
+            $mean, $sd, count($gaps)));
+    }
+    out('  Taps carry the time on the terminal, so a gap is the students\' pace, not the network.', 'grey');
+
+    // ------------------------------------------------------- taps ----
+    heading('3. Taps and duplicate protection (SOP 2)');
+    [$w, $b] = $range('created_at', 3);
+    $tap = [];
+    foreach ($db->select("SELECT result, COUNT(*) AS n FROM rfid_logs WHERE $w GROUP BY result ORDER BY n DESC", $b) as $r) {
+        $tap[(string) $r['result']] = (int) $r['n'];
+        out(sprintf('  %-28s %d', $r['result'], $r['n']), 'grey');
+    }
+    $dups = ($tap['duplicate_time_in'] ?? 0) + ($tap['duplicate_time_out'] ?? 0) + ($tap['already_complete'] ?? 0);
+    out(sprintf('  Repeat taps ignored: %d', $dups));
+    [$w, $b] = $range('s.session_date', 4);
+    $double = (int) $db->scalar(
+        "SELECT COUNT(*) FROM (SELECT r.session_id, r.student_id FROM attendance_records r
+            JOIN attendance_sessions s ON s.session_id = r.session_id
+           WHERE $w GROUP BY r.session_id, r.student_id HAVING COUNT(*) > 1) d",
+        $b
+    );
+    out(sprintf('  Students recorded twice in one session: %d', $double), $double === 0 ? 'green' : 'red');
+
+    // ---------------------------------------------- offline sync ----
+    heading('4. Offline capture and synchronisation (reliability)');
+    [$w, $b] = $range('s.session_date', 5);
+    $rec = $db->selectOne(
+        "SELECT COUNT(*) AS total, SUM(r.synced_offline) AS offline FROM attendance_records r
+           JOIN attendance_sessions s ON s.session_id = r.session_id
+          WHERE $w AND r.time_in IS NOT NULL",
+        $b
+    );
+    out(sprintf('  Taps recorded: %d, of which delivered after a network interruption: %d',
+        (int) $rec['total'], (int) $rec['offline']));
+    [$w, $b] = $range('created_at', 6);
+    $ev = [];
+    foreach ($db->select(
+        "SELECT event, COUNT(*) AS n FROM device_logs WHERE $w
+            AND event IN ('sync_started','sync_completed','sync_failed','queue_warning','queue_full','wifi_lost','offline')
+          GROUP BY event",
+        $b
+    ) as $r) {
+        $ev[(string) $r['event']] = (int) $r['n'];
+    }
+    $syncs = ($ev['sync_completed'] ?? 0) + ($ev['sync_failed'] ?? 0);
+    out(sprintf('  Sync runs: %d completed, %d failed  ->  success rate %s;  queue full: %d;  connection lost: %d',
+        $ev['sync_completed'] ?? 0, $ev['sync_failed'] ?? 0, $pct($ev['sync_completed'] ?? 0, $syncs),
+        $ev['queue_full'] ?? 0, ($ev['wifi_lost'] ?? 0) + ($ev['offline'] ?? 0)));
+
+    // --------------------------------------------------- security ----
+    heading('5. Security events (SOP 5, penetration testing)');
+    [$w, $b] = $range('created_at', 7);
+    foreach ($db->select(
+        "SELECT event, severity, COUNT(*) AS n FROM security_logs WHERE $w
+          GROUP BY event, severity ORDER BY n DESC",
+        $b
+    ) as $r) {
+        out(sprintf('  %-30s %-8s %d', $r['event'], $r['severity'], $r['n']), 'grey');
+    }
+    [$w, $b] = $range('attempted_at', 8);
+    out(sprintf('  Failed sign-in attempts recorded: %d', (int) $db->scalar("SELECT COUNT(*) FROM login_attempts WHERE $w", $b)));
+
+    // ------------------------------------------------------ files ----
+    $dir = BASE_PATH . '/storage/reports/evaluation-' . date('Ymd-His');
+    if (!is_dir($dir) && !mkdir($dir, 0750, true)) {
+        fail('Could not create ' . $dir);
+    }
+    $write = static function (string $file, array $header, array $data) use ($dir): void {
+        $h = fopen($dir . '/' . $file, 'w');
+        fputcsv($h, $header);
+        foreach ($data as $row) {
+            fputcsv($h, $row);
+        }
+        fclose($h);
+    };
+    $write('sessions.csv',
+        ['session', 'date', 'section', 'room', 'roster', 'tapped_in', 'first_tap', 'last_tap', 'span_seconds',
+         'median_gap_seconds', 'delivered_offline', 'opened_by'],
+        $rows);
+
+    [$w, $b] = $range('s.session_date', 9);
+    $roster = $db->select(
+        "SELECT s.session_code, s.session_date, sec.section_code, st.student_number,
+                CONCAT(st.last_name, ', ', st.first_name) AS student, r.time_in, r.final_status
+           FROM attendance_records r
+           JOIN attendance_sessions s ON s.session_id = r.session_id
+           JOIN sections sec ON sec.section_id = s.section_id
+           JOIN students st ON st.student_id = r.student_id
+          WHERE $w
+          ORDER BY s.opened_at, st.last_name, st.first_name",
+        $b
+    );
+    $write('system_attendance.csv',
+        ['session', 'date', 'section', 'student_number', 'student', 'time_in', 'system_status', 'manual_status', 'match'],
+        array_map(static fn (array $r): array => array_values($r) + [7 => '', 8 => ''], $roster));
+
+    heading('Files');
+    out('  ' . $dir . '/sessions.csv', 'grey');
+    out('  ' . $dir . '/system_attendance.csv', 'grey');
+    out('  For accuracy: type each student\'s status from the teacher\'s manual roll call into manual_status,', 'grey');
+    out('  then accuracy = matching rows / all rows x 100. The file holds student names; keep it private.', 'grey');
 }

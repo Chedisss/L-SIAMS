@@ -178,6 +178,8 @@ php bin/console security:audit-keys     Audit the API-key path for weak randomne
 php bin/console doctor                  Diagnose a running installation, read-only
 php bin/console schema:dump             Regenerate database/lsiams_schema.sql
 php bin/console user:create-admin       Create an additional administrator
+php bin/console report:evaluation --from=YYYY-MM-DD --to=YYYY-MM-DD
+                                        Evaluation figures from the logs, read-only
 ```
 
 The **worker** is not optional. It auto-closes sessions whose window has passed,
