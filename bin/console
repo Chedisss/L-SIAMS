@@ -5024,13 +5024,17 @@ function commandReportEvaluation(array $flags): void
     heading('4. Offline capture and synchronisation (reliability)');
     [$w, $b] = $range('s.session_date', 5);
     $rec = $db->selectOne(
-        "SELECT COUNT(*) AS total, SUM(r.synced_offline) AS offline FROM attendance_records r
+        "SELECT SUM(r.carried_from_session_id IS NULL) AS tapped,
+                SUM(r.carried_from_session_id IS NOT NULL) AS carried,
+                SUM(r.carried_from_session_id IS NULL AND r.synced_offline = 1) AS offline
+           FROM attendance_records r
            JOIN attendance_sessions s ON s.session_id = r.session_id
           WHERE $w AND r.time_in IS NOT NULL",
         $b
     );
-    out(sprintf('  Taps recorded: %d, of which delivered after a network interruption: %d',
-        (int) $rec['total'], (int) $rec['offline']));
+    out(sprintf('  Students who tapped in: %d, of which delivered after a network interruption: %d',
+        (int) $rec['tapped'], (int) $rec['offline']));
+    out(sprintf('  Carried over from the previous period without a tap (not counted above): %d', (int) $rec['carried']), 'grey');
     [$w, $b] = $range('created_at', 6);
     $ev = [];
     foreach ($db->select(
