@@ -4944,6 +4944,29 @@ function commandReportEvaluation(array $flags): void
     $refused = ($fp['not_assigned'] ?? 0) + ($fp['no_schedule'] ?? 0) + ($fp['teacher_inactive'] ?? 0);
     out(sprintf('  Verified teacher refused because the class was not theirs or not scheduled: %d', $refused), 'grey');
 
+    // The rate alone cannot tell a sensor fault from a deliberate test with an
+    // unenrolled finger, which the system is right to refuse; list each one.
+    [$w, $b] = $range('f.created_at', 10);
+    $misses = $db->select(
+        "SELECT f.created_at, f.result, f.confidence, f.message, d.device_id,
+                t.last_name, t.first_name
+           FROM fingerprint_logs f
+           LEFT JOIN devices d ON d.id = f.device_row_id
+           LEFT JOIN teachers t ON t.teacher_id = f.teacher_id
+          WHERE $w AND f.result IN ('failed', 'unknown', 'locked')
+          ORDER BY f.created_at",
+        $b
+    );
+    if ($misses !== []) {
+        out('  Scans that were not verified (unknown = the finger matched no enrolled teacher):', 'grey');
+        foreach ($misses as $m) {
+            out(sprintf('    %s  %-8s %-14s %-22s confidence %-4s %s',
+                $m['created_at'], $m['result'], $m['device_id'] ?? '—',
+                $m['last_name'] === null ? '—' : $m['last_name'] . ', ' . $m['first_name'],
+                $m['confidence'] ?? '—', $m['message'] ?? ''), 'grey');
+        }
+    }
+
     // ------------------------------------------- processing time ----
     heading('2. Recording time per session (SOP 1)');
     out('  Gap = median time between consecutive taps: the time per student while a queue is tapping.', 'grey');
