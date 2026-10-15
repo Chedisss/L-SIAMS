@@ -5051,6 +5051,36 @@ function commandReportEvaluation(array $flags): void
     );
     out(sprintf('  Students recorded twice in one session: %d', $double), $double === 0 ? 'green' : 'red');
 
+    [$w, $b] = $range('s.session_date', 11);
+    $io = $db->selectOne(
+        "SELECT SUM(r.carried_from_session_id IS NULL AND r.time_in IS NOT NULL) AS tapped_in,
+                SUM(r.carried_from_session_id IS NOT NULL) AS carried,
+                SUM(r.time_out IS NOT NULL AND r.auto_generated_time_out = 0 AND r.early_released_by IS NULL) AS tapped_out,
+                SUM(r.auto_generated_time_out = 1) AS auto_out,
+                SUM(r.early_released_by IS NOT NULL) AS released,
+                SUM(r.time_in IS NOT NULL AND r.time_out IS NULL) AS no_out,
+                COUNT(*) AS total
+           FROM attendance_records r
+           JOIN attendance_sessions s ON s.session_id = r.session_id
+          WHERE $w",
+        $b
+    );
+    out(sprintf('  Records: %d  (tapped in %d, carried over from the previous period %d)',
+        (int) $io['total'], (int) $io['tapped_in'], (int) $io['carried']));
+    out(sprintf('  Time-outs: tapped out %d, closed automatically at session end %d, released early by the teacher %d, still without a time-out %d',
+        (int) $io['tapped_out'], (int) $io['auto_out'], (int) $io['released'], (int) $io['no_out']));
+    $finals = [];
+    [$w, $b] = $range('s.session_date', 12);
+    foreach ($db->select(
+        "SELECT r.final_status, COUNT(*) AS n FROM attendance_records r
+           JOIN attendance_sessions s ON s.session_id = r.session_id
+          WHERE $w GROUP BY r.final_status ORDER BY n DESC",
+        $b
+    ) as $r) {
+        $finals[] = $r['final_status'] . ' ' . $r['n'];
+    }
+    out('  Final status: ' . ($finals === [] ? '—' : implode(', ', $finals)));
+
     // ---------------------------------------------- offline sync ----
     heading('4. Offline capture and synchronisation (reliability)');
     [$w, $b] = $range('s.session_date', 5);
@@ -5115,7 +5145,16 @@ function commandReportEvaluation(array $flags): void
     [$w, $b] = $range('s.session_date', 9);
     $roster = $db->select(
         "SELECT s.session_code, s.session_date, sec.section_code, st.student_number,
-                CONCAT(st.last_name, ', ', st.first_name) AS student, r.time_in, r.final_status
+                CONCAT(st.last_name, ', ', st.first_name) AS student,
+                CASE WHEN r.carried_from_session_id IS NOT NULL THEN 'carried over'
+                     WHEN r.time_in IS NULL THEN 'no tap'
+                     ELSE 'tapped' END AS recorded_by,
+                r.time_in, r.time_out,
+                CASE WHEN r.early_released_by IS NOT NULL THEN 'released by teacher'
+                     WHEN r.auto_generated_time_out = 1 THEN 'closed automatically'
+                     WHEN r.time_out IS NOT NULL THEN 'tapped out'
+                     ELSE 'none' END AS time_out_by,
+                r.arrival_status, r.departure_status, r.final_status
            FROM attendance_records r
            JOIN attendance_sessions s ON s.session_id = r.session_id
            JOIN sections sec ON sec.section_id = s.section_id
@@ -5125,8 +5164,9 @@ function commandReportEvaluation(array $flags): void
         $b
     );
     $write('system_attendance.csv',
-        ['session', 'date', 'section', 'student_number', 'student', 'time_in', 'system_status', 'manual_status', 'match'],
-        array_map(static fn (array $r): array => array_values($r) + [7 => '', 8 => ''], $roster));
+        ['session', 'date', 'section', 'student_number', 'student', 'recorded_by', 'time_in', 'time_out', 'time_out_by',
+         'arrival_status', 'departure_status', 'system_status', 'manual_status', 'match'],
+        array_map(static fn (array $r): array => array_values($r) + [12 => '', 13 => ''], $roster));
 
     heading('Files');
     out('  ' . $dir . '/sessions.csv', 'grey');
