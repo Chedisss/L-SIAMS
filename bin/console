@@ -4934,13 +4934,21 @@ function commandReportEvaluation(array $flags): void
 
     [$w, $b] = $range('created_at', 2);
     $fp = [];
-    foreach ($db->select("SELECT result, COUNT(*) AS n FROM fingerprint_logs WHERE $w GROUP BY result", $b) as $r) {
-        $fp[(string) $r['result']] = (int) $r['n'];
+    // An enrolment that fails is logged as 'failed' too; it is a registration
+    // retry, not a teacher failing to sign in, so it is counted on its own.
+    foreach ($db->select(
+        "SELECT CASE WHEN result = 'failed' AND message LIKE 'Enrolment failed:%' THEN 'enrolment_failed'
+                     ELSE result END AS outcome, COUNT(*) AS n
+           FROM fingerprint_logs WHERE $w GROUP BY outcome",
+        $b
+    ) as $r) {
+        $fp[(string) $r['outcome']] = (int) $r['n'];
     }
     $verified = $fp['verified'] ?? 0;
     $attempts = $verified + ($fp['failed'] ?? 0) + ($fp['unknown'] ?? 0);
-    out(sprintf('  Fingerprint checks: %d verified, %d failed, %d unmatched  ->  success rate %s',
+    out(sprintf('  Fingerprint sign-in scans: %d verified, %d failed, %d unmatched  ->  success rate %s',
         $verified, $fp['failed'] ?? 0, $fp['unknown'] ?? 0, $pct($verified, $attempts)));
+    out(sprintf('  Enrolment attempts that failed and were retried (not sign-ins): %d', $fp['enrolment_failed'] ?? 0), 'grey');
     $refused = ($fp['not_assigned'] ?? 0) + ($fp['no_schedule'] ?? 0) + ($fp['teacher_inactive'] ?? 0);
     out(sprintf('  Verified teacher refused because the class was not theirs or not scheduled: %d', $refused), 'grey');
 
