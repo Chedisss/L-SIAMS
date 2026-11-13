@@ -762,28 +762,17 @@ final class TeacherService
      * @return array<string,mixed>
      */
     /**
-     * Why a scan that should be happening is not reaching the server.
+     * The terminal for this teacher's class whose scan window is open now.
      *
-     * Everything here is already known: the terminal reports its sensor's
-     * health on every heartbeat, and fingerprint_slots records which templates
-     * that terminal actually holds. None of it was being shown to the one
-     * person standing in front of the reader.
+     * No open window means nothing is expected to happen at a reader, so
+     * there is nothing to explain and no scan to report. device_row_id is
+     * null when the room has no active terminal.
      *
-     * Ordered by what stops a scan first. A dead terminal cannot report a dead
-     * sensor, and a sensor that never started cannot be missing a template, so
-     * a lower check firing while a higher one is true would be describing a
-     * symptom rather than the cause.
-     *
-     * @return array{blocked?:string,blocked_message?:string,terminal?:string}
+     * @return array<string,mixed>|null
      */
-    private static function whyTheReaderIsSilent(int $teacherId): array
+    private static function readerInWindow(int $teacherId): ?array
     {
-        $db = Database::instance();
-
-        // The terminal for the class whose scan window is open. No open
-        // window means nothing is expected to happen, so there is nothing to
-        // explain — the panel is not being shown either.
-        $terminal = $db->selectOne(
+        return Database::instance()->selectOne(
             "SELECT d.id AS device_row_id, d.device_id, d.status, d.fingerprint_ok,
                     d.last_heartbeat_at, d.heartbeat_interval_sec, c.room_number
                FROM schedules sch
@@ -814,6 +803,27 @@ final class TeacherService
                 'now2'    => Clock::now()->format('H:i:s'),
             ]
         );
+    }
+
+    /**
+     * Why a scan that should be happening is not reaching the server.
+     *
+     * Everything here is already known: the terminal reports its sensor's
+     * health on every heartbeat, and fingerprint_slots records which templates
+     * that terminal actually holds. None of it was being shown to the one
+     * person standing in front of the reader.
+     *
+     * Ordered by what stops a scan first. A dead terminal cannot report a dead
+     * sensor, and a sensor that never started cannot be missing a template, so
+     * a lower check firing while a higher one is true would be describing a
+     * symptom rather than the cause.
+     *
+     * @return array{blocked?:string,blocked_message?:string,terminal?:string}
+     */
+    private static function whyTheReaderIsSilent(int $teacherId): array
+    {
+        $db       = Database::instance();
+        $terminal = self::readerInWindow($teacherId);
 
         if ($terminal === null || $terminal['device_row_id'] === null) {
             return $terminal === null
@@ -949,14 +959,34 @@ final class TeacherService
 
         // The most recent attempt since watching began, whatever its outcome.
         // A failure is the useful case: it carries the server's own reason.
+        //
+        // A finger the server cannot match is logged with no teacher, so a
+        // query on teacher_id alone never saw it: the panel went on showing
+        // the teacher's previous refusal as if it were the answer to the scan
+        // just made (defect D-05). Unattributed attempts on the reader of the
+        // class whose window is open now are this panel's scans too.
+        $reader   = self::readerInWindow($teacherId);
+        $readerId = $reader === null || $reader['device_row_id'] === null
+            ? 0
+            : (int) $reader['device_row_id'];
+
         $attempt = $db->selectOne(
-            "SELECT result, message, confidence, created_at
+            "SELECT teacher_id, result, message, confidence, created_at
                FROM fingerprint_logs
-              WHERE teacher_id = :teacher
+              WHERE (teacher_id = :teacher
+                     OR (teacher_id IS NULL AND device_row_id = :device))
                 AND (:since IS NULL OR created_at >= :since2)
               ORDER BY log_id DESC LIMIT 1",
-            ['teacher' => $teacherId, 'since' => $since, 'since2' => $since]
+            ['teacher' => $teacherId, 'device' => $readerId, 'since' => $since, 'since2' => $since]
         );
+
+        // The stored reason for an unmatched scan can name the teacher who
+        // owns that sensor slot on another terminal. That is for the
+        // administrator's log, not for whoever is standing at this reader.
+        if ($attempt !== null && $attempt['teacher_id'] === null) {
+            $attempt['message'] = 'The terminal did not recognise that fingerprint. Place your enrolled '
+                . 'finger on the reader again, or open the class with your password.';
+        }
 
         if ($attempt === null) {
             // 'waiting' used to be the end of it, and it was indistinguishable
